@@ -1,0 +1,62 @@
+[
+ {
+  "title": "valid: float ADD float",
+  "uir": "%0 = cast 1.0 : f32\n%1 = cast 2.0 : f32\n%2 = add %0, %1",
+  "spec": "spec_tensor",
+  "error": "OK"
+ },
+ {
+  "title": "ADD of float and int (operands must share the result dtype)",
+  "uir": "%0 = cast 1.0 : f32\n%1 = cast 3 : i32\n%2 = add %0, %1",
+  "spec": "spec_tensor",
+  "error": "RuntimeError: UOp verification failed at 4 on Ops.ADD dtypes.f32 2 [(Ops.CAST, dtypes.f32, dtypes.f32), (Ops.CAST, dtypes.i32, dtypes.i32)] None"
+ },
+ {
+  "title": "bitwise AND on floats",
+  "uir": "%0 = cast 1.0 : f32\n%1 = cast 2.0 : f32\n%2 = and %0, %1",
+  "spec": "spec_tensor",
+  "error": "RuntimeError: UOp verification failed at 4 on Ops.AND dtypes.f32 2 [(Ops.CAST, dtypes.f32, dtypes.f32), (Ops.CAST, dtypes.f32, dtypes.f32)] None"
+ },
+ {
+  "title": "CMPLT comparing a float with an int",
+  "uir": "%0 = cast 1.0 : f32\n%1 = cast 3 : i32\n%2 = cmplt %0, %1",
+  "spec": "spec_tensor",
+  "error": "RuntimeError: UOp verification failed at 4 on Ops.CMPLT dtypes.bool 2 [(Ops.CAST, dtypes.f32, dtypes.f32), (Ops.CAST, dtypes.i32, dtypes.i32)] None"
+ },
+ {
+  "title": "WHERE with a float condition",
+  "uir": "%0 = cast 1.0 : f32\n%1 = cast 2.0 : f32\n%2 = where %0, %0, %1",
+  "spec": "spec_tensor",
+  "error": "RuntimeError: where cond must be bool, got dtypes.f32"
+ },
+ {
+  "title": "CAST whose arg is not a DType",
+  "uir": "UOp(Ops.CAST, src=<1 srcs>, arg='float')   (render_uir itself chokes on it)",
+  "spec": "spec_tensor",
+  "error": "AssertionError: CAST/BITCAST arg must be DType, got float"
+ },
+ {
+  "title": "SQRT of an int (surprise: dtype inference makes it float32, so it passes)",
+  "uir": "%0 = cast 3 : i32\n%1 = sqrt %0",
+  "spec": "spec_tensor",
+  "error": "OK"
+ },
+ {
+  "title": "a movement op inside a *program* (spec_program forbids RESHAPE)",
+  "uir": "%0 = cast 1.0 : f32\n%1 = reshape %0, 1",
+  "spec": "spec_program",
+  "error": "RuntimeError: UOp verification failed at 3 on Ops.RESHAPE dtypes.f32 2 [(Ops.CAST, dtypes.f32, dtypes.f32), (Ops.CONST, dtypes.weakint, 1)] None"
+ },
+ {
+  "title": "SPEC=1: construct ADD(float, int)",
+  "uir": "UOp(Ops.ADD, src=(UOp.const(1.0, dtypes.float), UOp.const(3, dtypes.int)))",
+  "spec": "(none at construction)",
+  "error": "constructed fine, nobody checked"
+ },
+ {
+  "title": "SPEC=2: construct ADD(float, int)",
+  "uir": "UOp(Ops.ADD, src=(UOp.const(1.0, dtypes.float), UOp.const(3, dtypes.int)))",
+  "spec": "spec_full (SPEC>=2)",
+  "error": "RuntimeError: SPEC ISSUE False: UOp(Ops.ADD, arg=None, src=("
+ }
+]

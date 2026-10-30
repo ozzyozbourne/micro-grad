@@ -1,0 +1,1107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>13. Anatomy of a kernel AST — tinygrad internals</title>
+<link rel="stylesheet" href="../assets/vendor/hljs-dark.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/vendor/highlight.min.js"></script>
+<script src="../assets/vendor/dagre.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/chapters.js"></script>
+<script src="../assets/guide.js"></script>
+<style>
+.ch13-code { font-family: var(--mono); font-size: 12.5px; background: #0d0f12; border: 1px solid var(--line); border-radius: 8px; padding: 8px 0; overflow: auto; max-height: 520px; line-height: 1.5; }
+.ch13-code .ln { white-space: pre; padding: 0 12px; border-left: 3px solid transparent; transition: background .2s; cursor: default; }
+.ch13-code .ln.loop { color: var(--purple); }
+.ch13-code .ln.in { background: rgba(88,196,221,.07); }
+.ch13-code .ln.hl { background: rgba(244,211,69,.22); border-left-color: var(--yellow); color: #fff; }
+.ch13-code .ln.hlbody { background: rgba(244,211,69,.08); }
+main .uopgraph svg { max-width: none; }
+.ch13-pane-title { font-size: 12px; color: var(--gold); font-family: var(--mono); margin: 2px 0 4px; }
+.ch13-pick { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.ch13-note { font-size: 13px; color: var(--dim); margin-top: 6px; min-height: 1.4em; }
+.ch13-env { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0; }
+.ch13-env span { font-family: var(--mono); font-size: 13px; background: rgba(154,114,172,.18); border: 1px solid var(--purple); border-radius: 6px; padding: 2px 8px; }
+.ch13-env span.red { background: rgba(252,98,85,.18); border-color: var(--red); }
+.ch13-bufs { display: flex; gap: 22px; flex-wrap: wrap; align-items: flex-start; }
+.ch13-buf h5 { margin: 4px 0; font-family: var(--mono); font-size: 12.5px; color: var(--gold); font-weight: 500; }
+.ch13-buf .grid-cells .cell { width: 40px; font-size: 11px; }
+.ch13-buf .grid-cells .cell.done { background: rgba(131,193,103,.25); border-color: var(--green); }
+.ch13-buf .grid-cells .cell.miss { background: rgba(252,98,85,.15); border-color: var(--red); border-style: dashed; }
+.ch13-trace { font-family: var(--mono); font-size: 12.5px; background: #0d0f12; border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; white-space: pre-wrap; margin-top: 8px; }
+.ch13-kname span { font-family: var(--mono); font-weight: 700; }
+.ch13-tbl { display: block; overflow-x: auto; max-width: 100%; }
+.ch13-tbl td code { white-space: normal; word-break: break-word; }
+.ch13-sliders { display: grid; grid-template-columns: 60px 1fr 40px; gap: 6px 10px; align-items: center; max-width: 460px; }
+.ch13-big { font-family: var(--mono); font-size: 15px; }
+.ch13-big b { color: var(--yellow); }
+.ch13-nest { font-family: var(--mono); font-size: 13px; }
+.ch13-nest div { padding: 2px 8px; border-left: 2px solid var(--purple); margin-left: 14px; }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="sidebar" id="sidebar"></nav>
+<main>
+  <h1><span class="chnum">CHAPTER 13</span>Anatomy of a kernel AST</h1>
+  <p class="lede">The scheduler hands codegen one small UOp graph per kernel: a <code>SINK</code> with a <code>KernelInfo</code> argument.
+  After this chapter you will be able to read any such graph as a loop nest, translate it to C by hand, predict the kernel's name,
+  its FLOP and byte estimates, and say what every node means and which forms <code>uop/spec.py</code> allows for it.</p>
+
+  <h2 id="intuition"><span class="sec">13.1</span>Intuition: a loop nest drawn as a graph</h2>
+  <p>A kernel is "for every output element, compute something from some input elements, then write it". A C programmer writes
+  that as nested <code>for</code> loops. tinygrad writes the same thing as a graph, and the graph has no loops in it at all. Instead:</p>
+  <ul>
+    <li>each loop is a single node, <code>RANGE</code>. Think of it as "the loop variable", a value somewhere between 0 and N−1;</li>
+    <li>whatever depends on a <code>RANGE</code> is implicitly "inside" that loop;</li>
+    <li>an <code>END</code> node says "the loops over these RANGEs finish after this store";</li>
+    <li>a <code>REDUCE</code> node says "loop over these RANGEs and combine the values with ADD or MAX".</li>
+  </ul>
+  <div class="callout analogy"><span class="title">Analogy: a spreadsheet formula, not a program</span>
+  A spreadsheet cell holds <code>=A{row}+B{row}</code>. It does not say "loop over rows"; you fill the formula down and the
+  row number is a free variable. A kernel AST is that formula. <code>RANGE</code> is the free variable "row", <code>END</code> is the "fill down"
+  handle, and <code>REDUCE</code> is <code>=SUM(…)</code> over another free variable.</div>
+  <div class="callout aha"><span class="title">The key idea</span>
+  Since loops are values, the optimizer (<a href="14-optimizations.html">Chapter 14</a>) can rewrite a loop by substituting one value
+  for another. Turning one loop of 16 into two loops of 4 is just the substitution <code>r → r_outer*4 + r_inner</code>.
+  No control flow has to be restructured. Control flow appears only at the very end, in linearization
+  (<a href="16-linearize-render.html">Chapter 16</a>).</div>
+
+  <h2 id="where"><span class="sec">13.2</span>Where the AST comes from and where it goes</h2>
+  <p>In <a href="12-schedule.html">Chapter 12</a> the schedule turned into a <code>LINEAR</code> of <code>CALL</code>s. A compute kernel is a
+  <code>CALL</code> whose first source is the kernel body, a <code>SINK</code> whose arg is a <code>KernelInfo</code>. The remaining sources
+  are the buffers it will be launched with: <code>CALL.src[1+slot]</code> becomes <code>PARAM(slot)</code> inside the body.
+  Click the stages:</p>
+  <div class="demo" id="demo-flow">
+    <div class="demo-title">From the schedule to a compiled PROGRAM</div>
+    <div class="demo-desc">These are the real call sites, in order. Click a stage to see what goes in and what comes out.</div>
+    <div class="flow"></div>
+    <div class="ch13-trace flow-info"></div>
+  </div>
+  <p>Two facts are worth remembering from this picture:</p>
+  <ol>
+    <li><b>The AST is input-independent.</b> It names buffers only by <code>PARAM</code> slot, dtype and size. The cache key used by
+    <a class="src" data-path="tinygrad/codegen/__init__.py" data-line="505">to_program_key</a> is <code>ast.key</code> plus the renderer and a few
+    ContextVars (NOOPT, USE_TC, …). Every <code>a+b</code> on two float[12] tensors therefore compiles once.</li>
+    <li><b>Optimization happens inside codegen.</b> The SINK you get from the schedule is the unoptimized loop nest
+    (<code>KernelInfo(optimized=False)</code>). <a class="src" data-path="tinygrad/codegen/__init__.py" data-line="278">apply_opts</a> runs
+    inside <code>full_rewrite_to_sink</code> and returns a new SINK with <code>optimized=True</code>, the real name and <code>applied_opts</code>.</li>
+  </ol>
+
+  <h2 id="first"><span class="sec">13.3</span>The first AST: <code>A + B</code></h2>
+  <p>The example below builds five small programs, pulls each kernel AST out of <code>Tensor.schedule_linear</code>, prints it, lowers it
+  with <code>to_program</code> under <code>NOOPT=1</code> and with default opts, runs it, and saves everything to JSON for the demos on this page.</p>
+  <div class="codecap"><b>examples/13_kernel_ast.py</b>: run with <code>DEV=CPU python3 examples/13_kernel_ast.py</code></div>
+  <pre><code class="language-python"># Chapter 13 — Anatomy of a kernel AST
+# Run: DEV=CPU python3 examples/13_kernel_ast.py
+#
+# We build five tiny tensor programs, ask the scheduler for the LINEAR of kernels that would realize them
+# (Tensor.schedule_linear), and pull out each kernel&#x27;s AST: the SINK(KernelInfo) that sits in CALL.src[0].
+# That SINK is exactly what engine/realize.py hands to codegen.to_program(ast, renderer).
+# We then print the AST three ways (UOp repr, render_uir, a census of ops), and lower it to real C on the
+# CPU backend with NOOPT=1 (no optimizations) and with the default hand-coded optimizations.
+import json, os, re, sys
+from collections import Counter
+from tinygrad import Tensor, Device
+from tinygrad.uop.ops import Ops, UOp, KernelInfo
+from tinygrad.helpers import Context
+from tinygrad.codegen import to_program
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), &quot;..&quot;, &quot;tools&quot;))
+from uop2json import uop_to_graph
+
+def kernel_calls(*ts: Tensor) -&gt; list[UOp]:
+  # schedule_linear returns LINEAR(CALL, CALL, ...); a compute kernel is a CALL whose body (src[0]) is a SINK with KernelInfo.
+  # CALL.src[1+slot] is the BUFFER UOp that PARAM(slot) in the body will be bound to at launch.
+  lin = Tensor.schedule_linear(*ts)
+  return [c for c in lin.src if c.op is Ops.CALL and c.src[0].op is Ops.SINK and isinstance(c.src[0].arg, KernelInfo)]
+def kernel_asts(*ts: Tensor) -&gt; list[UOp]: return [c.src[0] for c in kernel_calls(*ts)]
+
+# small concrete inputs (python lists -&gt; real buffers, so the kernel ASTs really LOAD from PARAMs)
+A  = Tensor([[1., 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]]).realize()   # (3,4)
+B  = Tensor([[1., 1, 1, 1], [2, 2, 2, 2], [3, 3, 3, 3]]).realize()      # (3,4)
+M  = Tensor([[1., 0, 2], [0, 1, 1]]).realize()                          # (2,3)
+x  = Tensor([1., 2, 3]).realize()                                       # (3,)
+col = Tensor([[1.], [2], [3]]).realize()                                # (3,1)
+row = Tensor([[10., 20, 30, 40]]).realize()                             # (1,4)
+
+cases = {
+  &quot;add&quot;:    (&quot;A + B                 # (3,4) + (3,4)&quot;, lambda: A + B),
+  &quot;sum&quot;:    (&quot;A.sum(axis=1)         # (3,4) -&gt; (3,)&quot;, lambda: A.sum(axis=1)),
+  &quot;matmul&quot;: (&quot;M @ A                 # (2,3) @ (3,4) -&gt; (2,4)&quot;, lambda: M @ A),
+  &quot;pad&quot;:    (&quot;x.pad((1,1)) * 2      # (3,) -&gt; (5,)&quot;, lambda: x.pad((1, 1)) * 2),
+  &quot;bcast&quot;:  (&quot;col + row             # (3,1) + (1,4) -&gt; (3,4)&quot;, lambda: col + row),
+}
+inputs = {&quot;A&quot;: A, &quot;B&quot;: B, &quot;M&quot;: M, &quot;x&quot;: x, &quot;col&quot;: col, &quot;row&quot;: row}
+
+cpu = Device[&quot;CPU&quot;].renderer
+
+# record the range list the kernel name is built from: wrap Scheduler.get_optimized_ast (codegen/opt/postrange.py)
+from tinygrad.codegen.opt import postrange
+_goa, last_rngs = postrange.Scheduler.get_optimized_ast, []
+def _recording_goa(self, name_override=None):
+  last_rngs[:] = [[int(sz), t.name] for sz, t in zip(self.full_shape, self.axis_types)]
+  return _goa(self, name_override)
+postrange.Scheduler.get_optimized_ast = _recording_goa
+out = {}
+for name, (code, fn) in cases.items():
+  calls = kernel_calls(fn())
+  assert len(calls) == 1, f&quot;{name}: expected one kernel, got {len(calls)}&quot;
+  call = calls[0]; ast = call.src[0]
+  print(f&quot;\n===================== {name}: {code}&quot;)
+  if name == &quot;add&quot;:
+    print(&quot;--- repr(ast): the full UOp tree (x4:= names a shared node)&quot;)
+    print(ast)
+  print(&quot;--- ast.render_uir()&quot;)
+  print(ast.render_uir())
+  census = Counter(u.op.name for u in ast.toposort())
+  print(&quot;--- op census:&quot;, dict(census))
+  rngs = sorted([u for u in ast.toposort() if u.op is Ops.RANGE], key=lambda u: u.arg)
+  print(&quot;--- RANGEs (arg = (AxisType, axis_id)):&quot;, [(str(r.arg[0]), r.arg[1], r.src[0].arg) for r in rngs])
+
+  # lower to real code. to_program == the same call engine/realize.py makes (it is cached on ast.key + NOOPT + ...)
+  with Context(NOOPT=1): p0 = to_program(ast, cpu)
+  rngs0 = list(last_rngs)
+  p1 = to_program(ast, cpu)
+  rngs1 = list(last_rngs)
+  ki0, ki1 = p0.src[0].arg, p1.src[0].arg   # PROGRAM.src = (SINK, LINEAR, SOURCE, BINARY); the SINK&#x27;s KernelInfo is now filled in
+  print(f&quot;--- NOOPT=1 : name={ki0.function_name}  applied_opts={ki0.applied_opts}  estimates={ki0.estimates}&quot;)
+  print(p0.src[2].arg.strip())
+  print(f&quot;--- default : name={ki1.function_name}  applied_opts={ki1.applied_opts}  estimates={ki1.estimates}&quot;)
+  print(f&quot;--- ranges the names were built from: NOOPT {rngs0}  default {rngs1}&quot;)
+
+  # run it for real so the page can show the result
+  result = fn().realize().tolist()
+  print(&quot;--- result:&quot;, result)
+  # which input tensor sits in which PARAM slot? compare the CALL&#x27;s buffer UOps with the inputs&#x27; realized buffers
+  slots = {}
+  for slot, b in enumerate(call.src[1:]):
+    nm = next((k for k, t in inputs.items() if t.uop.base is b), &quot;out&quot; if slot == 0 else &quot;?&quot;)
+    slots[slot] = nm
+  print(&quot;--- PARAM slots:&quot;, slots)
+
+  ids: dict = {}
+  graph = uop_to_graph(ast, ids)
+  # structured IR for the in-browser interpreter / pseudo-C (op, src ids, decoded args)
+  ir = []
+  for u in ast.toposort():
+    d = {&quot;id&quot;: ids[u], &quot;op&quot;: u.op.name, &quot;src&quot;: [ids[s] for s in u.src], &quot;dtype&quot;: str(u.dtype)}
+    if u.op is Ops.CONST: d[&quot;val&quot;] = &quot;Invalid&quot; if u.is_invalid else u.arg
+    if u.op is Ops.PARAM: d[&quot;slot&quot;], d[&quot;size&quot;] = u.arg.slot, u.src[0].arg
+    if u.op is Ops.RANGE: d[&quot;axis_type&quot;], d[&quot;axis_id&quot;], d[&quot;size&quot;] = u.arg[0].name, u.arg[1], u.src[0].arg
+    if u.op is Ops.REDUCE: d[&quot;rop&quot;] = u.arg[0].name
+    if u.op is Ops.CAST: d[&quot;to&quot;] = str(u.arg)
+    ir.append(d)
+  out[name] = {
+    &quot;code&quot;: code, &quot;name_ansi&quot;: [ki0.name, ki1.name], &quot;uir&quot;: ast.render_uir(), &quot;repr&quot;: str(ast) if name == &quot;add&quot; else None, &quot;census&quot;: dict(census),
+    &quot;graph&quot;: graph, &quot;ir&quot;: ir, &quot;result&quot;: result, &quot;slots&quot;: slots,
+    &quot;noopt&quot;: {&quot;rngs&quot;: rngs0, &quot;name&quot;: ki0.name, &quot;fname&quot;: ki0.function_name, &quot;opts&quot;: [str(o) for o in ki0.applied_opts], &quot;src&quot;: p0.src[2].arg.strip(),
+              &quot;est&quot;: {&quot;ops&quot;: ki0.estimates.ops, &quot;lds&quot;: ki0.estimates.lds, &quot;mem&quot;: ki0.estimates.mem}},
+    &quot;opt&quot;: {&quot;rngs&quot;: rngs1, &quot;name&quot;: ki1.name, &quot;fname&quot;: ki1.function_name, &quot;opts&quot;: [str(o) for o in ki1.applied_opts], &quot;src&quot;: p1.src[2].arg.strip(),
+            &quot;est&quot;: {&quot;ops&quot;: ki1.estimates.ops, &quot;lds&quot;: ki1.estimates.lds, &quot;mem&quot;: ki1.estimates.mem}},
+  }
+
+out[&quot;_inputs&quot;] = {k: v.tolist() for k, v in inputs.items()}
+
+# ---- the AST zoo: more kernels, NOOPT C only ----
+print(&quot;\n===================== zoo&quot;)
+E = Tensor.empty
+zoo = {
+  &quot;softmax (3 kernels)&quot;: lambda: E(2, 8).softmax(),
+  &quot;cumsum&quot;: lambda: E(5).cumsum(),
+  &quot;x / x.sum()&quot;: lambda: E(4) / E(4).sum(),
+  &quot;argmax&quot;: lambda: E(3, 5).argmax(1),
+  &quot;gather a[idx]&quot;: lambda: E(6, 4)[Tensor([1, 3])],
+  &quot;conv2d&quot;: lambda: E(1, 1, 4, 4).conv2d(E(2, 1, 3, 3)),
+  &quot;cat&quot;: lambda: E(2, 3).cat(E(2, 3)),
+}
+out[&quot;_zoo&quot;] = {}
+for zname, fn in zoo.items():
+  ks = []
+  for ast in kernel_asts(fn()):
+    with Context(NOOPT=1): p0 = to_program(ast, cpu)
+    ki = p0.src[0].arg
+    ks.append({&quot;uir&quot;: ast.render_uir(), &quot;graph&quot;: uop_to_graph(ast), &quot;name&quot;: ki.name, &quot;fname&quot;: ki.function_name,
+               &quot;src&quot;: p0.src[2].arg.strip(), &quot;census&quot;: dict(Counter(u.op.name for u in ast.toposort()))})
+    print(f&quot;{zname:22s} -&gt; {ki.function_name:14s} {dict(Counter(u.op.name for u in ast.toposort() if u.op is not Ops.CONST))}&quot;)
+  out[&quot;_zoo&quot;][zname] = ks
+# which PARAM slot holds which input? slot 0 is always the output; the rest follow the order the scheduler found them
+os.makedirs(os.path.join(os.path.dirname(os.path.abspath(__file__)), &quot;..&quot;, &quot;data&quot;), exist_ok=True)
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), &quot;..&quot;, &quot;data&quot;, &quot;ch13_asts.json&quot;), &quot;w&quot;) as f: json.dump(out, f, indent=1, default=str)
+print(&quot;\nwrote data/ch13_asts.json&quot;)</code></pre>
+  <p>Here is the first kernel exactly as the scheduler produced it. First as the full Python <code>repr</code>, then in the compact
+  SSA-like form from <code>render_uir()</code> (<a class="src" data-path="tinygrad/uop/render.py" data-line="64">render_uir</a>):</p>
+  <pre class="output"><code>===================== add: A + B                 # (3,4) + (3,4)
+--- repr(ast): the full UOp tree (x4:= names a shared node)
+UOp(Ops.SINK, arg=KernelInfo(name=&#x27;test&#x27;, applied_opts=(), opts_to_apply=None, estimates=None, beam=0, optimized=False), src=(
+  UOp(Ops.END, arg=None, src=(
+    UOp(Ops.STORE, arg=None, src=(
+      UOp(Ops.INDEX, arg=None, src=(
+        UOp(Ops.PARAM, arg=ParamArg(0, dtypes.f32, device=&#x27;CPU&#x27;), src=(
+          x4:=UOp(Ops.CONST, arg=12, src=()),)),
+        x5:=UOp(Ops.ADD, arg=None, src=(
+          UOp(Ops.MUL, arg=None, src=(
+            x7:=UOp(Ops.RANGE, arg=(AxisType.WEAK, 0), src=(
+              UOp(Ops.CONST, arg=3, src=()),)),
+            x9:=UOp(Ops.CONST, arg=4, src=()),)),
+          x10:=UOp(Ops.RANGE, arg=(AxisType.WEAK, 1), src=(
+            x9,)),)),)),
+      UOp(Ops.ADD, arg=None, src=(
+        UOp(Ops.INDEX, arg=None, src=(
+          UOp(Ops.PARAM, arg=ParamArg(1, dtypes.f32, device=&#x27;CPU&#x27;), src=(
+            x4,)),
+          x5,)),
+        UOp(Ops.INDEX, arg=None, src=(
+          UOp(Ops.PARAM, arg=ParamArg(2, dtypes.f32, device=&#x27;CPU&#x27;), src=(
+            x4,)),
+          x5,)),)),)),
+    x7,
+    x10,)),))
+--- ast.render_uir()
+%0 = param 12 : dtype=f32 slot=0 device=CPU
+%1 = range 3 : WEAK 0
+%2 = mul %1, 4
+%3 = range 4 : WEAK 1
+%4 = add %2, %3
+%5 = index %0, %4
+%6 = param 12 : dtype=f32 slot=1 device=CPU
+%7 = index %6, %4
+%8 = param 12 : dtype=f32 slot=2 device=CPU
+%9 = index %8, %4
+%10 = add %7, %9
+%11 = store %5, %10
+%12 = end %11, %1, %3
+%13 = sink %12 : test
+--- op census: {&#x27;CONST&#x27;: 3, &#x27;PARAM&#x27;: 3, &#x27;RANGE&#x27;: 2, &#x27;MUL&#x27;: 1, &#x27;ADD&#x27;: 2, &#x27;INDEX&#x27;: 3, &#x27;STORE&#x27;: 1, &#x27;END&#x27;: 1, &#x27;SINK&#x27;: 1}
+--- RANGEs (arg = (AxisType, axis_id)): [(&#x27;AxisType.WEAK&#x27;, 0, 3), (&#x27;AxisType.WEAK&#x27;, 1, 4)]
+--- NOOPT=1 : name=E_12  applied_opts=()  estimates=Estimates(ops=12, lds=144, mem=144)
+struct E_12_args { float* arg0; float* arg1; float* arg2; };
+void E_12(const struct E_12_args* args) {
+  float* data0_12 = args-&gt;arg0;
+  float* data1_12 = args-&gt;arg1;
+  float* data2_12 = args-&gt;arg2;
+  for (int Lidx0 = 0; Lidx0 &lt; 12; Lidx0++) {
+    float val0 = (*(data1_12+Lidx0));
+    float val1 = (*(data2_12+Lidx0));
+    *(data0_12+Lidx0) = (val0+val1);
+  }
+}
+--- default : name=E_3_4  applied_opts=(Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST)),)  estimates=Estimates(ops=12, lds=144, mem=144)
+--- ranges the names were built from: NOOPT [[12, &#x27;WEAK&#x27;]]  default [[3, &#x27;WEAK&#x27;], [4, &#x27;UPCAST&#x27;]]
+--- result: [[2.0, 3.0, 4.0, 5.0], [7.0, 8.0, 9.0, 10.0], [12.0, 13.0, 14.0, 15.0]]
+--- PARAM slots: {0: &#x27;out&#x27;, 1: &#x27;A&#x27;, 2: &#x27;B&#x27;}</code></pre>
+  <p>How to read it:</p>
+  <ul>
+    <li>In the repr, <code>x4:=UOp(...)</code> names a node the first time it is printed, and later uses just say <code>x4</code>. UOps are
+    hash-consed (<a href="04-uop.html">Chapter 4</a>), so the size constant 12 is literally the same object under all three PARAMs, and the
+    index expression <code>x5</code> is shared by all three INDEXes.</li>
+    <li>In <code>render_uir</code> every non-inlined node gets a <code>%n</code> number in toposort order, and constants are inlined. <code>range 3 : WEAK 0</code>
+    means <code>RANGE(src=(CONST 3,), arg=(AxisType.WEAK, 0))</code>.</li>
+    <li>The index is <code>r0*4 + r1</code>: a row-major (3,4) layout. Rangeify (<a href="10-rangeify.html">Chapter 10</a>) produced it
+    from the movement ops. There is no shape and no stride left anywhere, only integer arithmetic on RANGEs.</li>
+    <li>There is <b>no LOAD</b>. An <code>INDEX</code> used as a value means "the element at this address". The LOADs are inserted much later by
+    <a class="src" data-path="tinygrad/codegen/__init__.py" data-line="205">pm_add_loads</a>, during lowering
+    (<a href="15-lowering.html">Chapter 15</a>).</li>
+  </ul>
+  <div class="demo" id="demo-first">
+    <div class="demo-title">The real AST of <code>A + B</code></div>
+    <div class="demo-desc">Captured with <code>tools/uop2json.py</code>. Hover a node for its full UOp. Arrows point from source to consumer, so the SINK is at the top.</div>
+    <div class="graph"></div>
+  </div>
+
+  <h2 id="catalog"><span class="sec">13.4</span>Every node type, and what spec.py allows</h2>
+  <p>The scheduler's ASTs are checked against <a class="src" data-path="tinygrad/uop/spec.py" data-line="144">spec_tensor</a>
+  (which includes <a class="src" data-path="tinygrad/uop/spec.py" data-line="48">spec_shared</a>) at the start of
+  <a class="src" data-path="tinygrad/codegen/__init__.py" data-line="255">full_rewrite_to_sink</a> when <code>SPEC</code> is on, and <code>SPEC</code> defaults to 1. The table
+  lists every op that appears in the kernels of this chapter, plus the few that you will meet in others.</p>
+  <table class="ch13-tbl">
+    <tr><th>Op</th><th>dtype</th><th>src</th><th>arg</th><th>meaning / spec rule</th></tr>
+    <tr><td><code>SINK</code></td><td>void</td><td>the END/STOREs of the kernel</td><td><code>KernelInfo</code></td><td>Root. <code>do_to_program</code> asserts the arg is a KernelInfo (<a class="src" data-path="tinygrad/codegen/__init__.py" data-line="484">:484</a>). A kernel with two outputs has two sources.</td></tr>
+    <tr><td><code>END</code></td><td>void</td><td><code>(STORE, RANGE, RANGE, …)</code></td><td>None</td><td>"Close these loops after this effect." spec: src[0] is void, all others are int RANGEs (<a class="src" data-path="tinygrad/uop/spec.py" data-line="85">spec.py:85</a>). The RANGEs listed are the <b>output loops</b>.</td></tr>
+    <tr><td><code>STORE</code></td><td>void</td><td><code>(INDEX, value[, gate])</code></td><td>None</td><td>Write <code>value</code> to the address. The value dtype must match the target (<a class="src" data-path="tinygrad/uop/spec.py" data-line="124">:124</a>) and the target must be storage (<a class="src" data-path="tinygrad/uop/spec.py" data-line="134">:134</a>).</td></tr>
+    <tr><td><code>INDEX</code></td><td>element dtype</td><td><code>(PARAM, idx)</code></td><td>None</td><td>Address <code>buf[idx]</code>. All index sources must be int, or Invalid (<a class="src" data-path="tinygrad/uop/spec.py" data-line="83">:83</a>). Used as a value it means a load; as STORE.src[0] it is the destination.</td></tr>
+    <tr><td><code>PARAM</code></td><td>element dtype</td><td><code>(CONST size,)</code></td><td><code>ParamArg(slot, dtype, device=…)</code></td><td>A kernel argument (<a class="src" data-path="tinygrad/uop/ops.py" data-line="25">ParamArg</a>). Slot 0 is the output here, then inputs in the order the scheduler found them. spec: <a class="src" data-path="tinygrad/uop/spec.py" data-line="92">:92</a>.</td></tr>
+    <tr><td><code>RANGE</code></td><td>weakint</td><td><code>(bound,)</code></td><td><code>(AxisType, axis_id, …)</code></td><td>A loop variable in <code>[0, bound)</code>. Exactly one source; a tuple arg whose first element is an AxisType and the rest ints (<a class="src" data-path="tinygrad/uop/spec.py" data-line="81">:81</a>). Built by <a class="src" data-path="tinygrad/uop/ops.py" data-line="614">UOp.range</a>.</td></tr>
+    <tr><td><code>REDUCE</code></td><td>result dtype</td><td><code>(value, RANGE, …)</code></td><td><code>(Ops.ADD|MAX|MUL, horizontal:int)</code></td><td>Loop over the listed RANGEs and fold <code>value</code>. In kernel ASTs <code>horizontal</code> is 0 (<a class="src" data-path="tinygrad/uop/spec.py" data-line="171">:171</a>).</td></tr>
+    <tr><td><code>CONST</code></td><td>any</td><td>()</td><td>python value or <code>Invalid</code></td><td>Literal. The type must match the dtype; <code>Invalid</code> is the "no element here" marker (<a class="src" data-path="tinygrad/uop/spec.py" data-line="56">:56</a>).</td></tr>
+    <tr><td><code>ADD MUL CMPLT CMPEQ AND RECIP EXP2 …</code></td><td>result</td><td>operands</td><td>None</td><td>ALU. Operands match the result dtype, except comparisons and WHERE (<a class="src" data-path="tinygrad/uop/spec.py" data-line="63">:63–74</a>).</td></tr>
+    <tr><td><code>WHERE</code></td><td>value dtype</td><td><code>(bool, a, b)</code></td><td>None</td><td>Select. <code>where(valid, idx, Invalid)</code> on an index is a <b>gate</b>: <a class="src" data-path="tinygrad/uop/ops.py" data-line="636">UOp.valid</a>.</td></tr>
+    <tr><td><code>CAST</code></td><td>target</td><td><code>(x,)</code></td><td>DType</td><td>e.g. <code>Tensor.arange(4).float()</code> becomes <code>CAST(RANGE)</code>: the value is the loop index.</td></tr>
+    <tr><td><code>AFTER</code></td><td>like src[0]</td><td><code>(x, deps…)</code></td><td>None</td><td>"x, but only after deps." Orders a read after a write, e.g. reading a buffer after a STAGE/STORE in the same kernel (<a class="src" data-path="tinygrad/uop/spec.py" data-line="99">:99</a>). None of the five kernels here contain one.</td></tr>
+    <tr><td><code>STAGE</code></td><td>like src[0]</td><td><code>(value, RANGE…)</code></td><td>opts</td><td>An in-kernel realization point (e.g. a local buffer). Allowed in spec_tensor (<a class="src" data-path="tinygrad/uop/spec.py" data-line="192">:192</a>) and turned into a buffer by <a class="src" data-path="tinygrad/codegen/__init__.py" data-line="211">add_local_buffer</a>.</td></tr>
+  </table>
+  <div class="callout warn"><span class="title">Not in the input AST</span>
+  <code>LOAD</code>, <code>SPECIAL</code> (gidx/lidx), <code>IF</code>, <code>BARRIER</code>, <code>WMMA</code> and explicit accumulators (<code>BUFFER</code> in REG) are all
+  <b>created by codegen</b>. Conversely, <a class="src" data-path="tinygrad/uop/spec.py" data-line="204">spec_program</a> (the spec for the
+  <i>output</i> of <code>full_rewrite_to_sink</code>) forbids movement ops (<a class="src" data-path="tinygrad/uop/spec.py" data-line="213">:213</a>)
+  and <code>Invalid</code> (<a class="src" data-path="tinygrad/uop/spec.py" data-line="219">:219</a>). Lowering exists to remove those.</div>
+  <h3>RANGE's arg and AxisType</h3>
+  <p><a class="src" data-path="tinygrad/uop/ops.py" data-line="17">AxisType</a> is an ordered enum:
+  <code>DEVICE &lt; GLOBAL &lt; LOCAL &lt; WARP &lt; WEAK &lt; LOOP &lt; UPCAST &lt; PLACEHOLDER</code>. RANGE args are tuples, so
+  sorting RANGEs by arg sorts first by axis type and then by axis id, which gives the loop nesting order ("RANGE args sort by axis type, then axis id",
+  comment at <a class="src" data-path="tinygrad/uop/ops.py" data-line="20">ops.py:20</a>). The scheduler emits every range as <code>WEAK</code>, meaning "a loop the
+  optimizer may still change". Optimization turns WEAK ranges into GLOBAL, LOCAL, UPCAST, … (<a href="14-optimizations.html">Chapter 14</a>).
+  The letters and colors used in generated names and DEBUG output come from
+  <a class="src" data-path="tinygrad/uop/ops.py" data-line="49">axis_letters / axis_colors</a>:</p>
+  <table>
+    <tr><th>AxisType</th><th>letter (C var prefix)</th><th>color in names</th><th>becomes</th></tr>
+    <tr><td>GLOBAL</td><td><code>g</code> → <code>gidx0</code></td><td><span style="color:var(--blue)">blue</span></td><td>a grid dimension on GPUs</td></tr>
+    <tr><td>LOCAL</td><td><code>l</code> → <code>lidx0</code></td><td><span style="color:#5ff">cyan</span></td><td>a workgroup/thread dimension</td></tr>
+    <tr><td>WARP</td><td><code>w</code></td><td><span style="color:#5ff">CYAN</span> (bright)</td><td>tensor-core lanes</td></tr>
+    <tr><td>WEAK / LOOP</td><td><code>L</code> → <code>Lidx0</code></td><td><span style="color:var(--red)">red</span></td><td>a real <code>for</code> loop</td></tr>
+    <tr><td>UPCAST</td><td><code>u</code></td><td><span style="color:var(--yellow)">yellow</span></td><td>unrolled / vectorized away (no loop at all)</td></tr>
+  </table>
+  <p>That is why the CPU C code is full of <code>Lidx0</code>, <code>Lidx1</code>: the renderer names a RANGE
+  <code>axis_letters[type] + "idx" + range_str(u)</code> (<a class="src" data-path="tinygrad/renderer/cstyle.py" data-line="255">cstyle.py:255</a>),
+  and on CPU every range stays WEAK.</p>
+  <div class="quiz" data-answer="2">
+    <div class="q">In the <code>A + B</code> AST, how many LOAD nodes are there?</div>
+    <button class="opt">3: one per PARAM</button><button class="opt">2: one per input</button><button class="opt">0: an INDEX used as a value implies the load, and pm_add_loads inserts LOADs during lowering</button>
+    <div class="explain">The kernel AST has only INDEX. In <code>full_rewrite_to_sink</code>, the "expand broadcast / add loads" pass wraps value-position INDEXes in LOAD (<code>maybe_load</code>, codegen/__init__.py:204).</div>
+  </div>
+
+  <h2 id="loopnest"><span class="sec">13.5</span>Reading an AST as a loop nest, by hand</h2>
+  <p>These rules turn any of these ASTs into pseudo-C:</p>
+  <ol>
+    <li>Start at the <code>SINK</code>. For each <code>END(STORE, r…)</code>, open one <code>for</code> per listed RANGE, ordered by arg (axis type, then id).</li>
+    <li>The STORE's first source is <code>INDEX(PARAM k, e)</code>, so write <code>buf_k[e] = …;</code>.</li>
+    <li>Render the value recursively. <code>INDEX(PARAM j, e)</code> in value position is <code>buf_j[e]</code>. ALUs are operators.
+    <code>WHERE(c,a,b)</code> is <code>c ? a : b</code>.</li>
+    <li>A <code>REDUCE(v, r…)</code> becomes a statement block <i>before</i> the store: <code>acc = identity; for (r…) acc = acc ⊕ v;</code>, and the
+    REDUCE itself is replaced by <code>acc</code>. Its RANGEs are <b>not</b> in the END; they are reduce loops.</li>
+  </ol>
+  <p>Take the matmul <code>M @ A</code>, with M of shape (2,3) and A of shape (3,4):</p>
+  <pre class="output"><code>===================== matmul: M @ A                 # (2,3) @ (3,4) -&gt; (2,4)
+--- ast.render_uir()
+%0 = param 8 : dtype=f32 slot=0 device=CPU
+%1 = range 2 : WEAK 1
+%2 = mul %1, 4
+%3 = range 4 : WEAK 2
+%4 = add %2, %3
+%5 = index %0, %4
+%6 = param 6 : dtype=f32 slot=1 device=CPU
+%7 = mul %1, 3
+%8 = range 3 : WEAK 0
+%9 = add %7, %8
+%10 = index %6, %9
+%11 = param 12 : dtype=f32 slot=2 device=CPU
+%12 = mul %8, 4
+%13 = add %12, %3
+%14 = index %11, %13
+%15 = mul %10, %14
+%16 = reduce %15, %8 : op=add
+%17 = store %5, %16
+%18 = end %17, %1, %3
+%19 = sink %18 : test</code></pre>
+  <p><code>END %17, %1, %3</code>: the output loops are <code>r1</code> (2 rows) and <code>r2</code> (4 cols). <code>REDUCE %15, %8</code>: the reduce loop is
+  <code>r0</code> (3, the contracted dimension). By hand:</p>
+  <pre><code class="language-c">for (r1 = 0; r1 &lt; 2; r1++)            // RANGE (WEAK,1)  — output rows
+  for (r2 = 0; r2 &lt; 4; r2++) {         // RANGE (WEAK,2)  — output cols
+    acc = 0;
+    for (r0 = 0; r0 &lt; 3; r0++)         // RANGE (WEAK,0)  — REDUCE range
+      acc += buf1[r1*3 + r0] * buf2[r0*4 + r2];
+    buf0[r1*4 + r2] = acc;
+  }</code></pre>
+  <p>Now compare with what clang actually compiles (<code>NOOPT=1</code>, so no optimization opts were applied):</p>
+  <pre class="output"><code>--- NOOPT=1 : name=r_2_4_3  applied_opts=()  estimates=Estimates(ops=48, lds=224, mem=104)
+struct r_2_4_3_args { float* arg0; float* arg1; float* arg2; };
+void r_2_4_3(const struct r_2_4_3_args* args) {
+  float* data0_8 = args-&gt;arg0;
+  float* data1_6 = args-&gt;arg1;
+  float* data2_12 = args-&gt;arg2;
+  float buf0[1];
+  for (int Lidx1 = 0; Lidx1 &lt; 2; Lidx1++) {
+    for (int Lidx2 = 0; Lidx2 &lt; 4; Lidx2++) {
+      *(buf0+0) = 0.0f;
+      for (int Lidx0 = 0; Lidx0 &lt; 3; Lidx0++) {
+        float val0 = (*(data1_6+((Lidx1*3)+Lidx0)));
+        float val1 = (*(data2_12+((Lidx0&lt;&lt;2)+Lidx2)));
+        *(buf0+0) = ((*(buf0+0))+(val0*val1));
+      }
+      *(data0_8+((Lidx1&lt;&lt;2)+Lidx2)) = (*(buf0+0));
+    }
+  }
+}</code></pre>
+  <p>Same nest, same index expressions. The differences are all made by lowering (<a href="15-lowering.html">Chapter 15</a>):</p>
+  <ul>
+    <li>the accumulator is a real register array <code>float buf0[1]</code>, created by <a class="src" data-path="tinygrad/codegen/__init__.py" data-line="182">lower_reduce</a>
+    (it allocates <code>UOp.alloc_like(r, …, AddrSpace.REG)</code>, stores the identity, and adds an <code>AFTER</code>/<code>END</code> chain);</li>
+    <li><code>r0*4</code> became <code>Lidx0&lt;&lt;2</code> (a late decomposition: multiply by a power of two becomes a shift);</li>
+    <li>the loads got names (<code>val0</code>, <code>val1</code>), placed where the linearizer schedules them;</li>
+    <li>the reduce range (axis id 0) is innermost even though its id is the smallest. Nesting comes from dependencies (the REDUCE sits inside
+    the store) and the sort key only orders siblings.</li>
+  </ul>
+  <div class="demo" id="demo-linked">
+    <div class="demo-title">AST ↔ loop nest ↔ real C, linked</div>
+    <div class="demo-desc">Pick a kernel. <b>Hover a RANGE node</b> in the graph: its <code>for</code> loop lights up in the hand translation (generated live from the
+    real AST by a JS port of the rules above) and in the real NOOPT C. Hover a <code>for</code> line on either side to go the other way, highlighting the RANGE and every node that depends on it,
+    i.e. everything "inside" that loop.</div>
+    <div class="ch13-pick"></div>
+    <label><input type="checkbox" class="hidec" checked> hide CONST nodes (sizes and literals) to declutter</label>
+    <div class="ch13-pane-title">kernel AST (real, from schedule_linear)</div><div class="graph"></div>
+    <div class="row" style="margin-top:10px">
+      <div class="col"><div class="ch13-pane-title">hand translation (from the AST, by the rules above)</div><div class="ch13-code pseudo"></div></div>
+      <div class="col"><div class="ch13-pane-title">real generated C, NOOPT=1 (ClangRenderer)</div><div class="ch13-code realc"></div></div>
+    </div>
+    <div class="ch13-note"></div>
+  </div>
+  <div class="callout note"><span class="title">Why does <code>A + B</code> have one loop of 12 in the real C?</span>
+  The AST has two ranges (3 and 4), but the C has <code>for (Lidx0 = 0; Lidx0 &lt; 12; …)</code>. This is not an optimization opt; it happens even under NOOPT.
+  <a class="src" data-path="tinygrad/codegen/__init__.py" data-line="275">"simplify ranges"</a> runs <a class="src" data-path="tinygrad/codegen/simplify.py" data-line="20">simplify_merge_adjacent</a>:
+  for two adjacent END ranges of the same type, it tries <code>r0 → R//4, r1 → R%4</code> with a new range <code>R</code> of size 12, and keeps the merge if the count of
+  DIV/MOD does not grow. Here <code>r0*4 + r1</code> becomes plain <code>R</code>, so the merge sticks. In the broadcast kernel <code>col + row</code> it does not:
+  <code>buf1[r0]</code> would turn into <code>buf1[R//4]</code>, one extra DIV, so that kernel keeps two loops. The kernel's name follows: <code>E_12</code> vs <code>E_3_4</code>.</div>
+
+  <h2 id="reduce"><span class="sec">13.6</span>Reductions: the REDUCE node</h2>
+  <pre class="output"><code>===================== sum: A.sum(axis=1)         # (3,4) -&gt; (3,)
+--- ast.render_uir()
+%0 = param 3 : dtype=f32 slot=0 device=CPU
+%1 = range 3 : WEAK 1
+%2 = index %0, %1
+%3 = param 12 : dtype=f32 slot=1 device=CPU
+%4 = mul %1, 4
+%5 = range 4 : WEAK 0
+%6 = add %4, %5
+%7 = index %3, %6
+%8 = reduce %7, %5 : op=add
+%9 = store %2, %8
+%10 = end %9, %1
+%11 = sink %10 : test
+--- op census: {&#x27;CONST&#x27;: 3, &#x27;PARAM&#x27;: 2, &#x27;RANGE&#x27;: 2, &#x27;INDEX&#x27;: 2, &#x27;MUL&#x27;: 1, &#x27;ADD&#x27;: 1, &#x27;REDUCE&#x27;: 1, &#x27;STORE&#x27;: 1, &#x27;END&#x27;: 1, &#x27;SINK&#x27;: 1}
+--- RANGEs (arg = (AxisType, axis_id)): [(&#x27;AxisType.WEAK&#x27;, 0, 4), (&#x27;AxisType.WEAK&#x27;, 1, 3)]
+--- NOOPT=1 : name=r_3_4  applied_opts=()  estimates=Estimates(ops=12, lds=60, mem=60)
+struct r_3_4_args { float* arg0; float* arg1; };
+void r_3_4(const struct r_3_4_args* args) {
+  float* data0_3 = args-&gt;arg0;
+  float* data1_12 = args-&gt;arg1;
+  float buf0[1];
+  for (int Lidx1 = 0; Lidx1 &lt; 3; Lidx1++) {
+    *(buf0+0) = 0.0f;
+    for (int Lidx0 = 0; Lidx0 &lt; 4; Lidx0++) {
+      float val0 = (*(data1_12+((Lidx1&lt;&lt;2)+Lidx0)));
+      *(buf0+0) = ((*(buf0+0))+val0);
+    }
+    *(data0_3+Lidx1) = (*(buf0+0));
+  }
+}
+--- default : name=r_3_4  applied_opts=(Opt(op=OptOps.SPLIT, axis=1, arg=(0, AxisType.UPCAST)),)  estimates=Estimates(ops=9, lds=60, mem=60)
+--- ranges the names were built from: NOOPT [[3, &#x27;WEAK&#x27;], [4, &#x27;WEAK&#x27;]]  default [[3, &#x27;WEAK&#x27;], [4, &#x27;UPCAST&#x27;]]
+--- result: [10.0, 26.0, 42.0]
+--- PARAM slots: {0: &#x27;out&#x27;, 1: &#x27;A&#x27;}</code></pre>
+  <p>Things to notice:</p>
+  <ul>
+    <li><code>reduce %7, %5 : op=add</code> is <code>REDUCE(src=(INDEX, RANGE(WEAK,0)), arg=(Ops.ADD, 0))</code>. The reduce range was created first by rangeify,
+    so it got axis id 0 and the output range got 1.</li>
+    <li>The END lists only <code>%1</code>, the output loop. The reduce range is "owned" by the REDUCE.</li>
+    <li>The name starts with <code>r_</code> because there is a REDUCE (<a class="src" data-path="tinygrad/codegen/opt/postrange.py" data-line="46">postrange.py:46</a>).</li>
+    <li>With default opts the reduce of 4 gets fully unrolled (<code>SPLIT(axis=1, (0, UPCAST))</code>, where amount 0 means the whole axis). That is why the default
+    estimate shows 9 ops instead of 12: the first <code>0+x</code> folds away in each of the 3 rows.</li>
+  </ul>
+  <div class="quiz" data-answer="1">
+    <div class="q">In <code>M @ A</code>, why is the MUL inside the REDUCE and not after it?</div>
+    <button class="opt">Because MUL is cheaper than ADD</button>
+    <button class="opt">Because the product depends on the reduce range r0 (it reads M[r1,r0] and A[r0,r2]). Everything depending on r0 has to be computed inside that loop</button>
+    <button class="opt">Because the scheduler always puts MUL first</button>
+    <div class="explain">A node is "inside" every RANGE in its backward slice. The REDUCE ends the r0 loop, so whatever feeds it may depend on r0, and the STORE after it cannot.</div>
+  </div>
+
+  <h2 id="gates"><span class="sec">13.7</span>Masks and gates: WHERE and Invalid</h2>
+  <p>Padding creates output elements that have no input element. Look at <code>x.pad((1,1))*2</code> (x has 3 elements, the output has 5):</p>
+  <pre class="output"><code>===================== pad: x.pad((1,1)) * 2      # (3,) -&gt; (5,)
+--- ast.render_uir()
+%0 = param 5 : dtype=f32 slot=0 device=CPU
+%1 = range 5 : WEAK 0
+%2 = index %0, %1
+%3 = cmplt %1, 1
+%4 = cmpeq %3, false
+%5 = cmplt %1, 4
+%6 = and %4, %5
+%7 = param 3 : dtype=f32 slot=1 device=CPU
+%8 = add %1, -1
+%9 = where %6, %8, invalid
+%10 = index %7, %9
+%11 = where %6, %10, 0.0
+%12 = mul %11, 2.0
+%13 = store %2, %12
+%14 = end %13, %1
+%15 = sink %14 : test</code></pre>
+  <p>Two WHEREs share the same condition <code>%6 = (r0 ≥ 1) &amp; (r0 &lt; 4)</code> (written <code>!(r0&lt;1) &amp; (r0&lt;4)</code>, since <code>cmpeq %3, false</code> is "not"):</p>
+  <ul>
+    <li><code>%9 = where %6, %8, invalid</code> is the <b>index</b>: <code>r0-1</code> when valid, otherwise the special constant
+    <a class="src" data-path="tinygrad/dtype.py" data-line="36">Invalid</a>. That is what <a class="src" data-path="tinygrad/uop/ops.py" data-line="636">UOp.valid(cond)</a>
+    builds, and <code>get_idx()</code> / <code>get_valid()</code> (<a class="src" data-path="tinygrad/uop/ops.py" data-line="637">ops.py:637</a>) split it apart again.
+    An index that may be Invalid means "this access is gated: don't touch memory unless the condition holds".</li>
+    <li><code>%11 = where %6, %10, 0.0</code> is the <b>value</b>: the loaded element when valid, otherwise the pad value 0.</li>
+  </ul>
+  <pre class="output"><code>--- NOOPT=1 : name=E_5  applied_opts=()  estimates=Estimates(ops=20, lds=40, mem=32)
+struct E_5_args { float* arg0; float* arg1; };
+void E_5(const struct E_5_args* args) {
+  float* data0_5 = args-&gt;arg0;
+  float* data1_3 = args-&gt;arg1;
+  for (int Lidx0 = 0; Lidx0 &lt; 5; Lidx0++) {
+    float val0 = (((0&lt;Lidx0)&amp;(Lidx0&lt;4))?*(data1_3+(Lidx0+-1)):0.0f);
+    *(data0_5+Lidx0) = (val0*2.0f);
+  }
+}</code></pre>
+  <p>In C the gate is a ternary around the load, <code>cond ? *(data1+(Lidx0-1)) : 0.0f</code>, so the out-of-bounds address <code>-1</code> is never
+  dereferenced. Getting from <code>where(…, Invalid)</code> to a gated load is the job of <code>pm_move_where_on_load</code> and
+  <a class="src" data-path="tinygrad/codegen/__init__.py" data-line="343">pm_move_gates_from_index</a>, and <code>pm_remove_invalid</code> deletes what is left.
+  Comparison <code>0&lt;Lidx0</code> is how the decomposer wrote <code>!(Lidx0&lt;1)</code>.</p>
+  <div class="callout deep"><span class="title">Default opts for pad</span>
+  With default opts this kernel has <b>no loop at all</b>. The heuristic's "upcast small masked axes" rule (heuristic.py:94–109) sees an axis of size 5 ≤ 7
+  that appears in a WHERE gate and upcasts it fully. All five outputs are computed straight-line, and the gates fold to constants:
+  <pre style="margin:6px 0"><code class="nohl">--- default : name=E_5  applied_opts=(Opt(op=OptOps.SPLIT, axis=0, arg=(0, AxisType.UPCAST)),)  estimates=Estimates(ops=3, lds=32, mem=32)
+--- ranges the names were built from: NOOPT [[5, &#x27;WEAK&#x27;]]  default [[5, &#x27;UPCAST&#x27;]]</code></pre>
+  The C for it is in the JSON (<code>data/ch13_asts.json → pad.opt.src</code>): <code>*(data0_5+4) = 0.0f;</code> plus one float4 store.</div>
+  <div class="quiz" data-answer="0">
+    <div class="q">What would go wrong if the index were just <code>r0-1</code> and the masking only happened in the value WHERE?</div>
+    <button class="opt">The load at r0=0 would read address −1 (and at r0=4 address 3, past the end) before the WHERE throws the value away</button>
+    <button class="opt">Nothing, WHERE is lazy in C</button>
+    <button class="opt">The kernel would be named r_ instead of E_</button>
+    <div class="explain">Every operand of a WHERE is computed. The Invalid index says the memory access itself must not happen when the condition is false, and codegen turns that into a gated load.</div>
+  </div>
+
+  <h2 id="bcast"><span class="sec">13.8</span>Broadcasting: a range that an index ignores</h2>
+  <pre class="output"><code>===================== bcast: col + row             # (3,1) + (1,4) -&gt; (3,4)
+--- ast.render_uir()
+%0 = param 12 : dtype=f32 slot=0 device=CPU
+%1 = range 3 : WEAK 0
+%2 = mul %1, 4
+%3 = range 4 : WEAK 1
+%4 = add %2, %3
+%5 = index %0, %4
+%6 = param 3 : dtype=f32 slot=1 device=CPU
+%7 = index %6, %1
+%8 = param 4 : dtype=f32 slot=2 device=CPU
+%9 = index %8, %3
+%10 = add %7, %9
+%11 = store %5, %10
+%12 = end %11, %1, %3
+%13 = sink %12 : test</code></pre>
+  <p>There is no EXPAND op here. A broadcast is just an index that does not mention one of the loop variables: <code>buf1[r0]</code> ignores <code>r1</code>,
+  and <code>buf2[r1]</code> ignores <code>r0</code>. This is "stride 0" from <a href="07-movement.html">Chapter 7</a>, written as arithmetic.
+  The real C makes the consequence visible: the load of <code>buf1[r0]</code> is hoisted out of the inner loop, because nothing in it depends on <code>Lidx1</code>:</p>
+  <pre class="output"><code>--- NOOPT=1 : name=E_3_4  applied_opts=()  estimates=Estimates(ops=12, lds=108, mem=76)
+struct E_3_4_args { float* arg0; float* arg1; float* arg2; };
+void E_3_4(const struct E_3_4_args* args) {
+  float* data0_12 = args-&gt;arg0;
+  float* data1_3 = args-&gt;arg1;
+  float* data2_4 = args-&gt;arg2;
+  for (int Lidx0 = 0; Lidx0 &lt; 3; Lidx0++) {
+    float val0 = (*(data1_3+Lidx0));
+    for (int Lidx1 = 0; Lidx1 &lt; 4; Lidx1++) {
+      float val1 = (*(data2_4+Lidx1));
+      *(data0_12+((Lidx0&lt;&lt;2)+Lidx1)) = (val0+val1);
+    }
+  }
+}</code></pre>
+  <p>The heuristic uses exactly this property: "is <code>rng</code> in this buffer's index?" (heuristic.py:121, 174). Upcasting an axis that some buffer ignores
+  gives register reuse, and an axis that some buffer ignores is a good candidate to become a LOCAL. That is the "expand axis" preference.</p>
+
+  <h2 id="exec"><span class="sec">13.9</span>Executing an AST by hand</h2>
+  <p>To make sure the reading rules are right, this demo <b>interprets the real AST JSON</b> on the real input data. It is a JS interpreter of the node
+  semantics above: RANGE values come from the loop nest, <code>INDEX</code> in value position reads memory, <code>WHERE</code> evaluates only the taken branch, and
+  <code>REDUCE</code> folds. At the end it compares its output with the numbers tinygrad actually computed when the example ran.</p>
+  <div class="demo" id="demo-exec">
+    <div class="demo-title">Stepper: run a kernel AST on concrete data</div>
+    <div class="demo-desc">Pick a kernel, then step or play. Blue cells are read in this step, the yellow cell is written. A dashed red cell is a load that was
+    <b>gated off</b> (its index is Invalid).</div>
+    <div class="ch13-pick"></div>
+    <div class="ch13-env"></div>
+    <div class="ch13-bufs"></div>
+    <div class="stepwrap"></div>
+    <div class="ch13-trace check"></div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">In the sum kernel (3 rows × 4), how many times is the output buffer written?</div>
+    <button class="opt">12, once per input element</button><button class="opt">4</button><button class="opt">3. The STORE is outside the reduce loop, so it runs once per output-loop iteration; the 4 additions go to the accumulator</button>
+    <div class="explain">Step through "sum" in the demo: 4 accumulate steps, then 1 store, repeated 3 times. In the real C the accumulator is <code>buf0[1]</code>, a register.</div>
+  </div>
+
+  <h2 id="kinfo"><span class="sec">13.10</span>KernelInfo, the kernel name, and Estimates</h2>
+  <p><a class="src" data-path="tinygrad/uop/ops.py" data-line="1295">KernelInfo</a> is a frozen dataclass:</p>
+  <pre><code class="language-python">class KernelInfo:
+  name: str = "test"            # name of the kernel
+  applied_opts: tuple = tuple()
+  opts_to_apply: tuple|None = None
+  estimates: Estimates|None = None
+  beam: int = 0
+  optimized: bool = False       # the AST has been through the optimizer, skip re-optimization
+  @property
+  def function_name(self): return to_function_name(self.name)</code></pre>
+  <table>
+    <tr><th>field</th><th>set by</th><th>read by</th></tr>
+    <tr><td><code>name</code></td><td>"test" from the scheduler; the real name from <code>Scheduler.get_optimized_ast</code></td><td>renderers (function name), DEBUG=2 lines</td></tr>
+    <tr><td><code>applied_opts</code></td><td><code>get_optimized_ast</code></td><td><code>do_linearize</code> prints it at DEBUG≥3 (<a class="src" data-path="tinygrad/codegen/__init__.py" data-line="422">:422</a>)</td></tr>
+    <tr><td><code>opts_to_apply</code></td><td>you (tests, tools)</td><td><a class="src" data-path="tinygrad/codegen/opt/postrange.py" data-line="243">apply_opts</a>: apply exactly these, skip the heuristic</td></tr>
+    <tr><td><code>beam</code></td><td><code>pm_beam</code> when BEAM≥1 (<a class="src" data-path="tinygrad/engine/realize.py" data-line="220">realize.py:220</a>)</td><td><code>apply_opts(…, beam=ast.arg.beam)</code></td></tr>
+    <tr><td><code>optimized</code></td><td><code>get_optimized_ast</code> → True</td><td><code>do_to_program</code>: <code>optimize=not ast.arg.optimized</code></td></tr>
+    <tr><td><code>estimates</code></td><td><a class="src" data-path="tinygrad/codegen/__init__.py" data-line="438">do_estimates</a> after linearization</td><td>GFLOPS / GB/s in DEBUG=2, BEAM's compute filter</td></tr>
+  </table>
+  <h3>How the name is built</h3>
+  <p><a class="src" data-path="tinygrad/codegen/opt/postrange.py" data-line="43">Scheduler.get_optimized_ast</a>:</p>
+  <pre><code class="language-python">k_type = "r" if self.reduceop is not None else "E"
+special_uops = sorted([x for x in self.ast.backward_slice if x.op is Ops.SPECIAL], key=lambda x: x.arg)
+special_ops = [colored(str(x.vmax+1), "blue" if x.arg[0] == "g" else "cyan") for x in special_uops]
+name = k_type + colored('_', 'BLACK').join(['']+special_ops+[colored(x.src[0].render(), color) for x,color in zip(self.rngs, self.colors())])</code></pre>
+  <p>So: <code>E</code> (elementwise) or <code>r</code> (has a REDUCE), then one <code>_size</code> per range in <code>Scheduler.rngs</code> order (non-reduce ranges sorted by arg, then
+  reduce ranges last), each colored by its AxisType. The ANSI colors are stripped for the C identifier by
+  <a class="src" data-path="tinygrad/helpers.py" data-line="157">to_function_name</a>, which keeps <code>[A-Za-z0-9_]</code> and hex-encodes anything else.
+  (They are also suppressed when <code>NO_COLOR</code> is set, as in the captured outputs on this page.) Two consequences:</p>
+  <ul>
+    <li>The name is computed <i>after</i> range merging and opts, so <code>A+B</code> is <code>E_12</code> under NOOPT and <code>E_3_4</code> with opts (the
+    default UPCAST of 4 splits 12 back into 3×4). Names describe the loop structure that was <i>generated</i>, not the tensor shape.</li>
+    <li>Two different kernels can get the same name. When they are lowered into one program, <a class="src" data-path="tinygrad/codegen/__init__.py" data-line="409">lower_call</a>
+    appends <code>_1</code>, <code>_2</code>, …</li>
+  </ul>
+  <div class="demo" id="demo-names">
+    <div class="demo-title">Names as DEBUG=2 would color them</div>
+    <div class="demo-desc">These are the real names of this chapter's kernels on CPU and, for comparison, the playground matmul from Chapter 14 on OpenCL, colored with
+    <code>axis_colors</code> the way a terminal shows them. Click one to see its range list.</div>
+    <div class="names"></div><div class="ch13-trace nameinfo">click a name</div>
+  </div>
+  <h3>Estimates: FLOPs and bytes</h3>
+  <p><a class="src" data-path="tinygrad/renderer/__init__.py" data-line="16">Estimates</a> has <code>ops</code> (FLOPs), <code>lds</code> (bytes moved by every LOAD/STORE
+  executed) and <code>mem</code> (bytes of distinct memory touched, capped at each buffer's size). <a class="src" data-path="tinygrad/renderer/__init__.py" data-line="26">from_uops</a> walks the
+  <b>linearized</b> program and keeps a multiplier stack: every RANGE multiplies by its trip count until its END. With <code>ignore_indexing=True</code> it skips the ALUs
+  that only compute addresses. Check against the real numbers for <code>M @ A</code> (M=2, N=4, K=3):</p>
+  \[\text{ops} = \underbrace{M N K}_{\text{MUL}} + \underbrace{M N K}_{\text{ADD}} = 2\cdot 4\cdot 3\cdot 2 = 48\]
+  \[\text{lds} = 4\,(\underbrace{2MNK}_{\text{loads}} + \underbrace{MN}_{\text{store}}) = 4(48+8) = 224\]
+  \[\text{mem} = 4\,(MK + KN + MN) = 4(6+12+8) = 104\]
+  <p>The printed estimates were <code>Estimates(ops=48, lds=224, mem=104)</code>. lds &gt; mem is the data reuse that the optimizer tries to exploit. For the pad kernel,
+  <code>ops=20</code> is 5 iterations × 4 ALUs (two compares, the AND, the MUL). The gate arithmetic counts, the index arithmetic does not.</p>
+  <div class="demo" id="demo-est">
+    <div class="demo-title">Estimates calculator for an unoptimized matmul</div>
+    <div class="demo-desc">The closed form above, checked against the real <code>from_uops</code> results for NOOPT matmuls: (2,4,3) from this chapter and (16,16,16) from Chapter 14 (ops=8192, lds=33792, mem=3072).
+    Move the sliders to watch lds/mem, the reuse factor, grow.</div>
+    <div class="ch13-sliders">
+      <label>M</label><input type="range" min="1" max="64" value="2" data-k="M"><span></span>
+      <label>N</label><input type="range" min="1" max="64" value="4" data-k="N"><span></span>
+      <label>K</label><input type="range" min="1" max="64" value="3" data-k="K"><span></span>
+    </div>
+    <div class="ch13-big estout" style="margin-top:10px"></div>
+  </div>
+
+  <h2 id="debug"><span class="sec">13.11</span>Seeing ASTs yourself: DEBUG levels</h2>
+  <p>Which DEBUG level prints what is easy to misremember, so here is what the code does:</p>
+  <table>
+    <tr><th>level</th><th>what is printed</th><th>where</th></tr>
+    <tr><td>DEBUG=2</td><td>one line per kernel run: name, args, time, GFLOPS (from Estimates)</td><td><a class="src" data-path="tinygrad/engine/realize.py" data-line="98">realize.py:98</a></td></tr>
+    <tr><td>DEBUG=3</td><td>"scheduled N kernels" for every schedule, plus <code>name opts: (…)</code> when opts were applied</td><td><a class="src" data-path="tinygrad/codegen/__init__.py" data-line="422">codegen:422</a></td></tr>
+    <tr><td>DEBUG=4</td><td>the rendered source</td><td><a class="src" data-path="tinygrad/codegen/__init__.py" data-line="454">codegen:454</a></td></tr>
+    <tr><td>DEBUG=5</td><td><b>the kernel AST</b>, <code>render_uir(ast)</code>, at the start of full_rewrite_to_sink</td><td><a class="src" data-path="tinygrad/codegen/__init__.py" data-line="254">codegen:254</a></td></tr>
+  </table>
+  <p>So <code>DEBUG=3</code> does <i>not</i> print the AST in this version; <code>DEBUG=5</code> does. Real output for a 4×4 row sum (the "loading …/opened device" lines are filtered out):</p>
+  <div class="codecap"><b>shell</b>: <code>DEV=CPU DEBUG=5 python3 -c "from tinygrad import Tensor; Tensor.empty(4,4).sum(1).realize()"</code></div>
+  <pre class="output"><code>scheduled     1 kernels in    46.85 ms | CACHE MISS 22d8a51d |      54 uops in cache
+%0 = param 4 : dtype=f32 slot=0 device=CPU
+%1 = range 4 : WEAK 1
+%2 = index %0, %1
+%3 = param 16 : dtype=f32 slot=1 device=CPU
+%4 = mul %1, 4
+%5 = range 4 : WEAK 0
+%6 = add %4, %5
+%7 = index %3, %6
+%8 = reduce %7, %5 : op=add
+%9 = store %2, %8
+%10 = end %9, %1
+%11 = sink %10 : test
+r_4_4                     opts: (Opt(op=OptOps.SPLIT, axis=1, arg=(0, AxisType.UPCAST)),)
+typedef float float4 __attribute__((aligned(4),ext_vector_type(4)));
+struct r_4_4_args { float* arg0; float* arg1; };
+void r_4_4(const struct r_4_4_args* args) {
+  float* data0_4 = args->arg0;
+  float* data1_16 = args->arg1;
+  for (int Lidx1 = 0; Lidx1 &lt; 4; Lidx1++) {
+    float4 val0 = (*((float4*)((data1_16+(Lidx1&lt;&lt;2)))));
+    *(data0_4+Lidx1) = (val0[0]+val0[1]+val0[2]+val0[3]);
+  }
+}
+
+*** CPU        1 r_4_4                                          arg  2 mem   0.00 GB tm     13.53us/     0.01ms (      0 GFLOPS    0|0      GB/s)</code></pre>
+  <p>For rewrite-by-rewrite views use VIZ (<a href="21-debugging.html">Chapter 21</a>): <code>do_to_program</code> registers a "View Base AST" step when VIZ is on (<a class="src" data-path="tinygrad/codegen/__init__.py" data-line="480">:480</a>).</p>
+
+  <h2 id="zoo"><span class="sec">13.12</span>The AST zoo</h2>
+  <p>The same reading rules work everywhere. The example also captured these kernels (inputs are <code>Tensor.empty</code>, so they are pure structure):</p>
+  <pre class="output"><code>===================== zoo
+softmax (3 kernels)    -&gt; r_2_8          {&#x27;PARAM&#x27;: 2, &#x27;RANGE&#x27;: 2, &#x27;INDEX&#x27;: 2, &#x27;MUL&#x27;: 1, &#x27;ADD&#x27;: 1, &#x27;REDUCE&#x27;: 1, &#x27;STORE&#x27;: 1, &#x27;END&#x27;: 1, &#x27;SINK&#x27;: 1}
+softmax (3 kernels)    -&gt; r_2_8          {&#x27;PARAM&#x27;: 3, &#x27;RANGE&#x27;: 2, &#x27;INDEX&#x27;: 3, &#x27;MUL&#x27;: 3, &#x27;ADD&#x27;: 2, &#x27;EXP2&#x27;: 1, &#x27;REDUCE&#x27;: 1, &#x27;STORE&#x27;: 1, &#x27;END&#x27;: 1, &#x27;SINK&#x27;: 1}
+softmax (3 kernels)    -&gt; E_2_8          {&#x27;PARAM&#x27;: 4, &#x27;RANGE&#x27;: 2, &#x27;MUL&#x27;: 4, &#x27;ADD&#x27;: 2, &#x27;INDEX&#x27;: 4, &#x27;EXP2&#x27;: 1, &#x27;RECIP&#x27;: 1, &#x27;STORE&#x27;: 1, &#x27;END&#x27;: 1, &#x27;SINK&#x27;: 1}
+cumsum                 -&gt; r_5_5          {&#x27;PARAM&#x27;: 2, &#x27;RANGE&#x27;: 2, &#x27;INDEX&#x27;: 2, &#x27;ADD&#x27;: 2, &#x27;CMPLT&#x27;: 1, &#x27;CMPEQ&#x27;: 1, &#x27;WHERE&#x27;: 2, &#x27;REDUCE&#x27;: 1, &#x27;STORE&#x27;: 1, &#x27;END&#x27;: 1, &#x27;SINK&#x27;: 1}
+x / x.sum()            -&gt; r_4_4          {&#x27;PARAM&#x27;: 3, &#x27;RANGE&#x27;: 2, &#x27;INDEX&#x27;: 3, &#x27;REDUCE&#x27;: 1, &#x27;RECIP&#x27;: 1, &#x27;MUL&#x27;: 1, &#x27;STORE&#x27;: 1, &#x27;END&#x27;: 1, &#x27;SINK&#x27;: 1}
+argmax                 -&gt; r_3_5          {&#x27;PARAM&#x27;: 2, &#x27;RANGE&#x27;: 2, &#x27;INDEX&#x27;: 2, &#x27;MUL&#x27;: 1, &#x27;ADD&#x27;: 1, &#x27;REDUCE&#x27;: 1, &#x27;STORE&#x27;: 1, &#x27;END&#x27;: 1, &#x27;SINK&#x27;: 1}
+argmax                 -&gt; r_3_5          {&#x27;PARAM&#x27;: 3, &#x27;RANGE&#x27;: 2, &#x27;INDEX&#x27;: 3, &#x27;MUL&#x27;: 4, &#x27;ADD&#x27;: 4, &#x27;CMPEQ&#x27;: 1, &#x27;CAST&#x27;: 2, &#x27;REDUCE&#x27;: 1, &#x27;STORE&#x27;: 1, &#x27;END&#x27;: 1, &#x27;SINK&#x27;: 1}
+gather a[idx]          -&gt; E_2_4          {&#x27;PARAM&#x27;: 3, &#x27;RANGE&#x27;: 3, &#x27;MUL&#x27;: 2, &#x27;ADD&#x27;: 3, &#x27;INDEX&#x27;: 3, &#x27;CMPLT&#x27;: 1, &#x27;WHERE&#x27;: 2, &#x27;CAST&#x27;: 1, &#x27;CMPEQ&#x27;: 1, &#x27;REDUCE&#x27;: 1, &#x27;STORE&#x27;: 1, &#x27;END&#x27;: 1, &#x27;SINK&#x27;: 1}
+conv2d                 -&gt; r_2_2_2_3_3    {&#x27;PARAM&#x27;: 3, &#x27;RANGE&#x27;: 5, &#x27;MUL&#x27;: 6, &#x27;ADD&#x27;: 7, &#x27;INDEX&#x27;: 3, &#x27;REDUCE&#x27;: 1, &#x27;STORE&#x27;: 1, &#x27;END&#x27;: 1, &#x27;SINK&#x27;: 1}
+cat                    -&gt; E_2_6          {&#x27;PARAM&#x27;: 3, &#x27;RANGE&#x27;: 3, &#x27;MUL&#x27;: 2, &#x27;ADD&#x27;: 2, &#x27;INDEX&#x27;: 3, &#x27;CMPLT&#x27;: 1, &#x27;WHERE&#x27;: 1, &#x27;STORE&#x27;: 1, &#x27;END&#x27;: 1, &#x27;SINK&#x27;: 1}</code></pre>
+  <div class="demo" id="demo-zoo">
+    <div class="demo-title">AST zoo</div>
+    <div class="demo-desc">One tab per program, one sub-button per kernel. Things to look for: softmax is 3 kernels (max, sum of exp, divide), with <code>exp(x)</code> already
+    turned into <code>EXP2(x·log2 e)</code>. <b>cumsum</b> is a REDUCE over a gated, shifted index (a triangular sum). <b>gather</b> is a one-hot REDUCE in the AST, but codegen's
+    <code>pm_load_collapse</code> turns it into a direct gated load, which is why it is named <code>E_</code> even though the AST has a REDUCE. <b>cat</b> is a WHERE that picks the source buffer. <b>conv2d</b>
+    is a 5-range nest with sliding-window index arithmetic.</div>
+    <div class="zoo"></div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">The gather AST contains a REDUCE, yet its kernel is named <code>E_2_4</code>. Why?</div>
+    <button class="opt">Names only look at the first op</button>
+    <button class="opt">The name is computed after the first codegen rewrites. "load collapse" (pm_load_collapse, run before apply_opts) turned the one-hot sum into a gated load, so no REDUCE was left when get_optimized_ast looked</button>
+    <button class="opt">E means "embedding"</button>
+    <div class="explain">full_rewrite_to_sink runs load collapse, split ranges, symbolic and simplify ranges <i>before</i> apply_opts → get_optimized_ast, and the name reflects the AST at that point.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">Two kernels have identical ASTs but run on different buffers. How many times does codegen run?</div>
+    <button class="opt">Once. Buffers enter only as PARAM slots (dtype + size), so the ASTs hash to the same key and to_program_cache returns the cached PROGRAM</button>
+    <button class="opt">Twice, once per CALL</button>
+    <button class="opt">It depends on the data</button>
+    <div class="explain">to_program_key = (ast.key, renderer type, target, NOOPT, USE_TC, …). The buffers live in CALL.src[1:], outside the AST.</div>
+  </div>
+
+  <div class="summary-box"><h3>Chapter summary</h3><ul>
+    <li>A kernel AST is <code>SINK(KernelInfo) → END(STORE(INDEX(PARAM, idx), value), RANGE…)</code>. It is the CALL body that <code>lower_and_compile</code> hands to <code>to_program(ast, renderer)</code>.</li>
+    <li>Loops are values: <code>RANGE(bound, arg=(AxisType, id))</code>. END lists the output loops and REDUCE lists its reduce loops. Nesting comes from dependencies, and sibling order from the arg.</li>
+    <li>INDEX in value position is a load; LOADs, accumulators, SPECIALs and IFs are created later by codegen.</li>
+    <li>Masks are <code>WHERE(valid, idx, Invalid)</code> on the index plus <code>WHERE(valid, x, pad)</code> on the value. A broadcast is an index that ignores a range.</li>
+    <li>Names are <code>E_/r_</code> plus the post-optimization range sizes, colored by AxisType. Estimates count ALU ops and bytes by walking the linearized program with loop multipliers.</li>
+    <li><code>DEBUG=5</code> prints the AST, <code>DEBUG=4</code> the source, <code>DEBUG=3</code> the opts.</li>
+  </ul></div>
+</main>
+</div>
+<script>
+(async function () {
+  const G = Guide, el = G.el;
+  const D = await G.loadJSON("../data/ch13_asts.json");
+  let PG = null; try { PG = await G.loadJSON("../data/ch14_playground.json"); } catch (e) {}
+  const KERNELS = ["add", "sum", "matmul", "pad", "bcast"];
+
+  // ---------- flow pipeline ----------
+  const FLOW = [
+    { name: "schedule_linear", sub: "tensor.py:210", info: "IN : Tensors\nOUT: LINEAR(CALL(SINK(KernelInfo(name='test')), BUFFER, BUFFER, ...), ...)\nThe body of each compute CALL is the kernel AST. CALL.src[1+slot] is the buffer bound to PARAM(slot)." },
+    { name: "lower_and_compile", sub: "realize.py:238", info: "IN : LINEAR\nCollects every CALL whose body is SINK(KernelInfo) (_get_call_to_compile, realize.py:230), dedups them by to_program_key,\nand compiles the misses, in parallel if there is a worker pool (_compile_kernel -> to_program)." },
+    { name: "to_program", sub: "codegen/__init__.py:509", info: "IN : ast (SINK), renderer\nCache lookup on (ast.key, renderer type, target, NOOPT, USE_TC, ...). On a miss: do_to_program." },
+    { name: "do_to_program", sub: "codegen/__init__.py:469", info: "asserts isinstance(ast.arg, KernelInfo)\nfull_sink = full_rewrite_to_sink(ast, renderer, optimize=not ast.arg.optimized)\nprg = PROGRAM(full_sink, arg=ProgramInfo.from_sink(...))" },
+    { name: "full_rewrite_to_sink", sub: "codegen/__init__.py:253", info: "DEBUG>=5 prints render_uir(ast); SPEC checks spec_tensor\nload collapse, split ranges, symbolic, simplify ranges   (13.5: E_12!)\napply_opts  <- Chapter 14 (heuristic / BEAM / opts_to_apply)\nexpander, remove reduces, add local buffers, gpudims, add loads, devectorize, ... <- Chapter 15" },
+    { name: "pm_to_program", sub: "codegen/__init__.py:459", info: "PROGRAM(SINK)                -> do_linearize  -> PROGRAM(SINK, LINEAR)\nPROGRAM(SINK, LINEAR)        -> do_estimates  (fills KernelInfo.estimates)\nPROGRAM(SINK, LINEAR)        -> do_render     -> + SOURCE\nPROGRAM(SINK, LINEAR, SOURCE)-> do_compile    -> + BINARY        <- Chapter 16" },
+  ];
+  const fi = G.$("#demo-flow .flow-info");
+  G.pipeline(G.$("#demo-flow .flow"), FLOW, (i, s) => (fi.textContent = s.info)).select(0);
+
+  // ---------- first graph ----------
+  G.uopGraph(G.$("#demo-first .graph"), D.add.graph, { height: 520 });
+
+  // ---------- IR helpers ----------
+  function mkIR(k) {
+    const ir = D[k].ir, by = new Map(ir.map((n) => [n.id, n]));
+    const cons = new Map(ir.map((n) => [n.id, []]));
+    ir.forEach((n) => n.src.forEach((s) => cons.get(s).push(n.id)));
+    const sink = ir.find((n) => n.op === "SINK");
+    return { ir, by, cons, sink };
+  }
+  function dependents(I, id) { // everything with id in its backward slice
+    const out = new Set([id]), st = [id];
+    while (st.length) for (const c of I.cons.get(st.pop())) if (!out.has(c)) { out.add(c); st.push(c); }
+    return out;
+  }
+  const isF = (dt) => /f32|float|half|f16/.test(dt);
+  function cst(n) {
+    if (n.val === "Invalid") return "Invalid";
+    if (typeof n.val === "boolean") return n.val ? "true" : "false";
+    if (isF(n.dtype)) return Number.isInteger(n.val) ? n.val.toFixed(1) : String(n.val);
+    return String(n.val);
+  }
+  const BIN = { ADD: "+", MUL: "*", CMPLT: "<", CMPEQ: "==", AND: "&&", OR: "||", SUB: "-", MAX: "max" };
+  const rv = (n) => "r" + n.axis_id;
+  function expr(I, id, accName) {
+    const n = I.by.get(id), s = n.src.map((x) => I.by.get(x));
+    if (accName && accName.has(id)) return accName.get(id);
+    switch (n.op) {
+      case "CONST": return cst(n);
+      case "RANGE": return rv(n);
+      case "PARAM": return "buf" + n.slot;
+      case "INDEX": return `buf${s[0].slot}[${strip(expr(I, s[1].id, accName))}]`;
+      case "WHERE": return `(${strip(expr(I, s[0].id, accName))} ? ${expr(I, s[1].id, accName)} : ${expr(I, s[2].id, accName)})`;
+      case "CAST": return `(${n.to.replace("dtypes.", "")})${expr(I, s[0].id, accName)}`;
+      case "RECIP": return `(1/${expr(I, s[0].id, accName)})`;
+      case "EXP2": return `exp2(${strip(expr(I, s[0].id, accName))})`;
+      default:
+        if (n.op === "CMPEQ" && s[1].op === "CONST" && s[1].val === false) return `!${expr(I, s[0].id, accName)}`;
+        if (n.op === "ADD" && s[1].op === "CONST" && typeof s[1].val === "number" && s[1].val < 0) return `(${expr(I, s[0].id, accName)} - ${-s[1].val})`;
+        if (BIN[n.op]) return `(${expr(I, s[0].id, accName)} ${BIN[n.op]} ${expr(I, s[1].id, accName)})`;
+        return `${n.op.toLowerCase()}(${s.map((x) => expr(I, x.id, accName)).join(", ")})`;
+    }
+  }
+  function strip(t) { return t.startsWith("(") && t.endsWith(")") && balanced(t.slice(1, -1)) ? t.slice(1, -1) : t; }
+  function balanced(t) { let d = 0; for (const c of t) { if (c === "(") d++; if (c === ")" && --d < 0) return false; } return d === 0; }
+  function reducesIn(I, id, acc = []) {
+    const n = I.by.get(id);
+    if (n.op === "REDUCE") { if (!acc.includes(id)) acc.push(id); return acc; }
+    n.src.forEach((s) => reducesIn(I, s, acc)); return acc;
+  }
+  // pseudo-C generator: returns lines [{t, rng (id of RANGE if loop header/closer), ranges:Set (enclosing)}]
+  function pseudo(I) {
+    const lines = [], end = I.by.get(I.sink.src[0]);
+    const store = I.by.get(end.src[0]);
+    const outR = end.src.slice(1).map((x) => I.by.get(x)).sort((a, b) => a.axis_id - b.axis_id);
+    let ind = "", encl = [];
+    const push = (t, rng) => lines.push({ t: ind + t, rng, ranges: new Set(encl) });
+    for (const r of outR) { push(`for (int ${rv(r)} = 0; ${rv(r)} < ${r.size}; ${rv(r)}++) {`, r.id); ind += "  "; encl.push(r.id); }
+    const acc = new Map();
+    reducesIn(I, store.src[1]).forEach((rid, k) => {
+      const red = I.by.get(rid), name = "acc" + k, ident = { ADD: "0.0", MAX: "-INFINITY", MUL: "1.0" }[red.rop];
+      push(`float ${name} = ${ident};`);
+      const rr = red.src.slice(1).map((x) => I.by.get(x));
+      for (const r of rr) { push(`for (int ${rv(r)} = 0; ${rv(r)} < ${r.size}; ${rv(r)}++) {`, r.id); ind += "  "; encl.push(r.id); }
+      const v = strip(expr(I, red.src[0], acc));
+      push(red.rop === "ADD" ? `${name} += ${v};` : red.rop === "MAX" ? `${name} = max(${name}, ${v});` : `${name} *= ${v};`);
+      for (const r of rr.slice().reverse()) { ind = ind.slice(2); encl.pop(); push("}", r.id); }
+      acc.set(rid, name);
+    });
+    const dst = I.by.get(store.src[0]);
+    push(`${expr(I, dst.id, acc)} = ${strip(expr(I, store.src[1], acc))};`);
+    for (const r of outR.slice().reverse()) { ind = ind.slice(2); encl.pop(); push("}", r.id); }
+    return lines;
+  }
+  // map real C lines to RANGE ids
+  function mapC(I, src) {
+    const L = src.split("\n").map((t) => ({ t, rng: null, ranges: new Set() }));
+    const rngs = I.ir.filter((n) => n.op === "RANGE");
+    const stack = [];
+    const used = new Set(), notes = [];
+    L.forEach((l) => {
+      const m = l.t.match(/for \(int (\w+) = 0; \w+ < (\d+);/);
+      if (m) {
+        const id = m[1].match(/idx(\d+)/) ? +m[1].match(/idx(\d+)/)[1] : -1, sz = +m[2];
+        let hits = rngs.filter((r) => r.axis_id === id && r.size === sz);
+        if (!hits.length) { hits = rngs.filter((r) => !used.has(r.id)); notes.push(`real C loop '${m[1]} < ${sz}' is ${hits.map((r) => "r" + r.axis_id + "(" + r.size + ")").join(" × ")} merged by pm_simplify_ranges`); }
+        hits.forEach((r) => used.add(r.id));
+        l.rngs = hits.map((r) => r.id); stack.push(l.rngs);
+      }
+      stack.forEach((s) => s.forEach((x) => l.ranges.add(x)));
+      if (/^\s*}\s*$/.test(l.t) && stack.length) { const s = stack.pop(); l.rngs = s; }
+    });
+    return { L, notes };
+  }
+  function renderLines(box, lines) {
+    box.innerHTML = "";
+    return lines.map((l) => { const e = el("div", { class: "ln" + ((l.rng || (l.rngs && l.rngs.length)) ? " loop" : "") }, l.t || " "); box.append(e); return e; });
+  }
+
+  // ---------- linked demo ----------
+  (function linked() {
+    const root = G.$("#demo-linked"), pick = G.$(".ch13-pick", root), gbox = G.$(".graph", root);
+    const pbox = G.$(".pseudo", root), cbox = G.$(".realc", root), note = G.$(".ch13-note", root);
+    let ctl = null, cur = null;
+    G.$(".hidec", root).addEventListener("change", () => show(curK));
+    let curK = "matmul";
+    function show(k) {
+      curK = k;
+      G.$$("button", pick).forEach((b) => b.classList.toggle("active", b.dataset.k === k));
+      const I = mkIR(k); cur = { I };
+      const g = D[k].graph, hide = G.$(".hidec", root).checked;
+      const cid = new Set(g.nodes.filter((n) => n.op === "CONST").map((n) => n.id));
+      const gg = hide ? { nodes: g.nodes.filter((n) => !cid.has(n.id)), edges: g.edges.filter((e) => !cid.has(e[0])) } : g;
+      ctl = G.uopGraph(gbox, gg, { height: 460, compact: true, rankdir: "LR" });
+      const pl = pseudo(I), cm = mapC(I, D[k].noopt.src);
+      cur.pEls = renderLines(pbox, pl); cur.pl = pl;
+      cur.cEls = renderLines(cbox, cm.L); cur.cl = cm.L;
+      note.textContent = cm.notes.join("; ") || `${D[k].code}  →  real kernel name ${D[k].noopt.fname} under NOOPT`;
+      G.$$(".node", ctl.svg).forEach((ne) => {
+        const n = ctl.nodesById.get(ne.dataset.id);
+        if (n.op === "RANGE") { ne.addEventListener("mouseenter", () => focus(n.id)); ne.addEventListener("mouseleave", unfocus); }
+      });
+      const hook = (els, ls) => els.forEach((e, i) => {
+        const l = ls[i], ids = l.rng ? [l.rng] : (l.rngs || []);
+        if (ids.length) { e.addEventListener("mouseenter", () => focus(ids)); e.addEventListener("mouseleave", unfocus); }
+      });
+      hook(cur.pEls, pl); hook(cur.cEls, cm.L);
+    }
+    function focus(ids) {
+      ids = [].concat(ids);
+      const dep = new Set(); ids.forEach((id) => dependents(cur.I, id).forEach((x) => dep.add(x)));
+      ctl.highlight([...dep]);
+      const mark = (els, ls) => els.forEach((e, i) => {
+        const l = ls[i], own = (l.rng && ids.includes(l.rng)) || (l.rngs && l.rngs.some((x) => ids.includes(x)));
+        e.classList.toggle("hl", !!own);
+        e.classList.toggle("hlbody", !own && ids.some((x) => l.ranges.has(x)));
+      });
+      mark(cur.pEls, cur.pl); mark(cur.cEls, cur.cl);
+      const r = ids.map((id) => cur.I.by.get(id));
+      note.innerHTML = r.map((x) => `<b style="color:var(--yellow)">RANGE(${x.size}, arg=(AxisType.${x.axis_type}, ${x.axis_id}))</b>`).join(" + ") +
+        ` — ${dep.size - ids.length} nodes depend on it, i.e. live inside this loop`;
+    }
+    function unfocus() { ctl.clear(); G.$$(".ln", root).forEach((e) => e.classList.remove("hl", "hlbody")); }
+    KERNELS.forEach((k) => pick.append(el("button", { "data-k": k, onclick: () => show(k) }, D[k].code.split("#")[0].trim())));
+    show("matmul");
+  })();
+
+  // ---------- executing stepper ----------
+  (function exec() {
+    const root = G.$("#demo-exec"), pick = G.$(".ch13-pick", root), envBox = G.$(".ch13-env", root), bufBox = G.$(".ch13-bufs", root);
+    const stepWrap = G.$(".stepwrap", root), check = G.$(".check", root);
+    const dims = (v) => Array.isArray(v) ? [v.length, ...(Array.isArray(v[0]) ? [v[0].length] : [])] : [];
+    function run(k) {
+      const I = mkIR(k), slots = D[k].slots;
+      const bufs = {};
+      for (const [s, nm] of Object.entries(slots)) {
+        const v = nm === "out" ? D[k].result : D._inputs[nm];
+        const d = dims(v), flat = v.flat(), shape = d.length === 2 ? d : [1, d[0]];
+        bufs[s] = { name: nm, shape, data: nm === "out" ? flat.map(() => null) : flat.slice() };
+      }
+      const steps = [];
+      let reads = [], misses = [];
+      function ev(id, env, acc) {
+        const n = I.by.get(id), s = n.src;
+        if (acc.has(id)) return acc.get(id);
+        switch (n.op) {
+          case "CONST": return n.val === "Invalid" ? "Invalid" : n.val;
+          case "RANGE": return env[n.id];
+          case "INDEX": {
+            const p = I.by.get(s[0]), i = ev(s[1], env, acc);
+            if (i === "Invalid") { misses.push({ slot: p.slot }); return "Invalid"; }
+            reads.push({ slot: p.slot, i }); return bufs[p.slot].data[i];
+          }
+          case "WHERE": {
+            if (ev(s[0], env, acc)) return ev(s[1], env, acc);
+            const t = I.by.get(s[1]); if (t.op === "INDEX") misses.push({ slot: I.by.get(t.src[0]).slot }); // the gated load never happens
+            return ev(s[2], env, acc);
+          }
+          case "ADD": return ev(s[0], env, acc) + ev(s[1], env, acc);
+          case "MUL": return ev(s[0], env, acc) * ev(s[1], env, acc);
+          case "CMPLT": return ev(s[0], env, acc) < ev(s[1], env, acc);
+          case "CMPEQ": return ev(s[0], env, acc) === ev(s[1], env, acc);
+          case "AND": return ev(s[0], env, acc) && ev(s[1], env, acc);
+          case "CAST": return Number(ev(s[0], env, acc));
+          default: throw new Error("op " + n.op);
+        }
+      }
+      function idxOf(id, env) { // evaluate INDEX address without logging
+        const save = [reads, misses]; reads = []; misses = [];
+        const i = ev(I.by.get(id).src[1], env, new Map()); [reads, misses] = save; return i;
+      }
+      const end = I.by.get(I.sink.src[0]), store = I.by.get(end.src[0]);
+      const outR = end.src.slice(1).map((x) => I.by.get(x)).sort((a, b) => a.axis_id - b.axis_id);
+      const reds = reducesIn(I, store.src[1]).map((x) => I.by.get(x));
+      const iter = (rs, f, env = {}) => { if (!rs.length) return f(env); for (let v = 0; v < rs[0].size; v++) iter(rs.slice(1), f, { ...env, [rs[0].id]: v }); };
+      const snap = () => Object.fromEntries(Object.entries(bufs).map(([s, b]) => [s, b.data.slice()]));
+      iter(outR, (env) => {
+        const acc = new Map();
+        for (const red of reds) {
+          let a = red.rop === "MAX" ? -Infinity : red.rop === "MUL" ? 1 : 0;
+          const rr = red.src.slice(1).map((x) => I.by.get(x));
+          iter(rr, (env2) => {
+            reads = []; misses = [];
+            const v = ev(red.src[0], env2, acc);
+            const before = a; a = red.rop === "MAX" ? Math.max(a, v) : red.rop === "MUL" ? a * v : a + v;
+            steps.push({ env: env2, reads, misses, write: null, mem: snap(), acc: a,
+              caption: `<b>reduce step</b> ${fmtEnv(env2)}: v = ${fmt(v)}${reads.length ? " (reads " + reads.map((r) => `buf${r.slot}[${r.i}]`).join(", ") + ")" : ""}; acc = ${fmt(before)} ${red.rop === "ADD" ? "+" : red.rop.toLowerCase()} ${fmt(v)} = <b>${fmt(a)}</b>` });
+          }, env);
+          acc.set(red.id, a);
+        }
+        reads = []; misses = [];
+        const v = ev(store.src[1], env, acc), dst = I.by.get(store.src[0]), di = idxOf(dst.id, env), ds = I.by.get(dst.src[0]).slot;
+        bufs[ds].data[di] = v;
+        steps.push({ env, reads, misses, write: { slot: ds, i: di }, mem: snap(), acc: null,
+          caption: `<b>store</b> ${fmtEnv(env)}: buf${ds}[${expr(I, dst.src[1])}] = buf${ds}[<b>${di}</b>] ← ${reds.length ? "acc = " : ""}<b>${fmt(v)}</b>` +
+            (reads.length ? ` (reads ${reads.map((r) => `buf${r.slot}[${r.i}]`).join(", ")})` : "") + (misses.length ? ` · <span style="color:var(--red)">load gated off (index = Invalid) → pad value</span>` : "") });
+      }, {});
+      function fmtEnv(env) { return Object.entries(env).map(([id, v]) => `r${I.by.get(id).axis_id}=${v}`).join(", "); }
+      // draw
+      bufBox.innerHTML = "";
+      const grids = {};
+      for (const [s, b] of Object.entries(bufs)) {
+        const wrap = el("div", { class: "ch13-buf" }, el("h5", {}, `PARAM slot ${s} · ${b.name === "out" ? "output" : b.name} · ${b.shape.join("×")}`));
+        grids[s] = G.cells(wrap, b.shape[0], b.shape[1], () => "");
+        bufBox.append(wrap);
+      }
+      const allR = I.ir.filter((n) => n.op === "RANGE").sort((a, b) => a.axis_id - b.axis_id);
+      stepWrap.innerHTML = "";
+      const final = bufs[0].data, want = D[k].result.flat();
+      const ok = final.every((x, i) => Math.abs(x - want[i]) < 1e-6);
+      check.innerHTML = `interpreter output: [${final.map(fmt).join(", ")}]\nreal tinygrad (CPU) output: [${want.map(fmt).join(", ")}]  ${ok ? '<span style="color:var(--green)">✓ identical</span>' : '<span style="color:var(--red)">✗ mismatch</span>'}  · ${steps.length} steps`;
+      G.stepper(stepWrap, steps, (i, st) => {
+        envBox.innerHTML = "";
+        allR.forEach((r) => envBox.append(el("span", { class: st.env[r.id] === undefined ? "" : (reds.some((rd) => rd.src.includes(r.id)) ? "red" : "") },
+          `r${r.axis_id} = ${st.env[r.id] === undefined ? "–" : st.env[r.id]}  (of ${r.size}${reds.some((rd) => rd.src.includes(r.id)) ? ", reduce" : ""})`)));
+        if (st.acc !== null) envBox.append(el("span", { class: "red" }, `acc = ${fmt(st.acc)}`));
+        for (const [s, b] of Object.entries(bufs)) {
+          const g = grids[s], data = st.mem[s];
+          for (let r = 0; r < b.shape[0]; r++) for (let c = 0; c < b.shape[1]; c++) {
+            const j = r * b.shape[1] + c, e = g.cell(r, c);
+            e.textContent = data[j] === null ? "·" : fmt(data[j]);
+            e.className = "cell" + (b.name === "out" && data[j] !== null ? " done" : "");
+          }
+        }
+        st.reads.forEach((r) => { const b = bufs[r.slot]; grids[r.slot].set(Math.floor(r.i / b.shape[1]), r.i % b.shape[1], "on"); });
+        if (st.write) { const b = bufs[st.write.slot]; grids[st.write.slot].set(Math.floor(st.write.i / b.shape[1]), st.write.i % b.shape[1], "hot"); }
+        st.misses.forEach((m) => { const g = grids[m.slot]; G.$$(".cell", g.root).forEach((c) => c.classList.add("miss")); });
+      }, { autoplayMs: 700 });
+    }
+    function fmt(v) { return v === null ? "·" : (typeof v === "number" ? (Number.isInteger(v) ? String(v) : v.toFixed(2)) : String(v)); }
+    KERNELS.forEach((k) => { const b = el("button", { "data-k": k }, D[k].code.split("#")[0].trim()); b.addEventListener("click", () => { G.$$("button", pick).forEach((x) => x.classList.toggle("active", x === b)); run(k); }); pick.append(b); });
+    G.$$("button", pick)[1].classList.add("active");
+    run("sum");
+  })();
+
+  // ---------- names ----------
+  (function names() {
+    const COL = { GLOBAL: "var(--blue)", LOCAL: "#5ff", WARP: "#8ff", WEAK: "var(--red)", LOOP: "var(--red)", UPCAST: "var(--yellow)" };
+    const box = G.$("#demo-names .names"), info = G.$("#demo-names .nameinfo");
+    const items = [];
+    for (const k of KERNELS) for (const [v, lab] of [["noopt", "NOOPT"], ["opt", "default"]]) {
+      const r = D[k][v].rngs; // recorded in the example by wrapping Scheduler.get_optimized_ast
+      items.push({ label: `${k} · CPU · ${lab}`, sizes: r.map((x) => String(x[0])), types: r.map((x) => x[1]), opts: D[k][v].opts, real: D[k][v].fname });
+    }
+    if (PG) for (const key of ["r", "r.0", "r.5"]) { const n = PG[key]; items.push({ label: `ch14 matmul · OpenCL · ${n.opts.length} opts`, sizes: n.shape.map((x) => String(x[0])), types: n.shape.map((x) => x[1]), opts: n.opts, real: n.name }); }
+    items.forEach((it) => {
+      const isR = it.real[0] === "r";
+      const span = el("div", { class: "ch13-kname", style: "cursor:pointer;margin:3px 0", onclick: () => {
+        info.textContent = `${it.label}\nranges (Scheduler.rngs order): ${it.sizes.map((s, i) => s + ":" + it.types[i]).join("  ")}\napplied_opts: ${it.opts.length ? it.opts.join(", ") : "()"}`;
+      } }, el("span", { style: "color:var(--dim);font-weight:400;display:inline-block;width:340px" }, it.label), el("span", {}, isR ? "r" : "E"));
+      it.sizes.forEach((s, i) => span.append(el("span", { style: "color:#555" }, "_"), el("span", { style: `color:${COL[it.types[i]] || "#ccc"}` }, s)));
+      box.append(span);
+    });
+  })();
+
+  // ---------- estimates calculator ----------
+  (function est() {
+    const root = G.$("#demo-est"), out = G.$(".estout", root), ins = G.$$("input", root);
+    function upd() {
+      const v = {}; ins.forEach((i) => { v[i.dataset.k] = +i.value; i.nextElementSibling.textContent = i.value; });
+      const { M, N, K } = v, ops = 2 * M * N * K, lds = 4 * (2 * M * N * K + M * N), mem = 4 * (M * K + K * N + M * N);
+      out.innerHTML = `ops = 2·M·N·K = <b>${ops.toLocaleString()}</b> &nbsp; lds = 4·(2MNK+MN) = <b>${lds.toLocaleString()}</b> B &nbsp; mem = 4·(MK+KN+MN) = <b>${mem.toLocaleString()}</b> B<br>` +
+        `<span style="color:var(--dim)">reuse lds/mem = ${(lds / mem).toFixed(1)}× · arithmetic intensity ops/mem = ${(ops / mem).toFixed(2)} FLOP/B</span>`;
+    }
+    ins.forEach((i) => i.addEventListener("input", upd)); upd();
+  })();
+
+  // ---------- zoo ----------
+  (function zoo() {
+    const root = G.$("#demo-zoo .zoo");
+    const tabs = el("div", { class: "tabs" }), bar = el("div", { class: "tabbar" }), body = el("div", {});
+    tabs.append(bar, body); root.append(tabs);
+    const names = Object.keys(D._zoo);
+    function sel(i, j = 0) {
+      G.$$("button", bar).forEach((b, x) => b.classList.toggle("active", x === i));
+      const ks = D._zoo[names[i]], k = ks[j];
+      body.innerHTML = "";
+      const sub = el("div", { class: "controls" });
+      if (ks.length > 1) ks.forEach((kk, x) => sub.append(el("button", { class: x === j ? "active" : "", onclick: () => sel(i, x) }, `kernel ${x + 1}: ${kk.fname}`)));
+      else sub.append(el("span", { style: "font-family:var(--mono);color:var(--gold)" }, k.fname));
+      body.append(sub);
+      const row = el("div", { class: "row" }), g = el("div", { class: "col" });
+      const right = el("div", { class: "col" }, el("div", { class: "ch13-pane-title" }, "render_uir()"), el("pre", { class: "output", style: "max-height:260px;font-size:12px" }, el("code", {}, k.uir)),
+        el("div", { class: "ch13-pane-title" }, "NOOPT=1 C"), el("pre", { class: "output", style: "max-height:300px;font-size:12px" }, el("code", {}, k.src)));
+      row.append(g, right); body.append(row);
+      G.uopGraph(g, k.graph, { height: 600, compact: true, legend: false });
+    }
+    names.forEach((n, i) => bar.append(el("button", { onclick: () => sel(i) }, n)));
+    sel(0);
+  })();
+})();
+</script>
+</body>
+</html>

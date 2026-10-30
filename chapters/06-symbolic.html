@@ -1,0 +1,1284 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>6. Symbolic algebra &amp; range analysis — tinygrad internals</title>
+<link rel="stylesheet" href="../assets/vendor/hljs-dark.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/vendor/highlight.min.js"></script>
+<script src="../assets/vendor/dagre.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/chapters.js"></script>
+<script src="../assets/guide.js"></script>
+<style>
+.ch06-panel { background:#0d0f12; border:1px solid var(--line); border-radius:8px; padding:8px 10px; font-family:var(--mono); font-size:12.5px; }
+.ch06-panel h5 { margin:0 0 6px; font-family:var(--sans); color:var(--gold); font-size:12.5px; }
+.ch06-badge { display:inline-block; font-family:var(--mono); font-size:12px; padding:2px 8px; border-radius:5px; background:rgba(131,193,103,.15); color:var(--green); border:1px solid rgba(131,193,103,.4); }
+.ch06-badge.bad { background:rgba(252,98,85,.15); color:var(--red); border-color:rgba(252,98,85,.4); }
+.ch06-badge.warn { background:rgba(244,211,69,.12); color:var(--yellow); border-color:rgba(244,211,69,.4); }
+.ch06-sl { display:grid; grid-template-columns: 70px 1fr 44px; gap:4px 10px; align-items:center; font-family:var(--mono); font-size:13px; margin:4px 0; }
+.ch06-sl input { width:100%; }
+.ch06-why td { font-family:var(--mono); font-size:12px; padding:2px 8px; vertical-align:top; }
+.ch06-why td:first-child { color:var(--gold); white-space:nowrap; }
+.ch06-why td:nth-child(2) { color:var(--green); white-space:nowrap; }
+.ch06-numline { width:100%; height:64px; }
+.ch06-log { max-height:300px; overflow:auto; }
+.ch06-log div { white-space:pre; padding:1px 4px; border-radius:4px; cursor:pointer; }
+.ch06-log div.cur { background:rgba(88,196,221,.18); }
+.ch06-log .rl { color:var(--purple); } .ch06-log .dm { color:var(--yellow); }
+.ch06-grid { border-collapse:collapse; font-family:var(--mono); font-size:12px; }
+.ch06-grid td, .ch06-grid th { border:1px solid var(--line); padding:3px 6px; text-align:center; }
+.ch06-grid th { color:var(--dim); font-weight:normal; background:var(--bg3); }
+.ch06-grid td.bad { background:rgba(252,98,85,.25); }
+.ch06-expr { font-family:var(--mono); font-size:15px; color:var(--fg); background:var(--bg3); padding:6px 10px; border-radius:6px; display:inline-block; margin:4px 0; }
+.ch06-game .opt2 { display:block; width:100%; text-align:left; font-family:var(--mono); font-size:14px; margin:5px 0; padding:6px 10px; background:var(--bg3); border:1px solid var(--line); border-radius:6px; color:var(--fg); cursor:pointer; }
+.ch06-game .opt2:hover { border-color:var(--blue); }
+.ch06-game .opt2.right { border-color:var(--green); background:rgba(131,193,103,.15); }
+.ch06-game .opt2.wrong { border-color:var(--red); background:rgba(252,98,85,.15); }
+.ch06-game .rules div { font-family:var(--mono); font-size:12px; white-space:pre-wrap; }
+.ch06-tbl td { font-family:var(--mono); font-size:12.5px; padding:2px 8px; }
+.demo .uopgraph svg { height:auto; }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="sidebar" id="sidebar"></nav>
+<main>
+  <h1><span class="chnum">CHAPTER 06</span>Symbolic algebra &amp; range analysis</h1>
+  <p class="lede">Every tensor index in tinygrad starts as a messy integer expression. Movement ops, padding and optimizations multiply, add,
+  divide and take remainders of loop counters. If that math reached the generated kernel unchanged, every load would pay for several integer
+  divisions. This chapter covers the two tools that clean it up. The first is <b>range analysis</b>: every integer UOp knows a sound interval
+  <code>[vmin, vmax]</code>. The second is <b><code>symbolic</code></b>: a few hundred PatternMatcher rules (Chapter 5) that use those intervals to fold
+  constants, combine terms, and remove divisions and modulos. All before/after examples on this page are real captures from
+  <code>graph_rewrite(expr, symbolic)</code>.</p>
+
+  <!-- ===================================================================== -->
+  <h2 id="intuition"><span class="sec">6.1</span>Intuition: index math is the hot path</h2>
+  <p>Take a 4×6 tensor, view it as 2×2×6, swap the first two axes, view it as 4×6 again, and make it contiguous. Chapter 7 shows that each movement
+  op <em>rewrites the index</em> used to read the input. The reshape back to 4×6 is the interesting one. To find where output element <code>(r0, r1)</code>
+  lives in a 2×2×6 view, tinygrad first flattens: <code>r0*6 + r1</code>. It then peels the input coordinates off with <code>//</code> and
+  <code>%</code>, innermost axis first: <code>(r0*6+r1)%6</code>, then <code>(r0*6+r1)//6%2</code>, then <code>(r0*6+r1)//6//2%2</code>
+  (this is <code>_apply_reshape</code>, §6.8). Run that unsimplified for every element of a
+  large tensor and the kernel spends most of its time dividing. Here is the real kernel instead (section 7 of
+  <code>examples/06_symbolic.py</code>):</p>
+  <pre class="output"><code>=== 7. why it matters: the index math that reaches the kernel ===
+  for (int Lidx0_0 = 0; Lidx0_0 &lt; 2; Lidx0_0++) {
+    for (int Lidx0_1 = 0; Lidx0_1 &lt; 2; Lidx0_1++) {
+      for (int Lidx1 = 0; Lidx1 &lt; 6; Lidx1++) {
+        float val0 = (*(data1_24+((Lidx0_0*6)+Lidx1+(Lidx0_1*12))));
+        *(data0_24+((Lidx0_0*12)+(Lidx0_1*6)+Lidx1)) = val0;
+result row 1: [12.0, 13.0, 14.0, 15.0, 16.0, 17.0]
+    float val0 = (((0&lt;Lidx0)&amp;(Lidx0&lt;5))?*(data1_4+(Lidx0+-1)):0.0f);
+    *(data0_6+Lidx0) = val0;
+pad result: [0.0, 1.0, 2.0, 3.0, 4.0, 0.0]
+  reshape (12,)     -&gt;(3, 4)     index graph:  13 UOps raw -&gt;   7 simplified
+  reshape (3, 4)    -&gt;(12,)      index graph:  12 UOps raw -&gt;   6 simplified
+  reshape (3, 4)    -&gt;(2, 6)     index graph:  16 UOps raw -&gt;  13 simplified
+  reshape (2, 3, 4) -&gt;(6, 4)     index graph:  18 UOps raw -&gt;   8 simplified
+  reshape (4, 6)    -&gt;(2, 2, 6)  index graph:  19 UOps raw -&gt;   8 simplified</code></pre>
+  <p>The kernel contains no division or modulo: only <code>Lidx0_0*6 + Lidx1 + Lidx0_1*12</code>, which is the permutation written as plain strides.
+  The kernel optimizer split the loop, and symbolic proved that every <code>//</code> and <code>%</code> cancels. The last lines count UOps
+  in the index graphs of five reshapes before and after simplification. The padded kernel shows the other job: a <em>gate</em>
+  <code>(0&lt;Lidx0)&amp;(Lidx0&lt;5)</code> stating where the index is valid (§6.9).</p>
+  <div class="callout analogy"><span class="title">Analogy: simplifying an address formula once, not per letter</span>
+  A sorting office could compute "building = (street_number × 100 + house) ÷ 100" for every letter. Or it could notice once, on paper, that the
+  formula is just <code>street_number</code>. Symbolic is that work on paper. It runs once per kernel at compile time, so the formula
+  that runs for every element (every letter) is as cheap as possible.</div>
+  <div class="callout aha"><span class="title">The two halves</span>
+  <b>Range analysis</b> (<code>UOp._min_max</code>) answers "what values can this take?". <b>Symbolic rules</b> use the answer to justify
+  rewrites. <code>(x*4+y)//4 → x</code> is only valid because the range of <code>y</code> is <code>[0, 3]</code>. Most clever folds in this
+  chapter are some form of "the interval says the leftover is too small to matter".</div>
+
+  <!-- ===================================================================== -->
+  <h2 id="ranges"><span class="sec">6.2</span>Range analysis: <code>vmin</code>, <code>vmax</code> and <code>_min_max</code></h2>
+  <p><a class="src" data-path="tinygrad/uop/ops.py" data-line="1050">UOp.vmin</a> and <code>vmax</code> are thin properties over one
+  <code>functools.cached_property</code>, <a class="src" data-path="tinygrad/uop/ops.py" data-line="1054">UOp._min_max</a>. Since UOps are
+  hash-consed and immutable (Chapter 4), each node's interval is computed once and shared by everyone who builds the same expression. The
+  computation is plain <b>interval arithmetic</b>, recursive over <code>src</code>, with one case per op:</p>
+  <pre><code class="language-python">  @property
+  def vmin(self) -&gt; PyConst: return self._min_max[0]
+  @property
+  def vmax(self) -&gt; PyConst: return self._min_max[1]
+  @functools.cached_property
+  def _min_max(self) -&gt; tuple[PyConst, PyConst]:
+    if self.op in GroupOp.Binary and not dtypes.is_float(self.dtype):
+      (s0_vmin, s0_vmax), (s1_vmin, s1_vmax) = self.src[0]._min_max, self.src[1]._min_max
+      if self.op is Ops.ADD: return wrapped(self.dtype, s0_vmin+s1_vmin, s0_vmax+s1_vmax)
+      if self.op is Ops.SUB: return wrapped(self.dtype, s0_vmin-s1_vmax, s0_vmax-s1_vmin)
+      if self.op is Ops.AND and dtypes.is_int(self.dtype) and s1_vmin == s1_vmax and (s0_vmin &gt;= 0 or s1_vmax &gt;= 0):
+        return 0, s1_vmax if s0_vmin &lt; 0 else min(s0_vmax, int(s1_vmax) &amp; ((1 &lt;&lt; int(s0_vmax).bit_length()) - 1))
+      if self.op is Ops.MUL: return wrapped(self.dtype, min(vals:=(s0_vmin*s1_vmin, s0_vmin*s1_vmax, s0_vmax*s1_vmin, s0_vmax*s1_vmax)), max(vals))
+      # SHL/SHR on consts only
+      if self.op is Ops.SHL and s1_vmin == s1_vmax and all_int(t:=(s0_vmin, s0_vmax, s1_vmin)): return wrapped(self.dtype, t[0] &lt;&lt; t[2], t[1] &lt;&lt; t[2])
+      if self.op is Ops.SHR and s1_vmin == s1_vmax and all_int(t:=(s0_vmin, s0_vmax, s1_vmin)): return t[0] &gt;&gt; t[2], t[1] &gt;&gt; t[2]
+      if self.op is Ops.TRUNCMOD:
+        if (c:=s1_vmin) == s1_vmax &gt; 0:
+          return (0 if s0_vmin &gt; 0 else s0_vmin if 0 &gt;= s0_vmin &gt; -c else -(s1_vmax-1), 0 if s0_vmax &lt; 0 else s0_vmax if 0 &lt;= s0_vmax &lt; c else c-1)
+        if s1_vmin &gt; 0: return (0, s1_vmax-1) if s0_vmin &gt;= 0 else (-(s1_vmax-1), 0) if s0_vmax &lt;= 0 else (-(s1_vmax-1), s1_vmax-1)
+        if s1_vmax &lt; 0: return (0, -s1_vmin-1) if s0_vmin &gt;= 0 else (-(-s1_vmin-1), 0) if s0_vmax &lt;= 0 else (-(-s1_vmin-1), -s1_vmin-1)
+      if self.op is Ops.TRUNCDIV:
+        assert isinstance(s0_vmin, int) and isinstance(s0_vmax, int) and isinstance(s1_vmin, int) and isinstance(s1_vmax, int)
+        if s1_vmin*s1_vmax&gt;0:
+          return min(vals:=(cdiv(s0_vmin, s1_vmin), cdiv(s0_vmin, s1_vmax), cdiv(s0_vmax, s1_vmin), cdiv(s0_vmax, s1_vmax))), max(vals)
+      if self.op is Ops.DIV:
+        assert isinstance(s0_vmin, int) and isinstance(s0_vmax, int) and isinstance(s1_vmin, int) and isinstance(s1_vmax, int)
+        if s0_vmin &gt; s0_vmax: return 0, 0  # numerator range is empty (e.g. RANGE with end=0)
+        if s1_vmin*s1_vmax&gt;0: return min(vals:=(s0_vmin//s1_vmin, s0_vmin//s1_vmax, s0_vmax//s1_vmin, s0_vmax//s1_vmax)), max(vals)
+      if self.op is Ops.MOD:
+        assert isinstance(s0_vmin, int) and isinstance(s0_vmax, int) and isinstance(s1_vmin, int) and isinstance(s1_vmax, int)
+        if s0_vmin &gt; s0_vmax: return 0, 0  # numerator range is empty (e.g. RANGE with end=0)
+        if (c:=s1_vmin) == s1_vmax &gt; 0: return (s0_vmin%c, s0_vmax%c) if s0_vmin//c == s0_vmax//c else (0, c-1)
+        if (c:=s1_vmin) == s1_vmax &lt; 0: return (s0_vmin%c, s0_vmax%c) if s0_vmin//c == s0_vmax//c else (c+1, 0)
+        if s1_vmin &gt; 0: return (0, s1_vmax-1)
+        if s1_vmax &lt; 0: return (s1_vmin+1, 0)
+      if self.op is Ops.XOR and s1_vmin == s1_vmax == -1 and isinstance(s0_vmin, int) and isinstance(s0_vmax, int):
+        return wrapped(self.dtype, ~int(s0_vmax), ~int(s0_vmin))
+      if self.op is Ops.XOR and dtypes.is_int(self.dtype) and s0_vmin &gt;= 0 and s1_vmin &gt;= 0:
+        return 0, (1 &lt;&lt; int(max(s0_vmax, s1_vmax)).bit_length()) - 1
+      if self.op is Ops.MAX: return max(s0_vmin, s1_vmin), max(s0_vmax, s1_vmax)
+      if self.op is Ops.CMPLT: return (s0_vmax&lt;s1_vmin, s0_vmin&lt;s1_vmax)
+      if self.op is Ops.CMPEQ: return (s0_vmin == s0_vmax == s1_vmin == s1_vmax, not ((s0_vmax &lt; s1_vmin) or (s1_vmax &lt; s0_vmin)))
+      if self.op is Ops.OR and self.dtype == dtypes.bool: return s0_vmin or s1_vmin, s0_vmax or s1_vmax
+      if self.op is Ops.AND and self.dtype == dtypes.bool: return s0_vmin and s1_vmin, s0_vmax and s1_vmax
+    if self.op is Ops.WHERE:
+      # int (a&lt;b).where(a,b) is min(a,b)
+      if dtypes.is_int(self.dtype) and self.src[0].op is Ops.CMPLT and self.src[0].src == self.src[1:]:
+        return min(self.src[1].vmin, self.src[2].vmin), min(self.src[1].vmax, self.src[2].vmax)
+      return min(self.src[1].vmin, self.src[2].vmin), max(self.src[1].vmax, self.src[2].vmax)
+    # NOTE: returned UOp is assumed to be CONST
+    if self.op in GroupOp.Defines and self.arg.vmin_vmax is not None: return self.arg.vmin_vmax
+    if self.op in (Ops.RANGE, Ops.SPECIAL) and self.dtype is not dtypes.void: return 0, (self.src[0]-1).vmax</code></pre>
+  <p>Read it as a table of interval rules (all for integer dtypes; floats skip the binary block entirely):</p>
+  <table>
+    <tr><th>op</th><th>interval rule</th><th>note</th></tr>
+    <tr><td><code>ADD</code></td><td>\([a,b]+[c,d]=[a+c,\;b+d]\)</td><td><code>wrapped()</code> only matters for unsigned overflow</td></tr>
+    <tr><td><code>MUL</code></td><td>\([\min(ac,ad,bc,bd),\;\max(ac,ad,bc,bd)]\)</td><td>the four corners, because signs can flip</td></tr>
+    <tr><td><code>DIV</code> (floor)</td><td>corners of \(\lfloor\cdot/\cdot\rfloor\), if the divisor doesn't straddle 0</td><td>else fall through to the dtype bounds</td></tr>
+    <tr><td><code>MOD</code> by const \(c&gt;0\)</td><td>\([a \bmod c,\; b \bmod c]\) if \(\lfloor a/c\rfloor=\lfloor b/c\rfloor\), else \([0,c-1]\)</td><td>"same period" vs "wraps around"</td></tr>
+    <tr><td><code>MAX</code></td><td>\([\max(a,c),\;\max(b,d)]\)</td><td></td></tr>
+    <tr><td><code>CMPLT</code></td><td>\([\,b&lt;c,\; a&lt;d\,]\) as bools</td><td>vmin=True means "always true"</td></tr>
+    <tr><td><code>WHERE</code></td><td>union of the two branches</td><td>except <code>(a&lt;b).where(a,b)</code>, which is min(a,b)</td></tr>
+    <tr><td><code>GroupOp.Defines</code> (a Variable is a <code>PARAM</code>)</td><td><code>arg.vmin_vmax</code></td><td>a Variable's declared range</td></tr>
+    <tr><td><code>RANGE</code>/<code>SPECIAL</code></td><td>\([0,\; \text{end}_{max}-1]\)</td><td>a loop counter</td></tr>
+    <tr><td><code>CONST</code></td><td>\([v, v]\)</td><td>(except Invalid and NaN)</td></tr>
+    <tr><td>anything else</td><td><code>dtype.min, dtype.max</code></td><td>"I don't know". For <code>weakint</code> these are enormous</td></tr>
+  </table>
+  <pre class="output"><code>=== 1. range analysis: every integer UOp knows an interval [vmin, vmax] ===
+  x                in [0, 100]
+  y                in [0, 3]
+  (x+y)            in [0, 103]
+  (x*4+y)          in [0, 403]
+  ((x*4+y)//4)     in [0, 100]
+  ((x*4+y)%4)      in [0, 3]
+  (x+y*-1)         in [-3, 100]
+  (y*-3)           in [-9, 0]
+  max(x, 50)       in [50, 100]
+  (y&lt;4)            in [True, True]
+  (x&lt;50)           in [False, True]</code></pre>
+  <div class="callout note"><span class="title">Sound, not tight</span>
+  The interval is a guaranteed <em>superset</em> of the possible values, never a subset. It can be loose: <code>x - x</code> is always 0, but interval
+  arithmetic does not know the two operands are the same variable and reports \([-100, 100]\). Symbolic rules fix that kind of case
+  structurally: section 2 below shows <code>(x+x*-1) → 0</code> with interval [-100, 100] before. The brute-force check in section 5 of the example confirms the intervals are sound:</div>
+  <pre class="output"><code>=== 5. interval check against brute force (vmin/vmax are sound bounds) ===
+  ((x*4+y)//4)         vmin/vmax=[0, 100]  sampled=[0, 100]
+  ((x+y)%7)            vmin/vmax=[0, 6]  sampled=[0, 6]
+  ((y*3+x*-1)//5)      vmin/vmax=[-20, 1]  sampled=[-20, 1]
+  max(x, (y*40))       vmin/vmax=[0, 120]  sampled=[0, 120]</code></pre>
+
+  <div class="demo" id="demo-interval">
+    <div class="demo-title">Demo · interval-arithmetic visualizer</div>
+    <div class="demo-desc">A line-by-line JavaScript port of the integer branches of <code>_min_max</code>. Pick an expression and drag the ranges of
+    the two Variables <code>a</code> and <code>b</code>. Every node of the expression DAG shows its <code>[vmin, vmax]</code>, the table names the branch
+    of <code>_min_max</code> that produced it, and the number line compares the bound with the <em>exact</em> range found by trying every
+    integer pair. The badge checks the port against 220 real tinygrad captures (11 expressions × 20 range combinations from
+    <code>data/ch06_symbolic.json</code>). When your sliders sit on one of those grid points, the real tinygrad answer is shown too.</div>
+    <div class="row">
+      <div class="col" style="flex:1 1 300px">
+        <div class="controls"><label>expression <select id="ch06-iexpr"></select></label></div>
+        <div class="ch06-sl"><span>a.vmin</span><input type="range" id="ch06-alo" min="-10" max="10" value="0"><b id="ch06-alo-v"></b></div>
+        <div class="ch06-sl"><span>a.vmax</span><input type="range" id="ch06-ahi" min="-10" max="10" value="10"><b id="ch06-ahi-v"></b></div>
+        <div class="ch06-sl"><span>b.vmin</span><input type="range" id="ch06-blo" min="-10" max="10" value="1"><b id="ch06-blo-v"></b></div>
+        <div class="ch06-sl"><span>b.vmax</span><input type="range" id="ch06-bhi" min="-10" max="10" value="4"><b id="ch06-bhi-v"></b></div>
+        <div id="ch06-ires" style="font-family:var(--mono);font-size:14px;margin:8px 0"></div>
+        <svg class="ch06-numline" id="ch06-nl" viewBox="0 0 400 64"></svg>
+        <div id="ch06-iverify"></div>
+      </div>
+      <div class="col" style="flex:1 1 380px">
+        <div id="ch06-igraph"></div>
+        <table class="ch06-why" id="ch06-iwhy"></table>
+      </div>
+    </div>
+  </div>
+  <p>Things to try in the demo:</p>
+  <ul>
+    <li>Pick <code>a//b</code> and drag <code>b</code> across 0. As soon as the divisor's range contains 0, the corner rule no longer applies and
+    the answer becomes "anything" (the dtype bounds). That is why rules that fold divisions so often check <code>d.vmin &gt; 0</code>.</li>
+    <li>Pick <code>(a*4+b)%4</code> with <code>b ∈ [1,4]</code>: the bound is \([0,3]\). Now shrink <code>a</code> to a single value and
+    <code>b</code> to <code>[1,2]</code>. The numerator stays inside one period, so the MOD rule returns the tight interval
+    \([a \bmod 4, b \bmod 4]\).</li>
+    <li>Pick <code>(a&lt;b).where(a,b)</code>: the special case returns min/min instead of the union, so it is often tighter than the general WHERE rule.</li>
+  </ul>
+
+  <div class="quiz" data-answer="2">
+    <div class="q"><code>x ∈ [0, 100]</code>, <code>y ∈ [0, 3]</code>. What does tinygrad report for <code>((x*4+y)//4).vmax</code>?</div>
+    <button class="opt">403</button><button class="opt">101</button><button class="opt">100</button><button class="opt">unknown: DIV needs a symbolic rule first</button>
+    <div class="explain"><code>x*4+y ∈ [0, 403]</code>, and DIV by the constant 4 takes the floor corners: \(\lfloor 403/4\rfloor = 100\). This is the first line of section 1's output.</div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <h2 id="variables"><span class="sec">6.3</span><code>sint</code>, Variables, <code>bind</code> and symbolic shapes</h2>
+  <p>A shape dimension in tinygrad is a <code>sint = int|UOp</code> (<a class="src" data-path="tinygrad/uop/ops.py" data-line="1885">ops.py:1885</a>).
+  Usually it is a plain int. When you want <b>one compiled kernel for many sizes</b> (a growing KV-cache, variable batch size), it can be a
+  <b>Variable</b>. A Variable is not a special class (<code>Variable = UOp</code>). It is a scalar <code>PARAM</code> UOp whose arg carries a name and a
+  value range:</p>
+  <pre><code class="language-python">  @staticmethod
+  def variable(name:str, min_val:PyConst, max_val:PyConst, dtype:DType=dtypes.weakint) -&gt; UOp:
+    # a Variable is a scalar ALU PARAM with a name and a value range; binding it sets the val payload on the arg
+    return UOp(Ops.PARAM, src=(UOp(Ops.STACK),), arg=ParamArg(-1, dtype, name=name, vmin_vmax=(min_val, max_val), addrspace=AddrSpace.ALU))
+  @property
+  def is_variable(self) -&gt; bool:
+    # a Variable is a scalar ALU PARAM that carries a value range
+    return self.op is Ops.PARAM and self.arg.vmin_vmax is not None and self.arg.addrspace is AddrSpace.ALU and self._shape == ()
+  @property
+  def is_bound_var(self) -&gt; bool:
+    # a bound Variable is a Variable with the val payload set
+    return self.is_variable and self.arg.val is not None
+  @property
+  def expr(self) -&gt; str:
+    assert self.op in {Ops.PARAM, Ops.BUFFER}
+    return unwrap(self.arg.name)
+  def bind(self, val:int|UOp):
+    assert self.is_variable and not self.is_bound_var, f&quot;op is {self.op}, need an unbound Variable&quot;
+    uval = UOp.const(val) if isinstance(val, int) else val
+    assert uval.op is Ops.CONST, f&quot;bind value must be a CONST, not {uval.op}&quot;
+    assert self.vmin &lt;= uval.vmin and uval.vmax &lt;= self.vmax, f&quot;bind {val} not in range [{self.vmin}, {self.vmax}]&quot;
+    return self.replace(arg=replace(self.arg, val=uval.val))
+  def unbound(self) -&gt; Variable:
+    assert self.is_variable, f&quot;op is {self.op}, need Variable&quot;
+    return self.replace(arg=replace(self.arg, val=None))
+  def unbind(self) -&gt; tuple[Variable, int]:
+    assert self.is_bound_var, f&quot;can&#x27;t unbind {self}&quot;
+    return self.unbound(), self.arg.val
+  def unbind_all(self) -&gt; tuple[UOp, dict[Variable, int]]:
+    bound = {x: x.unbound() for x in self.backward_slice_with_self if x.is_bound_var}
+    return self.substitute(bound, walk=True), {v: cast(int, x.arg.val) for x, v in bound.items()}</code></pre>
+  <ul>
+    <li><b><code>vmin_vmax</code></b> is the whole point. It feeds the <code>GroupOp.Defines</code> branch of <code>_min_max</code>, so every expression
+    built from the Variable gets a real interval, and every symbolic rule that asks "is the leftover smaller than the divisor?" can still answer.</li>
+    <li><b><code>bind(val)</code></b> returns a <em>different</em> UOp (a new arg with <code>val</code> set), checked against the range. Bound and
+    unbound Variables are different nodes in the hash-consing cache. <code>unbind()</code> returns <code>(unbound_var, val)</code>, and the scheduler
+    uses <code>unbind_all</code> to strip values out of a graph. The kernel is then cached for the <em>unbound</em> graph, and the values are passed at
+    run time as <code>var_vals</code>.</li>
+    <li><b><code>sym_infer(var_vals)</code></b> evaluates an expression for concrete values. It compiles the expression once into a Python function
+    (<code>_sym_fxn</code>, using <code>exec</code>) and calls it:</li>
+  </ul>
+  <pre><code class="language-python">  @functools.cached_property
+  def _sym_fxn(self):
+    from tinygrad.uop.render import _render_with_splits, renderer_infer
+    sself = self.simplify()
+    varnames = tuple(dedup(x.expr for x in sself.toposort() if x.op is Ops.PARAM and x.arg.addrspace == AddrSpace.ALU))
+    # TODO: sanitize varnames, or don&#x27;t use naked eval while staying fast
+    ret = _render_with_splits(list(sself.toposort()), renderer_infer, {sself})
+    lines = [f&quot;  {k}={v}&quot; for k,v in ret.items() if k != &quot;ast&quot;] + [f&quot;  return {ret[&#x27;ast&#x27;]}&quot;]
+    ns: dict[str, Any] = {&quot;max&quot;: max, &quot;truncdiv&quot;: cdiv, &quot;truncmod&quot;: cmod, &quot;div&quot;: floordiv, &quot;mod&quot;: floormod, &quot;bitcast&quot;: bitcast, &quot;dtypes&quot;: dtypes}
+    exec(f&quot;def _f({&#x27;,&#x27;.join(varnames)}):\n&quot;+&#x27;\n&#x27;.join(lines), ns)  # pylint: disable=exec-used
+    return ns[&quot;_f&quot;], varnames
+
+  def sym_infer(self, var_vals:dict[str, int]):
+    fxn, varnames = self._sym_fxn
+    return fxn(**{k:v for k,v in var_vals.items() if k in varnames})</code></pre>
+  <pre class="output"><code>=== 4. Variables, bind, and symbolic shapes ===
+n: n  range: (1, 10)  is_variable: True
+bound: 3  unbind -&gt; (&#x27;n&#x27;, 3)
+Tensor shape with a bound Variable: (&#x27;n&#x27;,)  (the dim is the PARAM itself, val=3)
+(t*2).sum() with n=3: 6.0
+sym_infer( ((n*4+2)//2) , n=3 ) = 7    simplified: (n*2+1)</code></pre>
+  <p>Slicing a realized tensor with a bound Variable gives a Tensor whose shape contains a UOp. The sum still evaluates to the right value for
+  <code>n=3</code>, and the same compiled kernel would serve <code>n=7</code>. Symbolic shapes run through the rest of the system unchanged
+  because every shape computation uses <code>sint</code>-aware helpers: <code>smax</code>/<code>smin</code>, <code>ssimplify</code>, and
+  <a class="src" data-path="tinygrad/uop/ops.py" data-line="63">resolve</a>:</p>
+  <pre><code class="language-python"># With True as the default, this matches the old symbolic behavior
+def resolve(x:UOp|bool, default:bool=True):
+  if isinstance(x, bool): return x
+  assert x.dtype == dtypes.bool, &quot;UOp in resolve must be bool&quot;
+  # NOTE: generating the text for the exception is expensive, so we do this
+  return bool(sx.vmin) if (sx:=x.simplify()).vmin == sx.vmax else default</code></pre>
+  <div class="callout aha"><span class="title"><code>resolve</code> is range analysis as a Python bool</span>
+  Code like <code>if resolve(s != 1)</code> (rangeify does exactly this) has to decide a branch at Python level about a value that may be symbolic. It
+  simplifies the comparison and, if <code>vmin == vmax</code>, has a definite answer. Otherwise it returns <code>default</code>. With
+  <code>n ∈ [1,10]</code>, <code>resolve(n &lt; 11)</code> is <code>True</code> for sure, while <code>resolve(n &lt; 5)</code> returns the default.</div>
+
+  <div class="quiz" data-answer="1">
+    <div class="q">You call <code>n.bind(3)</code> and then <code>n.bind(5)</code> on the same unbound Variable. How many distinct UOps exist among <code>n</code>, <code>n.bind(3)</code> and <code>n.bind(5)</code>?</div>
+    <button class="opt">1: they're all "n"</button><button class="opt">3: the arg differs (<code>val=None</code>, 3, 5), so they hash differently</button><button class="opt">2: bound Variables share a node</button>
+    <div class="explain"><code>bind</code> is <code>self.replace(arg=replace(self.arg, val=...))</code>. A new arg gives a new hash-consing key, which gives a new object.
+    That is why the scheduler <em>unbinds</em> before caching: kernels are keyed on the unbound graph, so different values reuse one kernel.</div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <h2 id="stack"><span class="sec">6.4</span>The rule stack: <code>symbolic_simple</code> ⊂ <code>symbolic</code> ⊂ <code>sym</code></h2>
+  <p>All of it lives in <a class="src" data-path="tinygrad/uop/symbolic.py" data-line="1">tinygrad/uop/symbolic.py</a> and
+  <a class="src" data-path="tinygrad/uop/divandmod.py" data-line="1">divandmod.py</a>. The matchers are built in phases, each one adding to the previous with
+  <code>+</code>:</p>
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:14px 0">
+    <div class="ch06-panel"><h5>phase 1 · <a class="src" data-path="tinygrad/uop/symbolic.py" data-line="124">symbolic_simple</a></h5>
+    <code>pm_data_invalid</code> + self folding (<code>x+0</code>, <code>x*1</code>, <code>x//1</code>), zero folding (<code>x%x</code>, <code>x&lt;x</code>),
+    constant folding (<code>fold_const_alu</code>), two-stage folding <code>(x+c1)+c2</code>, the divmod <em>recombine</em>, and cast/where cleanups. Cheap and local. Used
+    almost everywhere in codegen.</div>
+    <div class="ch06-panel"><h5>phase 2 · <a class="src" data-path="tinygrad/uop/symbolic.py" data-line="247">symbolic</a></h5>
+    + <code>commutative</code> (canonical operand order for index math), combining like terms, where folding, <b>min==max → CONST</b>, max folding,
+    nested div, lt folding, moving consts to the end, and <b><code>div_and_mod_symbolic</code></b>. This is what <code>UOp.simplify()</code> uses.</div>
+    <div class="ch06-panel"><h5>phase 3 · <a class="src" data-path="tinygrad/uop/symbolic.py" data-line="461">sym</a></h5>
+    + <code>pm_simplify_valid</code> (simplify under a gate), load/store folding, pow, reduce/mul chains and more "opinionated" rules. This is the
+    full-strength version used by the codegen passes.</div>
+  </div>
+  <p>Where they run: the scheduler calls <code>symbolic</code> inside every reshape and pad (§6.8). <code>UOp.simplify()</code> and therefore
+  <code>resolve</code>/<code>ssimplify</code> call <code>symbolic</code>. Codegen runs <code>sym</code> several times, as "initial symbolic",
+  "postopt symbolic", "early symbolic" and "extra symbolic", and ends with "final symbolic":</p>
+  <pre><code class="language-python">  def simplify(self):
+    if self.op is Ops.CONST: return self
+    if self.op is Ops.SINK and all(s.op is Ops.CONST or (s.op is Ops.STACK and all(x.op is Ops.CONST for x in s.src)) for s in self.src): return self
+    # late import!
+    from tinygrad.uop.symbolic import symbolic
+    with Context(TRACK_MATCH_STATS=0):
+      return graph_rewrite(self, symbolic, name=&quot;simplify&quot;)</code></pre>
+  <pre><code class="language-python">    # symbolic (NOTE: this is a requirement for pm_simplify_ranges to be correct)
+    sink = graph_rewrite(sink, sym+pm_flatten_range, name=&quot;initial symbolic&quot;)
+...
+  # ** expander (expand_rewrite) **
+  # reduce_unparented: a REDUCE whose src folded to a CONST (e.g. x*0) has no parented ranges, collapse it before the expander
+  sink = graph_rewrite(sink, sym+pm_move_where_on_load+pm_flatten_range+pm_reduce_unparented, name=&quot;postopt symbolic&quot;)
+...
+  # some coalescing misses without this
+  sink = graph_rewrite(sink, sym, name=&quot;early symbolic&quot;)
+...
+  # final symbolic before decomp
+  sink = graph_rewrite(sink, symbolic, name=&quot;final symbolic&quot;)</code></pre>
+
+  <!-- ===================================================================== -->
+  <h2 id="rules"><span class="sec">6.5</span>A tour of the main rules, with real before/after</h2>
+  <p>Each line below is a UOp expression built in Python and passed through <code>graph_rewrite(expr, symbolic)</code>. The "before" column uses
+  <code>render(simplify=False)</code> so you see the unsimplified tree:</p>
+  <pre><code class="language-python">  def render(self, simplify=True, pm:PatternMatcher|None=None) -&gt; str:   # render(simplify=True) would simplify first: always pass simplify=False to see the raw tree</code></pre>
+  <pre class="output"><code>=== 2. symbolic: before -&gt; after (graph_rewrite(expr, symbolic)) ===
+  constant folding             (3*4+2)                -&gt; 14           interval before: [14, 14]
+  x*1, x+0                     (x*1+0)                -&gt; x            interval before: [0, 100]
+  combine terms                (x*2+x*3)              -&gt; (x*5)        interval before: [0, 500]
+  move consts to the end       (x+3+y+5)              -&gt; (x+y+8)      interval before: [8, 111]
+  x//c*c + x%c -&gt; x            (x//4*4+x%4)           -&gt; x            interval before: [0, 103]
+  exact division               ((x*4+y)//4)           -&gt; x            interval before: [0, 100]
+  mod of a congruent sum       ((x*4+y)%4)            -&gt; y            interval before: [0, 3]
+  nested div                   (x//3//4)              -&gt; (x//12)      interval before: [0, 8]
+  div of a mod                 (x%12//4)              -&gt; (x//4%3)     interval before: [0, 2]
+  lt folding                   ((x*4+y)&lt;8)            -&gt; (x&lt;2)        interval before: [False, True]
+  range says it&#x27;s const        (y//4)                 -&gt; 0            interval before: [0, 0]
+  comparison always true       (y&lt;4)                  -&gt; True         interval before: [True, True]
+  max with known order         max(y, 5)              -&gt; 5            interval before: [5, 5]
+  range mod its bound          (r0%16)                -&gt; r0           interval before: [0, 15]
+  x - x (interval is loose)    (x+x*-1)               -&gt; 0            interval before: [-100, 100]
+  divide by gcd (w in [1,10])  (x*4//(w*2))           -&gt; (x*2//w)     interval before: [0, 200]</code></pre>
+  <p>The rules behind them, grouped:</p>
+  <details class="deep-dive" open><summary>Self folding, zero folding and constant folding (phase 1)</summary>
+  <pre><code class="language-python">symbolic_simple = pm_data_invalid + PatternMatcher([
+  # ** self folding **
+  (UPat({Ops.ADD, Ops.XOR, Ops.OR}, src=[UPat.var(&quot;x&quot;), UPat.const(0)]), lambda x: x),  # x+0 / x^0 / x|0 -&gt; x
+  (UPat({Ops.SHL, Ops.SHR}, src=(UPat.var(&quot;x&quot;), UPat.const(0))), lambda x: x),          # x&lt;&lt;0 / x&gt;&gt;0 -&gt; x
+  (UPat.var(&quot;x&quot;) * 1, lambda x: x),    # x*1 -&gt; x
+  (UPat.var(&quot;x&quot;) // UPat.var(&quot;x&quot;), lambda x: x.const_like(1)), # x//x -&gt; 1
+  (UPat.var(&quot;x&quot;) // 1, lambda x: x),   # x//1 -&gt; x
+  (UPat.var(&quot;x&quot;, dtypes.sints+(dtypes.weakint,)) // -1, lambda x: -x), # x//-1 -&gt; -x
+  ((UPat.var(&quot;x&quot;) ^ UPat.var(&quot;y&quot;, dtypes.weakint)) ^ UPat.var(&quot;y&quot;), lambda x,y: x), # (x^y)^y -&gt; x
+  ((UPat.var() % UPat.var(&quot;y&quot;)).named(&quot;base&quot;) % UPat.var(&quot;y&quot;), lambda base,y: base),  # (x%y)%y = -&gt; x%y (rewritten with base for speed)
+  # variations of (x%c)+(x//c)*c = x
+  (UPat(Ops.ADD, dtype=dtypes.weakint, name=&quot;x&quot;), fold_add_divmod_recombine),
+...
+  # ** zero folding **
+  (UPat.var(&quot;x&quot;) &lt; UPat.var(&quot;x&quot;), lambda x: x.const_like(False, dtypes.bool)), # x &lt; x -&gt; False
+  (UPat.var(&quot;x&quot;) % UPat.var(&quot;x&quot;), lambda x: x.const_like(0)), # x%x -&gt; 0
+  (UPat.var(&quot;x&quot;) ^ UPat.var(&quot;x&quot;), lambda x: x.const_like(0)), # x^x -&gt; 0
+  (UPat.var(&quot;x&quot;) &amp; 0, lambda x: x.const_like(0)), # x&amp;0 -&gt; 0
+...
+  # ** constant folding **
+  # canonicalize casted CONST
+  (UPat(Ops.CAST, dtypes.all, name=&quot;root&quot;, src=(UPat.cvar(&quot;c&quot;),)), lambda root, c: root.const_like(c.val)),
+  # collapse committed const conversions
+  (UPat(Ops.CAST, dtypes.all, name=&quot;root&quot;, src=(UPat(Ops.CAST, dtypes.all, src=(UPat(Ops.CONST, name=&quot;c&quot;),)),)),
+   lambda root,c: root.const_like(c.val)),
+  # one rule per spelling: bare has no width, a pair evaluates at its stated width, mixed commits to the promotion
+  # NOTE: THREEFRY(const,const) folds via its decomposition
+  (UPat(GroupOp.ALU-{Ops.THREEFRY}, src=bare_const, name=&quot;a&quot;), fold_const_alu),
+  (UPat(GroupOp.ALU-{Ops.THREEFRY}, src=casted_const, name=&quot;a&quot;), fold_const_alu),
+  (UPat(GroupOp.Binary-{Ops.THREEFRY}, src=[casted_const, bare_const], name=&quot;a&quot;), lambda a:
+   a.replace(src=tuple(s.ccast(dt) if s.dtype in dtypes.weaks else s for s in a.src))
+   if (dt:=promo_dtype(a.src)) not in dtypes.weaks else None),
+  # ** two stage ALU folding **
+  *((UPat.var(&quot;x&quot;).alu(op, UPat.cvar(&quot;c1&quot;)).alu(op, UPat.cvar(&quot;c2&quot;)).named(&quot;f&quot;),
+     lambda f,x,c1,c2: x.alu(f.op,c1.alu(f.op,c2)) if fits(x, exec_alu(f.op, dtypes.weakint, [c1.vmin, c2.vmin])) else None)
+    for op in GroupOp.Associative),
+  # bool MUL is AND, ADD/MAX is OR. prevents other rules to rewrite bool ADD/MUL incorrectly</code></pre>
+  <p><code>fold_const_alu</code> calls <code>exec_alu</code> (the same Python evaluator the PYTHON backend uses), so constant folding matches
+  run-time semantics. Two-stage folding <code>(x op c1) op c2 → x op (c1 op c2)</code> is generated for every associative op, guarded by
+  <code>fits</code> so a fold never introduces overflow.</p></details>
+  <details class="deep-dive" open><summary>Combining terms, and the general "min == max → CONST" rule (phase 2)</summary>
+  <pre><code class="language-python">  # ** combine terms **
+  # (x*c0)+(x*c1) -&gt; x*(c0+c1)
+  (UPat.var(&quot;x&quot;) * UPat.cvar(&quot;c0&quot;) + UPat.var(&quot;x&quot;) * UPat.cvar(&quot;c1&quot;), lambda x,c0,c1: x*(c0+c1) if fits(x, c0.vmin+c1.vmin) else None),
+  ((UPat.var(&quot;y&quot;) + UPat.var(&quot;x&quot;) * UPat.cvar(&quot;c0&quot;)) + UPat.var(&quot;x&quot;) * UPat.cvar(&quot;c1&quot;),
+   lambda x,y,c0,c1: y+m if fits(x, c0.vmin+c1.vmin) and no_overflow(m:=x*(c0+c1)) else None),
+  (UPat.var(&quot;x&quot;) + UPat.var(&quot;x&quot;) * UPat.cvar(&quot;c&quot;), lambda x,c: x*(c+1) if fits(x, c.vmin+1) else None), # (x+x*c)-&gt; x*(c+1)
+  ((UPat.var(&quot;y&quot;) + UPat.var(&quot;x&quot;)) + UPat.var(&quot;x&quot;) * UPat.cvar(&quot;c&quot;),
+   lambda x,y,c: y+m if fits(x, c.vmin+1) and no_overflow(m:=x*(c+1)) else None),
+  ((UPat.var(&quot;y&quot;) + UPat.var(&quot;x&quot;) * UPat.cvar(&quot;c&quot;)) + UPat.var(&quot;x&quot;),
+   lambda x,y,c: y+m if fits(x, c.vmin+1) and no_overflow(m:=x*(c+1)) else None),
+  (UPat.var(&quot;x&quot;) + UPat.var(&quot;x&quot;), lambda x: x*2), # (x+x)-&gt; x*2
+  (((UPat.var(&quot;y&quot;) + UPat.var(&quot;x&quot;)) + UPat.var(&quot;x&quot;)).named(&quot;a&quot;),
+...
+  # ALU/variable min==max -&gt; CONST
+  (UPat({Ops.CMPLT, Ops.CMPEQ, Ops.DIV, Ops.MOD, Ops.PARAM, Ops.SPECIAL}, name=&quot;x&quot;),
+   lambda x: x.const_like(x.vmin) if x.dtype is not dtypes.void and x.vmin == x.vmax else None),
+  (UPat(Ops.RANGE, src=(UPat.cvar().or_casted(),), name=&quot;x&quot;), lambda x: x.const_like(x.vmin) if x.vmin == x.vmax else None),</code></pre>
+  <p>The second block is where range analysis turns into code: any comparison, DIV, MOD or Variable whose interval has collapsed to a point
+  <em>is</em> that point. <code>(y&lt;4)</code> with <code>y ∈ [0,3]</code> has interval <code>[True, True]</code> and becomes the constant
+  <code>True</code>. <code>y//4</code> has interval <code>[0,0]</code> and becomes <code>0</code>. No dedicated "small numerator" rule is needed.</p></details>
+  <details class="deep-dive" open><summary>Max folding, nested division, lt folding, moving constants (phase 2)</summary>
+  <pre><code class="language-python">  # max folding
+  ((UPat.cvar(&quot;a&quot;) &lt; UPat.var(&quot;b&quot;)).where(UPat.var(&quot;b&quot;), UPat.cvar(&quot;c&quot;)), lambda a,b,c: UOp.maximum(a,b) if a.val == c.val else None),
+  # (a&lt;b).where(c, a+(c-b)) -&gt; max(a+(c-b), c), the shift needs a signed int so the unselected arm can&#x27;t wrap
+  ((UPat.var(&quot;a&quot;) &lt; UPat.cvar(&quot;b&quot;)).where(UPat.cvar(&quot;c&quot;), UPat.var(&quot;y&quot;)), lambda a,b,c,y: UOp.maximum(y,c) if (y is a and b.val == c.val) or
+   (dtypes.is_int(a.dtype) and not dtypes.is_unsigned(a.dtype) and y is a+(c.val-b.val)) else None),
+  (UPat.maximum(UPat.var(&quot;x&quot;), UPat.var(&quot;y&quot;)), lambda x,y: x if x.vmin &gt;= y.vmax else None),
+  # TODO: why does this rule break beautiful_mnist?
+  #((UPat.var(&quot;x&quot;)+UPat.var(&quot;z&quot;)).maximum(UPat.var(&quot;y&quot;)+UPat.var(&quot;z&quot;)), lambda x,y,z: x.maximum(y) + z),
+  # (x//c1)//c2 -&gt; x//(c1*c2) for c2&gt;0 when c1*c2 fits
+  ((UPat.var(&quot;x&quot;) // UPat.cvar(&quot;c1&quot;)) // UPat.cvar(&quot;c2&quot;),
+   lambda x,c1,c2: x//(c1*c2) if c2.vmin&gt;0 and x.dtype.min&lt;=c1.vmin*c2.vmin&lt;=x.dtype.max else None),
+  # ** lt **
+  # c0+x&lt;c1 -&gt; x &lt; c1-c0
+  ((UPat.cvar(&quot;c0&quot;) + UPat.var(&quot;x&quot;, dtype=dtypes.sints+(dtypes.weakint,))) &lt; UPat.cvar(&quot;c1&quot;),
+   lambda x,c0,c1: x&lt;(c1-c0) if fits(x, c1.vmin-c0.vmin) else None),
+  # x//d&lt;c -&gt; x&lt;c*d for d&gt;0
+  ((UPat.var(&quot;x&quot;, dtype=dtypes.weakint)//UPat.cvar(&quot;d&quot;))&lt;UPat.cvar(&quot;c&quot;),
+   lambda x,d,c: (x&lt;c.val*d.val) if d.val &gt; 0 else None),
+  # ** move add/mul consts to end (NOTE: this is still happening before constant folding) **
+  ((UPat.var(&quot;x&quot;) + UPat.cvar(&quot;c1&quot;)) + UPat.var(&quot;y&quot;), lambda x,c1,y: m+c1 if y.op is not Ops.CONST and no_overflow(m:=x+y) else None),
+  ((UPat.var(&quot;x&quot;) * UPat.cvar(&quot;c1&quot;)) * UPat.var(&quot;y&quot;), lambda x,c1,y: m*c1 if y.op is not Ops.CONST and no_overflow(m:=x*y) else None),
+  # *** rules from symbolic ***
+  # generic lt folding
+  (UPat.var(&quot;x&quot;, dtypes.weakint)&lt;UPat.cvar(&quot;c&quot;), lambda x,c: lt_folding(x, c.val)),
+  (UPat.var(&quot;x&quot;, dtypes.sints+(dtypes.weakint,))*-1 &lt; UPat.var(&quot;y&quot;)*-1, lambda x,y: y&lt;x),
+  (UPat.var(&quot;x&quot;, dtypes.sints+(dtypes.weakint,))*-1 &lt; UPat.cvar(&quot;c&quot;), lambda x,c: -c&lt;x if fits(x, -c.vmin) else None),
+  # canonicalize a simplex with positive coefficients &gt; 0. NOTE: not x &lt; 1 means x &gt; 0
+  ((UPat.var(&quot;x&quot;, dtypes.weakint)&lt;1).logical_not(), lambda x: (newx&lt;1).logical_not() if (newx:=canonicalize_simplex(x)) is not None else None),
+  # a range mod its own upper bound is just the range
+  (UPat(Ops.RANGE, src=UPat.var(&quot;end&quot;), name=&quot;r&quot;)%UPat.var(&quot;end&quot;), lambda r,end: r),
+  (UPat(Ops.RANGE, src=UPat.var(&quot;end&quot;), name=&quot;r&quot;)//UPat.var(&quot;end&quot;), lambda r,end: r.const_like(0)),</code></pre>
+  <pre><code class="language-python">def lt_folding(x:UOp, c:int) -&gt; UOp|None:
+  p, np = partition([u.pop_const(Ops.MUL) for u in x.split_uop(Ops.ADD)], lambda uf: uf[1] == 1)
+  # d*y+p &lt; c &lt;=&gt; y &lt; ceildiv(c-p, d), so it folds when that bound is the same for p.vmin and p.vmax
+  if np and (d:=math.gcd(*[int(f) for _,f in np])) &gt; 1 and (t:=ceildiv(c-sum(u.vmin for u,_ in p), d)) == ceildiv(c-sum(u.vmax for u,_ in p), d):
+    return UOp.usum(*[u*(f//d) for u,f in np])&lt;t
+  return None</code></pre>
+  <p><b><code>lt_folding</code></b> divides an inequality by the gcd of its non-unit coefficients. In <code>4x + y &lt; 8</code>, the
+  coefficient-1 part <code>p = y</code> ranges over <code>[0,3]</code>. The equivalent bound on <code>x</code> is
+  \(\lceil (8-p)/4 \rceil\), which equals 2 for both \(p=0\) and \(p=3\), so the comparison folds to <code>x &lt; 2</code> regardless of
+  <code>y</code>. If the two ceilings differed, the fold would be unsound, and the rule returns <code>None</code>.</p></details>
+  <div class="callout note"><span class="title">Canonical forms make the matcher's job possible</span>
+  Rules match <em>shapes</em>, so equal expressions have to look the same. <code>commutative</code> sorts the operands of every index-typed
+  commutative op by <code>tuplize</code> (an op-ordered key: in <code>(r1+r0*6)</code> the MUL comes before the RANGE, hence <code>(r0*6+r1)</code>).
+  "Move consts to the end" pushes constants to the outermost right. Together they ensure that <code>x*2 + x*3</code>, <code>x*3 + x*2</code> and
+  <code>(x*2 + 1) + x*3</code> all present the pattern the combine-terms rule expects.</div>
+
+  <div class="quiz" data-answer="3">
+    <div class="q">With <code>y ∈ [0,3]</code>, why does <code>(y&lt;4)</code> become <code>True</code>?</div>
+    <button class="opt">A dedicated "x &lt; bound" rule</button><button class="opt">Constant folding: 4 is a constant</button><button class="opt">lt_folding divides by the gcd</button><button class="opt">CMPLT's interval is [True, True], and the "min==max → CONST" rule replaces the node with that constant</button>
+    <div class="explain"><code>_min_max</code> for CMPLT gives <code>(s0_vmax &lt; s1_vmin, s0_vmin &lt; s1_vmax) = (3&lt;4, 0&lt;4) = (True, True)</code>. The rule at symbolic.py:286 then fires for any
+    CMPLT/CMPEQ/DIV/MOD/PARAM with a single-point interval.</div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <h2 id="recombine"><span class="sec">6.6</span><code>(x//c)*c + x%c → x</code>: recombining div and mod</h2>
+  <p>The identity \(\lfloor x/c\rfloor\cdot c + (x \bmod c) = x\) is everywhere in index math. Split an axis in two (an UPCAST opt, or a reshape
+  followed by its inverse) and you get exactly this sum back. In practice the terms arrive scaled, shifted and mixed with other terms, so the rule
+  is a small function rather than a pattern:</p>
+  <pre><code class="language-python">def _quotient_base(q:UOp, base:UOp, div:int) -&gt; UOp|None:
+  # the B with q == B//div and B%div == base%div, or None. only such congruence is needed to recombine, and canonicalization
+  # moves consts freely: the quotient may be merged ((x//c + a)//div -&gt; (x + a*c)//(c*div) for div&gt;0) and shifted ((y + k*D)//D == y//D + k)
+  (q, s), (num, a) = q.pop_const(), base.pop_const()
+  if q.op is not Ops.DIV or q.src[1].op is not Ops.CONST: return None
+  if div &gt; 0 and num.op is Ops.DIV and num.src[1].op is Ops.CONST and q.src[1].val == (c:=num.src[1].val)*div: num, a, D = num.src[0], a*c, c*div
+  elif q.src[1].val == div: D = div
+  else: return None
+  (x, xa), (p, pa) = num.pop_const(), q.src[0].pop_const()
+  if p is not x or (t:=xa + a - pa) % D: return None
+  return base - k*div if (k:=t//D - s) else base
+
+def fold_add_divmod_recombine(x:UOp) -&gt; UOp|None:
+  # a scaled mod (base%div)*mul recombines with a partner q*(div*mul) carrying the quotient of a b == base (mod div):
+  #   q == b//div     -&gt; b*mul              (full recombine)
+  #   q == (b//div)%d -&gt; (b%(div*d))*mul    (partial recombine into a wider mod, needs d&gt;0)
+  terms = list(x.split_uop(Ops.ADD))
+  for i,u in enumerate(terms):
+    mod, mul = u.pop_const(Ops.MUL)
+    if mod.op is not Ops.MOD or mod.src[1].op is not Ops.CONST: continue
+    base, div = mod.src[0], mod.src[1].val
+    for j,v in enumerate(terms):
+      q, scale = v.pop_const(Ops.MUL)
+      if i == j or scale != div*mul: continue
+      rest = [t for k,t in enumerate(terms) if k not in (i,j)]
+      if (b:=_quotient_base(q, base, div)) is not None: return (b*mul).usum(*rest)
+      if q.op is Ops.MOD and q.src[1].op is Ops.CONST and (d:=q.src[1].val) &gt; 0 and (b:=_quotient_base(q.src[0], base, div)) is not None:
+        return ((b % (div*d))*mul).usum(*rest)
+  return None
+
+# Invalid poisons the value: ops move inside the gate so the Invalid reaches the LOAD/STORE and folds there.</code></pre>
+  <p>It scans the terms of an ADD for a scaled mod <code>(base % div) * mul</code>. It then looks for a partner term whose scale is
+  <code>div*mul</code> and whose core is a quotient of something congruent to <code>base</code>. When it finds one, the pair collapses to
+  <code>b*mul</code> (full recombine). If the partner is itself <code>(b//div)%d</code>, the pair becomes a wider mod
+  <code>(b % (div*d))*mul</code> (partial recombine). The game in §6.10 contains <code>(x//4*4 + x%4 + 1) → (x+1)</code>: the extra term
+  <code>+1</code> goes into <code>rest</code>.</p>
+
+  <!-- ===================================================================== -->
+  <h2 id="divmod"><span class="sec">6.7</span><code>divandmod.py</code>: the division and modulo engine</h2>
+  <p>Division and modulo get their own file because they are the important case: they come out of every reshape, and the kernel pays for every one
+  that survives. <a class="src" data-path="tinygrad/uop/divandmod.py" data-line="93">div_and_mod_symbolic</a> has two fast inline patterns and then one
+  catch-all rule that hands every index-typed DIV/MOD to <code>fold_divmod_general</code>:</p>
+  <pre><code class="language-python">div_and_mod_symbolic = PatternMatcher([
+  # ** 1. Fast Inline Rules **
+  # (x//c+a)//d -&gt; (x+a*c)//(c*d) for c&gt;0, d&gt;0
+  ((UPat.var(&quot;x&quot;, dtypes.weakint)//UPat.cvar(&quot;c&quot;) + UPat.cvar(&quot;a&quot;))//UPat.cvar(&quot;d&quot;), lambda x,c,a,d: (x+a*c)//(c*d) if d.vmin&gt;0 else None),
+  # (x+c)//d -&gt; (x+c%d)//d + c//d ; (x+c)%d -&gt; (x+c%d)%d  (split the multiple of d out of the const, holds for any d!=0)
+  (UPat((Ops.DIV, Ops.MOD), src=(UPat.var(&quot;x&quot;, dtypes.weakint)+UPat.cvar(&quot;c&quot;), UPat.cvar(&quot;d&quot;)), name=&quot;n&quot;),
+    lambda n,x,c,d: None if d.val==0 or c.val%d.val==c.val else
+      (x+c.val%d.val)//d + c.val//d.val if n.op is Ops.DIV else (x+c.val%d.val)%d),
+
+  # ** 2. Slow Rules **
+  (UPat((Ops.DIV, Ops.MOD), dtypes.weakint, name=&quot;d&quot;), lambda d: fold_divmod_general(d)),
+])
+</code></pre>
+  <pre><code class="language-python"># NOTE: this cache is only on index UOps
+@functools.cache
+def fold_divmod_general(d: UOp) -&gt; UOp|None:
+  x, y = d.src
+
+  if y.vmin==y.vmax==0: raise ZeroDivisionError(f&quot;{&#x27;Division&#x27; if d.op is Ops.DIV else &#x27;Mod&#x27;} by zero trying to rewrite {x.alu(d.op, y)}&quot;)
+  # x//y is constant
+  if d.op is Ops.MOD and (xdiv:=x//y).vmin == xdiv.vmax: return x - xdiv.vmin*y
+
+  # split uops for the rest of the processing
+  x_peeled, const = x.pop_const()
+  uops_no_const = list(x_peeled.split_uop(Ops.ADD))
+
+  # ** Constant Denominator Rules **
+  # these rules strictly require y to be a scalar constant &gt; 0
+  if y.op is Ops.CONST and (c := y.val) &gt; 0:
+    # nested_div: (x%(k*c))//c -&gt; (x//c)%k (requires k&gt;0); the mod case is handled by remove_nested_mod below
+    if d.op is Ops.DIV and x.op is Ops.MOD and (k := x.src[1].divides(c)) is not None and k.vmin &gt; 0: return x.src[0] // y % k
+
+    # remove_nested_mod in sum: (a%4 + b)%2 -&gt; (a+b)%2
+    if d.op is Ops.MOD:
+      new_xs, changed = [], False
+      for u in uops_no_const:
+        if u.op is Ops.MOD and u.src[1].divides(c) is not None:
+          u = u.src[0]
+          changed = True
+        new_xs.append(u)
+      if changed: return (UOp.usum(*new_xs) + const) % y
+
+    # exact division keeps the structure of x: (q*c+k)//c -&gt; q+k//c
+    if d.op is Ops.DIV and (q:=x_peeled.divides(c)) is not None: return q + const//c
+
+    # Shared decomposition for folding rules
+    decomp = [(u.divides(f:=u.const_factor()),f) for u in uops_no_const]
+    terms, factors = zip(*decomp)
+
+    # fold_divmod_congruence: fold if a is congruent to an expression whose range is between 0 and c
+    # try both signs of the remainder for a lone term (covers a binary numerator that crosses one period)
+    # or on an exact f%c == c//2 tie; otherwise pick the smaller to keep the product over terms small
+    rem_choices = [(r, r-c) if (r:=f%c)*2 == c or len(terms)==1 else (min(r, r-c, key=abs),) for f in factors]
+    for rems in itertools.product(*rem_choices):
+      if (rem:=sum(r*v for r,v in zip(rems,terms))+const%c).vmin//c==rem.vmax//c:
+        if d.op is Ops.MOD: return rem - rem.vmin//c*c
+        return sum((f-r)//c * v for f,r,v in zip(factors,rems,terms)) + const//c + rem.vmin//c
+
+    # nest_by_factor: x//c -&gt; (x//f)//(c//f), x%c -&gt; (x//f%(c//f))*f + b where b=x%f
+    # f is a term factor dividing c or the gcd of all factors and c
+    # DIV identity holds for any sign of x; MOD reconstruction needs x.vmin&gt;=0
+    results = []
+    for div in {abs(f) for f in (*factors, math.gcd(*factors, c)) if 1 &lt; abs(f) &lt; c and c%f==0}:
+      if (newxs := fold_divmod_general(x//div)) is not None:
+        if d.op is Ops.DIV:
+          results.append((len(newxs.backward_slice), newxs // (c // div)))
+        elif x.vmin &gt;= 0 and newxs.vmin &gt;= 0:
+          b_parts = [f%div*t for f, t in zip(factors, terms) if f%div]
+          if const % div: b_parts.append(x.const_like(const % div))
+          b = UOp.usum(*b_parts) if b_parts else x.const_like(0)
+          if 0 &lt;= b.vmin and b.vmax &lt; div:
+            results.append((len((r:=(newxs % x.ufix(c//div))*div + b).backward_slice), r))
+    if results: return min(results, key=lambda r: r[0])[1]
+
+  # ** Variable Denominator / Fallback Rules **
+  # These rules apply to variables OR constants that failed the checks above.
+  # Reconstruct all uops including const for these checks.
+  all_uops = list(x.split_uop(Ops.ADD))
+
+  # divide_by_gcd: x//y -&gt; (x//gcd)//(y//gcd)
+  gcd = UOp.gcd(*all_uops, y).simplify()
+  if not (gcd.op is Ops.CONST and gcd.val==1):
+    ret = unwrap(x.divide_exact(gcd)).alu(d.op, unwrap(y.divide_exact(gcd)))
+    return ret*gcd if d.op is Ops.MOD else ret
+
+  # factor_remainder: (d*x+y)//d -&gt; x+y//d
+  if y.vmin&lt;0 or x.vmin&lt;0: return None
+  quo, rem = [], []
+  for u in all_uops:
+    if (q:=u.divide_exact(y)) is not None: quo.append(q)
+    elif y.op is Ops.CONST and (c:=u.const_factor())%y.val!=c:
+      rem.append(u.divides(c)*(c%y.val))
+      quo.append(u.divides(c)*(c//y.val) if d.op is Ops.DIV else u.const_like(0))
+    else: rem.append(u)
+
+  if not quo: return None
+  new_x = sum(rem)+x.const_like(0)
+  if new_x.vmin&lt;0: return None
+  return new_x%y if d.op is Ops.MOD else new_x//y+sum(quo)</code></pre>
+  <p><code>fold_divmod_general</code> is a sequence of increasingly expensive strategies. The first one that produces something wins:</p>
+  <table>
+    <tr><th>branch</th><th>idea</th><th>real example</th></tr>
+    <tr><td><b>x//y is constant</b></td><td>for MOD: if the quotient's interval is a single value \(q\), then \(x \bmod y = x - q\,y\)</td><td><code>((r1//2+r0)//2+r0)%3</code>, where the sum is &lt; 3, becomes the sum itself</td></tr>
+    <tr><td><b>nested_div</b></td><td>\((x \bmod kc)//c = (x//c) \bmod k\)</td><td><code>(x%16//4) → (x//4%4)</code></td></tr>
+    <tr><td><b>remove_nested_mod</b></td><td>inside a MOD by \(c\), any term <code>u % m</code> with \(c \mid m\) can drop its mod</td><td><code>(x%16%4) → (x%4)</code></td></tr>
+    <tr><td><b>exact division</b></td><td>if every non-const term is divisible by \(c\): \((qc+k)//c = q + k//c\)</td><td><code>((z*4+3)//4) → z</code></td></tr>
+    <tr><td><b>fold_divmod_congruence</b></td><td>replace each coefficient \(f\) by its remainder \(r \equiv f \pmod c\) (choosing \(r\) or \(r-c\)). If the
+    remainder sum fits in one period, both quotient and remainder are linear</td><td><code>((x*8+z)%8) → z</code>, <code>((z*2+1)%2) → 1</code></td></tr>
+    <tr><td><b>nest_by_factor</b></td><td>split \(c=f\cdot(c/f)\) for a factor \(f\) of some coefficient, recurse on \(x//f\), keep the smallest result</td><td><code>((x*4+z)//8) → ((x+z//4)//2)</code></td></tr>
+    <tr><td><b>divide_by_gcd</b></td><td>divide numerator and divisor by their common gcd (works for variable divisors too)</td><td><code>(x*4//(w*2)) → (x*2//w)</code></td></tr>
+    <tr><td><b>factor_remainder</b></td><td>pull out the terms that divide exactly: \((dq + r)//d = q + r//d\)</td><td><code>((x*6+z)//3) → (x*2+z//3)</code></td></tr>
+  </table>
+  <div class="callout aha"><span class="title">Range analysis again</span>
+  <code>fold_divmod_congruence</code> never proves anything about integers in general. It checks
+  <code>rem.vmin//c == rem.vmax//c</code>, i.e. "the interval of the leftover fits inside a single period of <code>c</code>". That one interval
+  query, applied to a cleverly chosen leftover, is what turns <code>((x*8+z)%8)</code> into <code>z</code>. Notice that <code>(z*2+1)%2</code>
+  has interval <code>[0, 1]</code> (sound but loose), yet congruence folds it to the constant <code>1</code>: rewriting the leftover as
+  <code>1</code> gives a single-point interval.</div>
+  <p>The branch names in the next demo and the game are real. <code>examples/06_symbolic.py</code> re-runs <code>fold_divmod_general</code> under
+  <code>sys.settrace</code> and reports the source line of its outermost <code>return</code>. It then takes the nearest rule-name comment above that line.</p>
+
+  <!-- ===================================================================== -->
+  <h2 id="reshape"><span class="sec">6.8</span>Where the divs and mods come from: <code>_apply_reshape</code></h2>
+  <p>A reshape changes how a flat element number is split into coordinates. The scheduler's definition of the movement ops
+  (<a class="src" data-path="tinygrad/schedule/indexing.py" data-line="164">apply_movement_op</a>, Chapter 7/10) maps <em>output</em> loop
+  ranges to <em>input</em> index expressions. For RESHAPE it flattens with the output strides and re-splits with the input shape:</p>
+  <pre><code class="language-python">@functools.cache
+def _apply_reshape(in_shape:tuple[sint,...], out_shape:tuple[sint, ...], urngs:UOp) -&gt; UOp:
+  acc:sint = 1
+  axes_in:list[UOp] = []
+  for s,src in list(zip(out_shape, urngs.src))[::-1]:
+    axes_in.append(acc*src)
+    acc *= s
+  combined_axes = UOp.const(0).usum(axes_in)
+  axes_out:list[UOp] = []
+  for s in in_shape[::-1]:
+    axes_out.append(combined_axes % s)
+    combined_axes //= s
+  # this simplify is doing a lot of heavy lifting. this is the replacement for the reshape view merging code
+  return graph_rewrite(UOp.sink(*axes_out[::-1]), symbolic+pm_simplify_valid+pm_drop_and_clauses, name=&quot;reshape&quot;)</code></pre>
+  <p>The comment says it: <em>"this simplify is doing a lot of heavy lifting. this is the replacement for the reshape view merging code."</em>
+  Older tinygrad had a <code>ShapeTracker</code> that merged views with special-purpose code. Today the merge is "write the naive div/mod
+  expression, then let symbolic cancel what cancels". <code>examples/06_symbolic.py</code> mirrors this function line by line, using a logging
+  PatternMatcher subclass that records each rule application in order:</p>
+  <pre class="output"><code>=== 3. where div/mod come from: a reshape turns one index into div/mod expressions ===
+  reshape (12,) -&gt; (3, 4): index into the input
+     raw:        ((0+r1*1+r0*4)%12)
+     simplified: (r0*4+r1)   (7 rule applications)
+  reshape (3, 4) -&gt; (12,): index into the input
+     raw:        ((0+r0*1)//4%3), ((0+r0*1)%4)
+     simplified: (r0//4), (r0%4)   (6 rule applications)
+  reshape (3, 4) -&gt; (2, 6): index into the input
+     raw:        ((0+r1*1+r0*6)//4%3), ((0+r1*1+r0*6)%4)
+     simplified: ((r1//2+r0)//2+r0), ((r0*2+r1)%4)   (15 rule applications)
+  reshape (2, 3, 4) -&gt; (6, 4): index into the input
+     raw:        ((0+r1*1+r0*4)//4//3%2), ((0+r1*1+r0*4)//4%3), ((0+r1*1+r0*4)%4)
+     simplified: (r0//3), (r0%3), r1   (18 rule applications)
+  reshape (4, 6) -&gt; (2, 2, 6): index into the input
+     raw:        ((0+r2*1+r1*6+r0*12)//6%4), ((0+r2*1+r1*6+r0*12)%6)
+     simplified: (r0*2+r1), r2   (22 rule applications)
+  the 15 rule applications for (3,4) -&gt; (2,6), in order:
+     symbolic.py:128  (r1*1)                         -&gt; r1                                   [x*1 -&gt; x]
+     symbolic.py:126  (0+r1)                         -&gt; r1                                   [x+0 / x^0 / x|0 -&gt; x]
+     symbolic.py:237  (r1+r0*6)                      -&gt; (r0*6+r1)                            [COMMUTATIVE flipping (only for index)]
+     divandmod.py:103 ((r0*6+r1)//4)                 -&gt; ((0+r0*1*2+r1+0)//4+(0+r0*1*1))      [factor_remainder]
+     symbolic.py:128  (r0*1)                         -&gt; r0                                   [x*1 -&gt; x]
+     symbolic.py:126  (0+r0*2)                       -&gt; (r0*2)                               [x+0 / x^0 / x|0 -&gt; x]
+     symbolic.py:126  (r0*2+r1+0)                    -&gt; (r0*2+r1)                            [x+0 / x^0 / x|0 -&gt; x]
+     divandmod.py:103 ((r0*2+r1)//4)                 -&gt; (((0+r1+0)//2+(0+r0*1))//2)          [nest_by_factor]
+     symbolic.py:126  (r1+0)                         -&gt; r1                                   [x+0 / x^0 / x|0 -&gt; x]
+     symbolic.py:126  (0+r0)                         -&gt; r0                                   [x+0 / x^0 / x|0 -&gt; x]
+     divandmod.py:103 (((r1//2+r0)//2+r0)%3)         -&gt; ((r1//2+r0)//2+r0+0*3*-1)            [x//y is constant]
+     symbolic.py:165  (0*3)                          -&gt; 0                                    [fold_const_alu]
+     symbolic.py:165  (0*-1)                         -&gt; 0                                    [fold_const_alu]
+     symbolic.py:126  ((r1//2+r0)//2+r0+0)           -&gt; ((r1//2+r0)//2+r0)                   [x+0 / x^0 / x|0 -&gt; x]
+     divandmod.py:103 ((r0*6+r1)%4)                  -&gt; ((0+r0*1*2+r1+0)%4)                  [factor_remainder]</code></pre>
+
+  <div class="demo" id="demo-reshape">
+    <div class="demo-title">Demo · div/mod folding stepper on real reshape indices</div>
+    <div class="demo-desc">Pick a reshape and step through every rule application, in the exact order tinygrad applied them (captured with the
+    logging matcher). Each step shows the rule (file:line, which links to GitHub, plus the <code>fold_divmod_general</code> branch where one ran) and
+    the real UOp subgraph before and after. The table at the bottom evaluates the <em>raw</em> and the <em>simplified</em> index for every output
+    position and checks that they agree.</div>
+    <div class="controls"><label>reshape <select id="ch06-rsel"></select></label> <span id="ch06-rsum" style="font-family:var(--mono);font-size:13px"></span></div>
+    <div class="row">
+      <div class="col" style="flex:1 1 520px">
+        <div id="ch06-rstep"></div>
+        <div class="row">
+          <div class="col" style="flex:1 1 240px"><div style="color:var(--dim);font-size:13px">matched subgraph (before)</div><div id="ch06-rg0"></div></div>
+          <div class="col" style="flex:1 1 240px"><div style="color:var(--dim);font-size:13px">returned subgraph (after)</div><div id="ch06-rg1"></div></div>
+        </div>
+      </div>
+      <div class="col" style="flex:1 1 300px"><div class="ch06-panel ch06-log" id="ch06-rlog"></div></div>
+    </div>
+    <div style="margin-top:10px"><div id="ch06-rcheck" style="margin-bottom:6px"></div><div style="overflow:auto" id="ch06-rgrid"></div></div>
+  </div>
+  <p>Look at the (3,4) → (2,6) case, the one that does not simplify to plain strides. A 2×6 view of a 3×4 tensor genuinely needs a division:
+  output row 0 spans input rows 0 and 1. So the result keeps <code>(r1//2+r0)//2+r0</code> and <code>(r0*2+r1)%4</code>. They are cheaper than the raw
+  forms, but they are real division and modulo. The other four cases are "nice" reshapes, where symbolic removes every div and mod.</p>
+
+  <div class="quiz" data-answer="0">
+    <div class="q">Reshape (12,) → (3,4): the raw input index is <code>((0+r1*1+r0*4)%12)</code>. Which fact lets <code>% 12</code> disappear?</div>
+    <button class="opt"><code>r0*4+r1 ∈ [0, 11]</code>, so the quotient by 12 is the constant 0 ("x//y is constant")</button><button class="opt">12 is divisible by 4</button><button class="opt">RANGE mod its own bound</button><button class="opt">it doesn't disappear; the stepper shows a MOD in the result</button>
+    <div class="explain">r0 ∈ [0,2] and r1 ∈ [0,3] give 4·2+3 = 11 &lt; 12. In the log, <code>divandmod.py:103</code> rewrites it to <code>r0*4+r1+0*12*-1</code>
+    (that is, <code>x - 0*y</code>), and constant folding cleans up the rest.</div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <h2 id="invalid"><span class="sec">6.9</span><code>Invalid</code> and gated indices</h2>
+  <p>PAD creates indices that are only <em>sometimes</em> valid. tinygrad represents "index <code>i</code>, valid when <code>cond</code>" as
+  <code>cond.where(i, Invalid)</code>, where <code>Invalid</code> is a special constant
+  (<a class="src" data-path="tinygrad/uop/ops.py" data-line="635">UOp.invalid / valid / get_idx / get_valid</a>):</p>
+  <pre><code class="language-python">  @staticmethod
+  def invalid() -&gt; UOp: return UOp.const(Invalid)
+  def valid(self, cond) -&gt; UOp: return cond.where(self, self.const_like(Invalid))
+  def get_idx(self) -&gt; UOp:
+    if self.op is Ops.STACK: return UOp.stack(*(x.get_idx() for x in self.src))
+    return self.src[1] if self.op is Ops.WHERE and self.src[2].is_invalid else self
+  def get_valid(self) -&gt; UOp:
+    if self.op is Ops.STACK: return UOp.stack(*(x.get_valid() for x in self.src))
+    return self.src[0] if self.op is Ops.WHERE and self.src[2].is_invalid else UOp.const(not self.is_invalid)</code></pre>
+  <pre><code class="language-python">    case Ops.PAD:
+      # NOTE: the .where(r-s, i) is not inside the graph_rewrite so that `convert_pad_to_where_to_keep_behavior_local`
+      #       wraps the pad with only the newly added valid
+      rngs = tuple(r if (sz == sh and off == 0) else (r-off).valid(graph_rewrite((r &gt;= off) &amp; (r &lt; (sh+off)),
+        symbolic+pm_simplify_valid, name=&quot;pad&quot;)) for r,sh,(off,sz) in zip(rngs, in_shape, arg))</code></pre>
+  <p>Two rule families keep gated indices clean:</p>
+  <ul>
+    <li><b><a class="src" data-path="tinygrad/uop/symbolic.py" data-line="88">pm_data_invalid</a></b> (the first part of <code>symbolic_simple</code>) treats
+    Invalid as <em>poison</em> that must reach the LOAD/STORE. Arithmetic moves inside the gate, <code>cond.where(x, Invalid) + 1 →
+    cond.where(x+1, Invalid)</code>, so that <code>0 * maybe_invalid</code> is never folded to <code>0</code> and the gate is never lost. An INDEX whose
+    index is plain Invalid becomes "no load" (the alternative value, or 0) or "no store".</li>
+    <li><b><a class="src" data-path="tinygrad/uop/symbolic.py" data-line="446">pm_simplify_valid</a></b> (part of <code>sym</code>) simplifies the index
+    <em>under the assumption that the gate holds</em>. <code>uop_given_valid</code> parses each clause like <code>r0&lt;4</code> into bounds, substitutes a
+    fake Variable with the narrower range, simplifies, and substitutes back. <code>simplify_valid</code> does the same to the clauses of the
+    gate itself, using each other.</li>
+  </ul>
+  <pre><code class="language-python">pm_data_invalid = PatternMatcher([
+  (invalid_pat.broadcast(name=&quot;s&quot;), lambda i,s: i.expand(s.shape)),
+  (UPat(GroupOp.Unary|{Ops.CAST, Ops.BITCAST}, src=(invalid_pat,)), lambda i: i),
+  (UPat(GroupOp.Unary|{Ops.CAST, Ops.BITCAST}, src=(invalid_gate,), name=&quot;op&quot;),
+   lambda cond,x,op,i: cond.where(op.replace(src=(x,)), i)),
+  # binary ops move inside the gate, with Invalid in the false branch
+  (UPat(GroupOp.Binary, src=(invalid_gate, UPat.var(&quot;y&quot;)), name=&quot;alu&quot;), lambda cond,x,y,alu,i: cond.where(x.alu(alu.op,y), i)),
+  (UPat(GroupOp.Binary, src=(UPat.var(&quot;y&quot;), invalid_gate), name=&quot;alu&quot;), lambda cond,x,y,alu,i: cond.where(y.alu(alu.op,x), i)),
+  (UPat(GroupOp.Binary-GroupOp.Comparison, src=[invalid_pat, UPat()]), lambda i: i),
+  (invalid_gate.reduce(allow_any_len=True, name=&quot;red&quot;), lift_reduce_gate),
+  # an Invalid condition poisons the whole where; a gated Invalid condition lifts the gate out
+  (invalid_pat.where(UPat(), UPat()), lambda i: i),
+  (invalid_gate.where(UPat.var(&quot;a&quot;), UPat.var(&quot;b&quot;)), lambda cond,x,i,a,b: cond.where(x.where(a,b), i)),
+...
+def gated_given_valid(cond:UOp, x:UOp, i:UOp) -&gt; UOp|None:
+  # pure index math only: a LOAD in x executes even where cond is false, so its INDEX valid must survive the assumption
+  if x.dtype is not dtypes.weakint or x.op_in_backward_slice_with_self(Ops.INDEX): return None
+  # Skip if x contains DIV/MOD AND IMAGE mode is enabled -&gt; image index e.g. openpilot
+  if IMAGE.value &gt; 0 and x.op_in_backward_slice_with_self(Ops.TRUNCDIV, Ops.TRUNCMOD, Ops.DIV, Ops.MOD): return None
+  return cond.where(uop_given_valid(cond, x, try_simplex=False), i)
+
+pm_simplify_valid = PatternMatcher([
+  # simplify valid
+  (UPat(Ops.AND, dtypes.bool, name=&quot;valid&quot;), simplify_valid),
+  (invalid_gate, gated_given_valid),
+])</code></pre>
+  <pre class="output"><code>=== 6. Invalid: gated indices from PAD, simplified under their gate ===
+PAD (4,)-&gt;(6,) index: ((r0+1*-1) if (((r0&lt;1)==False)&amp;(r0&lt;5)) else Invalid)
+   get_valid(): (((r0&lt;1)==False)&amp;(r0&lt;5))    get_idx(): (r0+1*-1)
+  ((r0//4+r0%4*2) if (r0&lt;4) else Invalid)          -&gt; ((r0*2) if (r0&lt;4) else Invalid)
+  (((r0+3)//4) if ((r0&lt;4)&amp;((r0&lt;1)==False)) else Invalid) -&gt; (1 if ((r0&lt;4)&amp;((r0&lt;1)==False)) else Invalid)
+  ((r0 if (r0&lt;4) else Invalid)+1)                  -&gt; ((r0+1) if (r0&lt;4) else Invalid)
+  ((r0 if (r0&lt;4) else Invalid)*0)                  -&gt; (0 if (r0&lt;4) else Invalid)</code></pre>
+  <p>The second line is the striking one. With <code>r0 ∈ [0,7]</code>, <code>r0//4 + r0%4*2</code> is a genuine div/mod expression. Under the gate
+  <code>r0&lt;4</code>, <code>r0 ∈ [0,3]</code>, so <code>r0//4 = 0</code> and <code>r0%4 = r0</code>, and the whole thing is <code>r0*2</code>. The third line
+  folds to the constant 1 under its gate. The <code>*0</code> line shows the poison rule: the result is still gated, not a bare <code>0</code>.</p>
+
+  <div class="quiz" data-answer="1">
+    <div class="q">Why must <code>pm_data_invalid</code> run <em>before</em> the ordinary rules (it is literally the first term of <code>symbolic_simple</code>)?</div>
+    <button class="opt">For speed only</button><button class="opt">Otherwise <code>x*0 → 0</code> could fire on a gated value and erase the gate: an out-of-bounds read would turn into an unconditional one</button><button class="opt">Because Invalid has no dtype</button>
+    <div class="explain">The comment at symbolic.py:67 says it: "this needs to be before symbolic so that 0*something_that_might_be_invalid doesnt become 0". Rules inside a PatternMatcher are tried in order.</div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <h2 id="game"><span class="sec">6.10</span>Play: "simplify this"</h2>
+  <p>Now predict the simplifications yourself. Every answer below is a real output of <code>graph_rewrite(expr, symbolic)</code>, with Variables
+  <code>x ∈ [0,100]</code>, <code>z ∈ [0,7]</code> and the loop counter <code>r0 ∈ [0,8)</code>. After you answer, you see the exact chain of rules that fired.</p>
+  <div class="demo ch06-game" id="demo-game">
+    <div class="demo-title">Demo · simplify this (19 real cases)</div>
+    <div class="demo-desc">Choose what tinygrad's <code>symbolic</code> returns. One option is the input unchanged. Distractors may be wrong, or right but not
+    tinygrad's canonical form: the question is what tinygrad prints.</div>
+    <div class="controls"><button id="ch06-gprev">◀</button><span id="ch06-gnum" style="font-family:var(--mono)"></span><button id="ch06-gnext" class="primary">next ▶</button>
+      <span id="ch06-gscore" class="ch06-badge" style="margin-left:auto"></span></div>
+    <div>simplify <span class="ch06-expr" id="ch06-gq"></span> <span id="ch06-grange" style="color:var(--dim);font-family:var(--mono);font-size:12.5px"></span></div>
+    <div id="ch06-gopts"></div>
+    <div id="ch06-gexplain" class="ch06-panel" style="display:none;margin-top:8px"></div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <h2 id="pitfalls"><span class="sec">6.11</span>Soundness, cost and pitfalls</h2>
+  <ul>
+    <li><b>Every rule is guarded by range facts or <code>fits</code>.</b> Combining terms checks that the new coefficient fits the dtype, and moving
+    constants checks <code>no_overflow</code>. Folding <code>(x//c1)//c2</code> requires <code>c2 &gt; 0</code>, because floor division by a negative
+    number does not nest that way. These guards are why symbolic can run on real-dtype expressions late in codegen, not just on
+    weakint indices.</li>
+    <li><b>Loose intervals cost folds, never correctness.</b> <code>(x//4*4 + x%4)</code> has interval <code>[0, 103]</code>. The true range is
+    <code>[0, 100]</code>, but interval arithmetic does not know the two terms are correlated. A loose bound can only make a rule decline.
+    That is why structural rules such as recombine exist next to the interval rules.</li>
+    <li><b>Division by a range that includes 0</b> sends <code>_min_max</code> to the dtype bounds, and <code>fold_divmod_general</code> raises
+    <code>ZeroDivisionError</code> when the divisor is exactly 0.</li>
+    <li><b>Cost.</b> <code>fold_divmod_general</code> is <code>functools.cache</code>d, which is safe because UOps are immutable and hash-consed. Its
+    <code>nest_by_factor</code> branch recurses and keeps the result with the smallest <code>backward_slice</code>. Symbolic is one of the hottest parts of
+    compile time, which is why match stats and the compiled UPat matchers from Chapter 5 matter.</li>
+    <li><b>Order sensitivity.</b> Many rules expect canonical forms (consts last, commutative order). A rule that does not seem to fire on a
+    hand-built expression may just be seeing the operands in a different order, so run <code>.simplify()</code> on the inputs first.</li>
+  </ul>
+  <details class="deep-dive"><summary>The complete example: <code>examples/06_symbolic.py</code></summary>
+  <pre><code class="language-python"># Chapter 6 — symbolic algebra &amp; range analysis.  Run with:  DEV=CPU python3 examples/06_symbolic.py
+# Builds index-style integer expressions out of UOps and runs them through tinygrad&#x27;s `symbolic` PatternMatcher.
+import json, pathlib, itertools
+from tinygrad import Tensor, Device, Context
+from tinygrad.uop import Ops
+from tinygrad.uop.ops import UOp, PatternMatcher, graph_rewrite, sym_infer
+from tinygrad.uop.symbolic import symbolic, sym, pm_simplify_valid, pm_drop_and_clauses
+from tinygrad.schedule.indexing import apply_movement_op
+from tinygrad.codegen import to_program
+
+def section(t): print(f&quot;\n=== {t} ===&quot;)
+R = lambda u: u.render(simplify=False)
+DATA = pathlib.Path(__file__).resolve().parent.parent / &quot;data&quot;
+x, y = UOp.variable(&quot;x&quot;, 0, 100), UOp.variable(&quot;y&quot;, 0, 3)
+
+section(&quot;1. range analysis: every integer UOp knows an interval [vmin, vmax]&quot;)
+for e in [x, y, x + y, x * 4 + y, (x * 4 + y) // 4, (x * 4 + y) % 4, x - y, y * -3, x.maximum(50), (y &lt; 4), (x &lt; 50)]:
+  print(f&quot;  {R(e):16s} in [{e.vmin}, {e.vmax}]&quot;)
+
+section(&quot;2. symbolic: before -&gt; after (graph_rewrite(expr, symbolic))&quot;)
+cases = {
+  &quot;constant folding&quot;:        UOp.const(3) * 4 + 2,
+  &quot;x*1, x+0&quot;:                x * 1 + 0,
+  &quot;combine terms&quot;:           x * 2 + x * 3,
+  &quot;move consts to the end&quot;:  (x + 3) + y + 5,
+  &quot;x//c*c + x%c -&gt; x&quot;:       (x // 4) * 4 + x % 4,
+  &quot;exact division&quot;:          (x * 4 + y) // 4,
+  &quot;mod of a congruent sum&quot;:  (x * 4 + y) % 4,
+  &quot;nested div&quot;:              (x // 3) // 4,
+  &quot;div of a mod&quot;:            (x % 12) // 4,
+  &quot;lt folding&quot;:              (x * 4 + y) &lt; 8,
+  &quot;range says it&#x27;s const&quot;:   y // 4,
+  &quot;comparison always true&quot;:  y &lt; 4,
+  &quot;max with known order&quot;:    y.maximum(5),
+  &quot;range mod its bound&quot;:     UOp.range(16, 0) % 16,
+  &quot;x - x (interval is loose)&quot;: x - x,
+  &quot;divide by gcd (w in [1,10])&quot;: (x * 4) // (UOp.variable(&quot;w&quot;, 1, 10) * 2),
+}
+captured = []
+for name, e in cases.items():
+  out = graph_rewrite(e, symbolic)
+  captured.append({&quot;name&quot;: name, &quot;before&quot;: R(e), &quot;after&quot;: R(out), &quot;vmin&quot;: str(e.vmin), &quot;vmax&quot;: str(e.vmax)})
+  print(f&quot;  {name:28s} {R(e):22s} -&gt; {R(out):12s} interval before: [{e.vmin}, {e.vmax}]&quot;)
+
+section(&quot;3. where div/mod come from: a reshape turns one index into div/mod expressions&quot;)
+# this mirrors _apply_reshape in tinygrad/schedule/indexing.py: flatten the OUTPUT indices with the output strides,
+# then peel INPUT indices off with % and // ... and then simplify
+import sys, linecache, re
+from tinygrad.uop.ops import UPat
+from tinygrad.uop import divandmod
+def which_branch(d: UOp) -&gt; int:
+  # re-run fold_divmod_general (uncached) under a tracer and report the line of its OUTERMOST return
+  code, depth, line = divandmod.fold_divmod_general.__wrapped__.__code__, [0], [0]
+  def tracer(frame, event, arg):
+    if frame.f_code is code:
+      if event == &quot;call&quot;: depth[0] += 1
+      elif event == &quot;return&quot;:
+        if depth[0] == 1: line[0] = frame.f_lineno
+        depth[0] -= 1
+    return tracer
+  sys.settrace(tracer)
+  try: divandmod.fold_divmod_general.__wrapped__(d)
+  finally: sys.settrace(None)
+  # name = the nearest &quot;# rule_name ...&quot; comment above that return
+  for ln in range(line[0], 0, -1):
+    if m := re.match(r&quot;# (x//y is constant|exact division|[a-z]+_[a-z_]+)&quot;, linecache.getline(divandmod.__file__, ln).strip()): return line[0], m[1]
+  return line[0], &quot;?&quot;
+def rule_name(p: UPat, fn) -&gt; str:
+  # a named function, else the rule&#x27;s trailing comment, else the nearest comment above it
+  if fn.__name__ != &quot;&lt;lambda&gt;&quot;: return fn.__name__
+  if &quot;#&quot; in (t := linecache.getline(p.location[0], p.location[1])): return t.split(&quot;#&quot;, 1)[1].strip()
+  above, ln = [], p.location[1] - 1   # the block of comment lines directly above the rule
+  while (t := linecache.getline(p.location[0], ln).strip()).startswith(&quot;#&quot;): above.insert(0, t); ln -= 1
+  # prefer a plain comment (not a NOTE/TODO, commented-out code or a &quot;** section **&quot; header), else a section header
+  plain = [t.strip(&quot;# &quot;) for t in above if not t.startswith(&quot;# **&quot;) and not any(w in t for w in (&quot;NOTE&quot;, &quot;TODO&quot;, &quot;UPat&quot;))]
+  if above := plain or [t.strip(&quot;# *&quot;) for t in above if t.startswith(&quot;# **&quot;)]: return above[0][:80]
+  return linecache.getline(p.location[0], p.location[1]).strip()[:80]
+def gdump(u: UOp) -&gt; dict:
+  ids = {x: f&quot;n{i}&quot; for i, x in enumerate(u.toposort())}
+  lab = lambda x: R(x) if x.op in (Ops.PARAM, Ops.RANGE, Ops.CONST) else None   # leaves show their rendered name/value
+  return {&quot;nodes&quot;: [[ids[x], x.op.name, lab(x)] for x in ids if x.op is not Ops.STACK and not (x.op is Ops.CONST and x.src)],
+          &quot;edges&quot;: [[ids[s], ids[x], i] for x in ids for i, s in enumerate(x.src) if s.op is not Ops.STACK and x.op is not Ops.RANGE]}
+class Logged(PatternMatcher):
+  def __init__(self, patterns, log): super().__init__(patterns); self.log, self.fns = log, {id(p): fn for p, fn in patterns}
+  def rewrite(self, uop, ctx=None):
+    for p, match, early_reject in self.pdict.get(uop.op, []):
+      if (ret := match(uop, ctx)) is not None and ret is not uop:
+        f, ln = p.location[0].split(&quot;/&quot;)[-1], p.location[1]
+        e = {&quot;before&quot;: R(uop), &quot;after&quot;: R(ret), &quot;rule&quot;: f&quot;{f}:{ln}&quot;, &quot;g0&quot;: gdump(uop), &quot;g1&quot;: gdump(ret)}
+        if f == &quot;divandmod.py&quot; and ln == 103: e[&quot;branch_line&quot;], e[&quot;branch&quot;] = which_branch(uop)
+        else: e[&quot;branch&quot;] = rule_name(p, self.fns[id(p)])
+        self.log.append(e)
+        return ret
+    return None
+def reshape_index(in_shape, out_shape):
+  rngs = [UOp.range(s, i) for i, s in enumerate(out_shape)]
+  acc, axes_in = 1, []
+  for s, r in list(zip(out_shape, rngs))[::-1]: axes_in.append(r * acc); acc *= s
+  combined = UOp.const(0).usum(axes_in)
+  axes_out = []
+  for s in in_shape[::-1]: axes_out.append(combined % s); combined = combined // s
+  raw = UOp.sink(*axes_out[::-1])
+  log: list = []
+  out = graph_rewrite(raw, Logged((symbolic + pm_simplify_valid + pm_drop_and_clauses).patterns, log))
+  return raw, out, log
+steppers = []
+for in_shape, out_shape in [((12,), (3, 4)), ((3, 4), (12,)), ((3, 4), (2, 6)), ((2, 3, 4), (6, 4)), ((4, 6), (2, 2, 6))]:
+  raw, out, log = reshape_index(in_shape, out_shape)
+  print(f&quot;  reshape {in_shape} -&gt; {out_shape}: index into the input&quot;)
+  print(f&quot;     raw:        {&#x27;, &#x27;.join(R(s) for s in raw.src)}&quot;)
+  print(f&quot;     simplified: {&#x27;, &#x27;.join(R(s) for s in out.src)}   ({len(log)} rule applications)&quot;)
+  steppers.append({&quot;in&quot;: in_shape, &quot;out&quot;: out_shape, &quot;raw&quot;: [R(s) for s in raw.src], &quot;simplified&quot;: [R(s) for s in out.src], &quot;log&quot;: log,
+                   &quot;nodes_raw&quot;: len(raw.toposort()), &quot;nodes_simplified&quot;: len(out.toposort())})
+print(f&quot;  the {len(steppers[2][&#x27;log&#x27;])} rule applications for (3,4) -&gt; (2,6), in order:&quot;)
+for st in steppers[2][&quot;log&quot;]:
+  print(f&quot;     {st[&#x27;rule&#x27;]:16s} {st[&#x27;before&#x27;]:30s} -&gt; {st[&#x27;after&#x27;]:36s} [{st[&#x27;branch&#x27;]}]&quot;)
+
+section(&quot;4. Variables, bind, and symbolic shapes&quot;)
+n = UOp.variable(&quot;n&quot;, 1, 10)
+print(&quot;n:&quot;, R(n), &quot; range:&quot;, (n.vmin, n.vmax), &quot; is_variable:&quot;, n.is_variable)
+bn = n.bind(3)
+print(&quot;bound:&quot;, bn.arg.val, &quot; unbind -&gt;&quot;, (R(bn.unbind()[0]), bn.unbind()[1]))
+t = Tensor.ones(10).contiguous().realize()[:bn]
+print(&quot;Tensor shape with a bound Variable:&quot;, tuple(R(d) if isinstance(d, UOp) else d for d in t.shape), &quot; (the dim is the PARAM itself, val=3)&quot;)
+print(&quot;(t*2).sum() with n=3:&quot;, (t * 2).sum().item())
+expr = (n * 4 + 2) // 2
+print(&quot;sym_infer(&quot;, R(expr), &quot;, n=3 ) =&quot;, sym_infer(expr, {&quot;n&quot;: 3}), &quot;   simplified:&quot;, R(expr.simplify()))
+
+section(&quot;5. interval check against brute force (vmin/vmax are sound bounds)&quot;)
+for e in [(x * 4 + y) // 4, (x + y) % 7, (y * 3 - x) // 5, x.maximum(y * 40)]:
+  vals = [e.substitute({x: UOp.const(a), y: UOp.const(b)}).simplify().arg for a in range(0, 101, 5) for b in range(4)]
+  print(f&quot;  {R(e):20s} vmin/vmax=[{e.vmin}, {e.vmax}]  sampled=[{min(vals)}, {max(vals)}]&quot;)
+
+section(&quot;6. Invalid: gated indices from PAD, simplified under their gate&quot;)
+r = UOp.range(6, 0)
+idx = apply_movement_op(Ops.PAD, (4,), ((1, 1),), (r,))[0]   # pad a length-4 axis by 1 on each side
+print(&quot;PAD (4,)-&gt;(6,) index:&quot;, R(idx))
+print(&quot;   get_valid():&quot;, R(idx.get_valid()), &quot;   get_idx():&quot;, R(idx.get_idx()))
+r8 = UOp.range(8, 0)
+for e in [(r8 &lt; 4).where(r8 // 4 + r8 % 4 * 2, UOp.invalid()), ((r8 &lt; 4) &amp; (r8 &gt;= 1)).where((r8 + 3) // 4, UOp.invalid()),
+          (r8 &lt; 4).where(r8, UOp.invalid()) + 1, (r8 &lt; 4).where(r8, UOp.invalid()) * 0]:
+  print(f&quot;  {R(e):48s} -&gt; {R(graph_rewrite(e, sym))}&quot;)
+
+section(&quot;7. why it matters: the index math that reaches the kernel&quot;)
+t = Tensor([float(i) for i in range(24)]).reshape(4, 6).realize()
+mk = lambda: t.reshape(2, 2, 6).permute(1, 0, 2).reshape(4, 6).contiguous()   # fresh graph each time
+ast = mk().schedule_linear().src[-1].src[0]
+with Context(NOOPT=1): prg = to_program(ast, Device[&quot;CPU&quot;].renderer)
+print(&quot;\n&quot;.join(l for l in prg.src[2].arg.split(&quot;\n&quot;) if &quot;for&quot; in l or &quot;val0&quot; in l))
+print(&quot;result row 1:&quot;, mk().tolist()[1])
+v = Tensor([1., 2, 3, 4]).realize()
+with Context(NOOPT=1): prg = to_program(v.pad(((1, 1),)).contiguous().schedule_linear().src[-1].src[0], Device[&quot;CPU&quot;].renderer)
+print(&quot;\n&quot;.join(l for l in prg.src[2].arg.split(&quot;\n&quot;) if &quot;val0&quot; in l))
+print(&quot;pad result:&quot;, v.pad(((1, 1),)).contiguous().tolist())
+for st in steppers: print(f&quot;  reshape {str(st[&#x27;in&#x27;]):10s}-&gt;{str(st[&#x27;out&#x27;]):10s} index graph: {st[&#x27;nodes_raw&#x27;]:3d} UOps raw -&gt; {st[&#x27;nodes_simplified&#x27;]:3d} simplified&quot;)
+
+# data for the interactive demos
+interval_checks = []
+a, b = UOp.variable(&quot;a&quot;, 0, 10), UOp.variable(&quot;b&quot;, 0, 10)
+templates = {&quot;a+b&quot;: a + b, &quot;a-b&quot;: a - b, &quot;a*b&quot;: a * b, &quot;a//b&quot;: a // b, &quot;a%b&quot;: a % b, &quot;max(a,b)&quot;: a.maximum(b), &quot;a&lt;b&quot;: a &lt; b,
+             &quot;(a*4+b)//4&quot;: (a * 4 + b) // 4, &quot;(a*4+b)%4&quot;: (a * 4 + b) % 4, &quot;a*-3+b&quot;: a * -3 + b, &quot;(a&lt;b).where(a,b)&quot;: (a &lt; b).where(a, b)}
+for (alo, ahi), (blo, bhi) in itertools.product([(0, 10), (-5, 5), (3, 7), (-8, -2)], [(0, 10), (1, 4), (-3, 3), (2, 2), (-6, -1)]):
+  aa, bb = UOp.variable(&quot;a&quot;, alo, ahi), UOp.variable(&quot;b&quot;, blo, bhi)
+  for name, e in templates.items():
+    ee = e.substitute({a: aa, b: bb})
+    lim = lambda v: v if isinstance(v, bool) or abs(v) &lt; 2**62 else (&quot;-inf&quot; if v &lt; 0 else &quot;inf&quot;)   # weakint dtype bounds are huge
+    interval_checks.append({&quot;expr&quot;: name, &quot;a&quot;: [alo, ahi], &quot;b&quot;: [blo, bhi], &quot;vmin&quot;: lim(ee.vmin), &quot;vmax&quot;: lim(ee.vmax)})
+# extra real before/after pairs for the &quot;simplify this&quot; game (not printed)
+z = UOp.variable(&quot;z&quot;, 0, 7)
+game_exprs = [(x * 4 + z) // 8, (x * 8 + z) % 8, (z + 8) // 8, (z * 2 + 1) % 2, (x // 2) // 2 // 2, x * 3 + x, (x + 1) * 2 - 2,
+              (z &lt; 8), (z &lt; 3), ((x * 2) &lt; 7), (x // 4) * 4 + x % 4 + 1, (x % 16) // 4, (x % 16) % 4, z.maximum(-1), (x * 6 + z) // 3,
+              (z * 4 + 3) // 4, UOp.range(8, 0) // 8, (x + 5) % 5, ((x * 4) + 2) // 2]
+game = []
+for e in game_exprs:
+  log = []
+  out = graph_rewrite(e, Logged(symbolic.patterns, log))
+  assert out is graph_rewrite(e, symbolic)   # the logging matcher gives exactly the same answer
+  game.append({&quot;before&quot;: R(e), &quot;after&quot;: R(out), &quot;vmin&quot;: str(e.vmin), &quot;vmax&quot;: str(e.vmax),
+               &quot;rules&quot;: [{k: v for k, v in st.items() if k not in (&quot;g0&quot;, &quot;g1&quot;)} for st in log]})
+json.dump({&quot;cases&quot;: captured, &quot;game&quot;: game, &quot;steppers&quot;: steppers, &quot;intervals&quot;: interval_checks}, open(DATA / &quot;ch06_symbolic.json&quot;, &quot;w&quot;), indent=1, default=str)</code></pre></details>
+
+  <div class="quiz" data-answer="2">
+    <div class="q">A rule wants to rewrite <code>x//d &lt; c</code> to <code>x &lt; c*d</code>. What guard does it need?</div>
+    <button class="opt">none, it's always true</button><button class="opt"><code>x.vmin ≥ 0</code></button><button class="opt"><code>d &gt; 0</code></button><button class="opt"><code>c &gt; 0</code></button>
+    <div class="explain">For floor division by a positive \(d\): \(\lfloor x/d\rfloor &lt; c \iff x &lt; cd\), for any sign of x. With a negative \(d\) the inequality
+    flips. The real rule (symbolic.py:305) checks exactly <code>d.val &gt; 0</code>.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">After <code>fold_divmod_congruence</code> returns, <code>(z*2+1)%2</code> becomes <code>1</code>. But <code>((z*2+1)%2).vmin</code> is 0. Contradiction?</div>
+    <button class="opt">Yes, one of them is a bug</button><button class="opt">No: the interval is a sound over-approximation, and the rewritten expression has a tighter one</button><button class="opt">No: vmin is computed after simplification</button>
+    <div class="explain">MOD by a constant returns <code>[0, c-1]</code> when the numerator spans several periods, which is true but loose. The rewrite proves more using the
+    structure of the expression, and the new node <code>1</code> has the exact interval <code>[1,1]</code>.</div>
+  </div>
+
+  <div class="summary-box"><h3>Chapter summary</h3><ul>
+    <li><b><code>_min_max</code></b> gives every UOp a cached, sound interval: one rule per op (ADD sums, MUL corners, DIV corners when the divisor's sign is
+    fixed, MOD by a constant "same period or wrap", CMPLT as a bool interval, WHERE as a union). The fallback is the dtype's bounds.</li>
+    <li><b>Variables</b> are scalar PARAMs with <code>vmin_vmax</code>, so their intervals feed every rule. <code>bind</code> makes a different UOp and
+    <code>unbind_all</code> strips values for caching. <code>sym_infer</code> evaluates, and <code>resolve</code> turns a symbolic comparison into a Python bool when
+    the range decides it.</li>
+    <li><b><code>symbolic_simple ⊂ symbolic ⊂ sym</code></b>: local folds; then canonical order, combining terms, lt/nested-div/max folding,
+    "min==max → CONST" and <code>div_and_mod_symbolic</code>; then valid/gate simplification.</li>
+    <li><b><code>fold_divmod_general</code></b> tries, in order: constant quotient, nested_div, remove_nested_mod, exact division, congruence, nest_by_factor,
+    divide_by_gcd and factor_remainder. Most branches come down to "does the leftover's interval fit in one period?".</li>
+    <li><b>Reshape = naive div/mod + simplify.</b> <code>_apply_reshape</code> replaced the old view-merging code, and the kernel's index cost is whatever
+    symbolic could not cancel.</li>
+    <li><b>Invalid</b> gates PAD indices. <code>pm_data_invalid</code> keeps the poison attached, and <code>pm_simplify_valid</code> simplifies indices under their gate.</li>
+    <li>Next: <a href="07-movement.html">Chapter 7</a> derives the index functions of every movement op that this chapter has been simplifying.</li>
+  </ul></div>
+</main>
+</div>
+<script>
+(function () {
+const G = Guide;
+const fmt = v => v === true ? "True" : v === false ? "False" : v === Infinity || v === "inf" ? "+big" : v === -Infinity || v === "-inf" ? "-big" : String(v);
+const DATA = G.loadJSON("../data/ch06_symbolic.json");
+
+// =====================================================================================
+// Demo 1: interval arithmetic: a JS port of UOp._min_max (tinygrad/uop/ops.py:1054), integer (weakint) branches
+// =====================================================================================
+(function () {
+  const fdiv = (a, b) => Math.floor(a / b), pmod = (a, b) => a - b * Math.floor(a / b);   // python // and %
+  // hash-consed mini UOps so the same subexpression is one node (like UOpMetaClass)
+  const UC = new Map(); let uid = 0;
+  const U = (op, src = [], arg = null) => { const k = op + "|" + src.map(s => s.id).join(",") + "|" + arg; if (!UC.has(k)) UC.set(k, { id: "i" + (uid++), op, src, arg }); return UC.get(k); };
+  const a = U("PARAM", [], "a"), b = U("PARAM", [], "b"), C = v => U("CONST", [], v);
+  const T = {   // built exactly as tinygrad builds them: a-b is a+b*-1 (see the captured render "(a+b*-1)")
+    "a+b": U("ADD", [a, b]), "a-b": U("ADD", [a, U("MUL", [b, C(-1)])]), "a*b": U("MUL", [a, b]), "a//b": U("DIV", [a, b]), "a%b": U("MOD", [a, b]),
+    "max(a,b)": U("MAX", [a, b]), "a<b": U("CMPLT", [a, b]), "(a*4+b)//4": U("DIV", [U("ADD", [U("MUL", [a, C(4)]), b]), C(4)]),
+    "(a*4+b)%4": U("MOD", [U("ADD", [U("MUL", [a, C(4)]), b]), C(4)]), "a*-3+b": U("ADD", [U("MUL", [a, C(-3)]), b]),
+    "(a<b).where(a,b)": U("WHERE", [U("CMPLT", [a, b]), a, b]),
+  };
+  const BIG = [-Infinity, Infinity];   // dtype.min, dtype.max fallback
+  function minmax(u, env, memo, why) {
+    if (memo.has(u)) return memo.get(u);
+    let r, w;
+    const mm = s => minmax(s, env, memo, why);
+    if (u.op === "PARAM") { r = env[u.arg]; w = "GroupOp.Defines: arg.vmin_vmax"; }
+    else if (u.op === "CONST") { r = [u.arg, u.arg]; w = "CONST: (val, val)"; }
+    else if (u.op === "WHERE") {
+      const [t, f] = [mm(u.src[1]), mm(u.src[2])]; mm(u.src[0]);
+      if (u.src[0].op === "CMPLT" && u.src[0].src[0] === u.src[1] && u.src[0].src[1] === u.src[2]) { r = [Math.min(t[0], f[0]), Math.min(t[1], f[1])]; w = "WHERE: (a<b).where(a,b) is min(a,b)"; }
+      else { r = [Math.min(t[0], f[0]), Math.max(t[1], f[1])]; w = "WHERE: union of both branches"; }
+    } else {
+      const [[s0lo, s0hi], [s1lo, s1hi]] = [mm(u.src[0]), mm(u.src[1])];
+      switch (u.op) {
+        case "ADD": r = [s0lo + s1lo, s0hi + s1hi]; w = "ADD: (lo+lo, hi+hi)"; break;
+        case "MUL": { const v = [s0lo * s1lo, s0lo * s1hi, s0hi * s1lo, s0hi * s1hi]; r = [Math.min(...v), Math.max(...v)]; w = "MUL: min/max of the 4 corner products"; break; }
+        case "DIV":
+          if (s0lo > s0hi) { r = [0, 0]; w = "DIV: empty numerator"; }
+          else if (s1lo * s1hi > 0) { const v = [fdiv(s0lo, s1lo), fdiv(s0lo, s1hi), fdiv(s0hi, s1lo), fdiv(s0hi, s1hi)]; r = [Math.min(...v), Math.max(...v)]; w = "DIV: divisor sign fixed → floor-div corners"; }
+          else { r = BIG; w = "DIV: divisor range contains 0 → dtype bounds"; }
+          break;
+        case "MOD":
+          if (s0lo > s0hi) { r = [0, 0]; w = "MOD: empty numerator"; }
+          else if (s1lo === s1hi && s1hi > 0) { const c = s1lo; if (fdiv(s0lo, c) === fdiv(s0hi, c)) { r = [pmod(s0lo, c), pmod(s0hi, c)]; w = `MOD by const ${c}: same period → (lo%c, hi%c)`; } else { r = [0, c - 1]; w = `MOD by const ${c}: wraps → (0, c-1)`; } }
+          else if (s1lo === s1hi && s1hi < 0) { const c = s1lo; if (fdiv(s0lo, c) === fdiv(s0hi, c)) { r = [pmod(s0lo, c), pmod(s0hi, c)]; w = "MOD by const c<0: same period"; } else { r = [c + 1, 0]; w = "MOD by const c<0: (c+1, 0)"; } }
+          else if (s1lo > 0) { r = [0, s1hi - 1]; w = "MOD: divisor > 0 → (0, s1.vmax-1)"; }
+          else if (s1hi < 0) { r = [s1lo + 1, 0]; w = "MOD: divisor < 0 → (s1.vmin+1, 0)"; }
+          else { r = BIG; w = "MOD: divisor range contains 0 → dtype bounds"; }
+          break;
+        case "MAX": r = [Math.max(s0lo, s1lo), Math.max(s0hi, s1hi)]; w = "MAX: (max of lows, max of highs)"; break;
+        case "CMPLT": r = [s0hi < s1lo, s0lo < s1hi]; w = "CMPLT: (s0.vmax<s1.vmin, s0.vmin<s1.vmax)"; break;
+      }
+    }
+    memo.set(u, r); why.set(u, w); return r;
+  }
+  function evalU(u, av, bv) {   // exact value (python semantics), null on division by zero
+    switch (u.op) {
+      case "PARAM": return u.arg === "a" ? av : bv;
+      case "CONST": return u.arg;
+      case "WHERE": { const c = evalU(u.src[0], av, bv); return c === null ? null : evalU(u.src[c ? 1 : 2], av, bv); }
+    }
+    const x = evalU(u.src[0], av, bv), y = evalU(u.src[1], av, bv);
+    if (x === null || y === null) return null;
+    switch (u.op) {
+      case "ADD": return x + y; case "MUL": return x * y; case "MAX": return Math.max(x, y); case "CMPLT": return x < y;
+      case "DIV": return y === 0 ? null : fdiv(x, y); case "MOD": return y === 0 ? null : pmod(x, y);
+    }
+  }
+  const nodesOf = (root) => { const out = [], seen = new Set(); (function v(u) { if (seen.has(u)) return; seen.add(u); u.src.forEach(v); out.push(u); })(root); return out; };
+  const label = u => u.op === "PARAM" ? u.arg : u.op === "CONST" ? String(u.arg) : u.op;
+  const sel = G.$("#ch06-iexpr"); Object.keys(T).forEach(k => sel.append(G.el("option", { value: k }, k))); sel.value = "(a*4+b)%4";
+  const S = ["alo", "ahi", "blo", "bhi"].reduce((o, k) => (o[k] = G.$("#ch06-" + k), o), {});
+  let gctl = null, CAP = [];
+  function update(changed) {
+    let [alo, ahi, blo, bhi] = ["alo", "ahi", "blo", "bhi"].map(k => +S[k].value);
+    if (alo > ahi) { if (changed === "alo") ahi = alo; else alo = ahi; S.alo.value = alo; S.ahi.value = ahi; }
+    if (blo > bhi) { if (changed === "blo") bhi = blo; else blo = bhi; S.blo.value = blo; S.bhi.value = bhi; }
+    ["alo", "ahi", "blo", "bhi"].forEach(k => G.$(`#ch06-${k}-v`).textContent = S[k].value);
+    const root = T[sel.value], memo = new Map(), why = new Map(), env = { a: [alo, ahi], b: [blo, bhi] };
+    const [lo, hi] = minmax(root, env, memo, why);
+    const ns = nodesOf(root);
+    const g = { nodes: ns.map(u => ({ id: u.id, op: u.op, label: label(u), sub: "[" + memo.get(u).map(fmt).join(", ") + "]" })), edges: [] };
+    ns.forEach(u => u.src.forEach((s, i) => g.edges.push([s.id, u.id, i])));
+    if (!gctl) gctl = G.uopGraph("#ch06-igraph", g, { rankdir: "BT", legend: false, compact: true, height: 340 }); else gctl.setGraph(g, { animate: false });
+    gctl.highlight([root.id], { dimOthers: false });
+    G.$("#ch06-iwhy").innerHTML = ns.slice().reverse().map(u => `<tr><td>${G.escape(label(u))}</td><td>[${memo.get(u).map(fmt).join(", ")}]</td><td>${G.escape(why.get(u))}</td></tr>`).join("");
+    // brute force
+    let tlo = null, thi = null, n = 0, z = 0;
+    for (let x = alo; x <= ahi; x++) for (let y = blo; y <= bhi; y++) { const v = evalU(root, x, y); if (v === null) { z++; continue; } n++; if (tlo === null || v < tlo) tlo = v; if (thi === null || v > thi) thi = v; }
+    const tight = n && lo === tlo && hi === thi, sound = !n || (lo <= tlo && hi >= thi);
+    const cap = CAP.find(c => c.expr === sel.value && c.a[0] === alo && c.a[1] === ahi && c.b[0] === blo && c.b[1] === bhi);
+    G.$("#ch06-ires").innerHTML = `vmin/vmax = <b style="color:var(--green)">[${fmt(lo)}, ${fmt(hi)}]</b><br>exact range = <b style="color:var(--blue)">${n ? `[${fmt(tlo)}, ${fmt(thi)}]` : "—"}</b> <span style="color:var(--dim)">(${n} pairs${z ? `, ${z} skipped: ÷0` : ""})</span><br>` +
+      `<span class="ch06-badge ${tight ? "" : sound ? "warn" : "bad"}">${tight ? "tight" : sound ? "sound but loose" : "UNSOUND?!"}</span>` +
+      (cap ? ` <span class="ch06-badge">tinygrad capture at this point: [${fmt(cap.vmin)}, ${fmt(cap.vmax)}] ${String(cap.vmin) === String(lo === -Infinity ? "-inf" : lo) && String(cap.vmax) === String(hi === Infinity ? "inf" : hi) ? "✓" : "✗"}</span>` : "");
+    // number line
+    const nl = G.$("#ch06-nl"), isB = typeof lo === "boolean";
+    const nums = isB ? [0, 1] : [lo, hi, tlo ?? 0, thi ?? 0].filter(Number.isFinite);
+    let L = Math.min(...nums, 0), R = Math.max(...nums, 1); if (!Number.isFinite(lo)) L -= 10; if (!Number.isFinite(hi)) R += 10;
+    const X = v => 20 + (Math.max(L, Math.min(R, v)) - L) / (R - L) * 360, nb = v => typeof v === "boolean" ? +v : v;
+    const bar = (l, h, y, col, txt) => `<rect x="${X(nb(l))}" y="${y}" width="${Math.max(3, X(nb(h)) - X(nb(l)))}" height="10" rx="3" fill="${col}" opacity=".8"/><text x="${X(nb(l))}" y="${y - 3}" fill="${col}" font-size="10" font-family="monospace">${txt}</text>`;
+    nl.innerHTML = `<line x1="20" x2="380" y1="58" y2="58" stroke="#5b6470"/><text x="20" y="64" font-size="9" fill="#8b949e">${fmt(isB ? false : L)}</text><text x="370" y="64" font-size="9" fill="#8b949e">${fmt(isB ? true : R)}</text>` +
+      bar(lo, hi, 14, "#83c167", "vmin/vmax") + (n ? bar(tlo, thi, 40, "#58c4dd", "exact") : "");
+  }
+  ["alo", "ahi", "blo", "bhi"].forEach(k => S[k].oninput = () => update(k)); sel.onchange = () => update();
+  update();
+  DATA.then(d => {
+    CAP = d.intervals; let ok = 0;
+    for (const c of CAP) {
+      const [lo, hi] = minmax(T[c.expr], { a: c.a, b: c.b }, new Map(), new Map());
+      const enc = v => v === Infinity ? "inf" : v === -Infinity ? "-inf" : v;
+      if (enc(lo) === c.vmin && enc(hi) === c.vmax) ok++; else console.warn("mismatch", c, lo, hi);
+    }
+    G.$("#ch06-iverify").innerHTML = `<span class="ch06-badge ${ok === CAP.length ? "" : "bad"}">JS port vs tinygrad: ${ok}/${CAP.length} captured intervals match</span>`;
+    update();
+  });
+})();
+
+// =====================================================================================
+// Demo 2: div/mod folding stepper over the real rule log of _apply_reshape
+// =====================================================================================
+// tiny parser/evaluator for tinygrad's rendered index expressions: + * // % ( ) ints rN, python floor semantics
+function parseIdx(s) {
+  const toks = s.match(/\/\/|r\d+|\d+|[-+*%()]/g); let i = 0;
+  const peek = () => toks[i], eat = () => toks[i++];
+  function factor() { const t = eat(); if (t === "(") { const e = expr(); eat(); return e; } if (t === "-") { const v = +eat(); return () => -v; } if (t[0] === "r") { const k = +t.slice(1); return env => env[k]; } const v = +t; return () => v; }
+  function term() { let l = factor(); while (["*", "//", "%"].includes(peek())) { const op = eat(), r = factor(), L = l; l = op === "*" ? env => L(env) * r(env) : op === "//" ? env => Math.floor(L(env) / r(env)) : env => { const a = L(env), b = r(env); return a - b * Math.floor(a / b); }; } return l; }
+  function expr() { let l = term(); while (peek() === "+") { eat(); const r = term(), L = l; l = env => L(env) + r(env); } return l; }
+  return expr();
+}
+(function () {
+  DATA.then(d => {
+    const sel = G.$("#ch06-rsel");
+    d.steppers.forEach((s, i) => sel.append(G.el("option", { value: i }, `(${s.in.join(",")}) → (${s.out.join(",")})  ·  ${s.log.length} rewrites`)));
+    sel.value = 2;
+    let c0 = null, c1 = null;
+    const toG = g => ({ nodes: g.nodes.map(([id, op, lab]) => ({ id, op, label: lab ?? op, sub: lab != null ? op : undefined })), edges: g.edges });
+    function run() {
+      const st = d.steppers[+sel.value];
+      G.$("#ch06-rsum").innerHTML = `index graph: ${st.nodes_raw} UOps raw → ${st.nodes_simplified} simplified`;
+      const where = e => { const [f, ln] = e.rule.split(":"); return `<a href="${G.src("tinygrad/uop/" + f, ln)}" target="_blank">${e.rule}</a>`; };
+      const steps = [{ caption: `raw: <code>${G.escape(st.raw.join(", "))}</code>`, k: -1 }].concat(st.log.map((e, k) => ({ k,
+        caption: `<b>${k + 1}.</b> ${where(e)} <span class="ch06-badge ${e.rule.startsWith("divandmod") ? "warn" : ""}">${G.escape(e.branch)}</span><br><code>${G.escape(e.before)}</code> → <code>${G.escape(e.after)}</code>` })),
+        [{ caption: `simplified: <code>${G.escape(st.simplified.join(", "))}</code>`, k: st.log.length }]);
+      const logEl = G.$("#ch06-rlog");
+      logEl.innerHTML = `<h5>rule log (click a line)</h5>` + st.log.map((e, k) => `<div data-k="${k}"><span class="${e.rule.startsWith("divandmod") ? "dm" : "rl"}">${e.rule.padEnd(17)}</span>${G.escape(e.before)}\n${" ".repeat(17)}→ ${G.escape(e.after)}</div>`).join("");
+      G.$("#ch06-rstep").innerHTML = ""; G.$("#ch06-rg0").innerHTML = G.$("#ch06-rg1").innerHTML = ""; c0 = c1 = null;
+      const ctl = G.stepper("#ch06-rstep", steps, (i, s) => {
+        const e = st.log[Math.min(Math.max(s.k, 0), st.log.length - 1)];
+        if (!c0) c0 = G.uopGraph("#ch06-rg0", toG(e.g0), { rankdir: "BT", legend: false, compact: true, height: 420 }); else c0.setGraph(toG(e.g0));
+        if (!c1) c1 = G.uopGraph("#ch06-rg1", toG(e.g1), { rankdir: "BT", legend: false, compact: true, height: 420 }); else c1.setGraph(toG(e.g1));
+        G.$$("div[data-k]", logEl).forEach(el => el.classList.toggle("cur", +el.dataset.k === s.k));
+        const cur = G.$(`div[data-k="${s.k}"]`, logEl); if (cur) logEl.scrollTop = cur.offsetTop - logEl.offsetTop - 60;
+      }, { autoplayMs: 1400 });
+      G.$$("div[data-k]", logEl).forEach(el => el.onclick = () => ctl.go(+el.dataset.k + 1));
+      // evaluate raw and simplified on every output position
+      const raw = st.raw.map(parseIdx), simp = st.simplified.map(parseIdx), out = st.out;
+      const cols = out[out.length - 1], rows = out.slice(0, -1).reduce((p, x) => p * x, 1);
+      let bad = 0, html = `<table class="ch06-grid"><tr><th></th>${Array.from({ length: cols }, (_, c) => `<th>r${out.length - 1}=${c}</th>`).join("")}</tr>`;
+      for (let r = 0; r < rows; r++) {
+        const pre = []; let q = r; for (let ax = out.length - 2; ax >= 0; ax--) { pre.unshift(q % out[ax]); q = Math.floor(q / out[ax]); }
+        html += `<tr><th>${pre.map((v, j) => `r${j}=${v}`).join(" ") || "—"}</th>`;
+        for (let c = 0; c < cols; c++) {
+          const env = [...pre, c], a = raw.map(f => f(env)), b = simp.map(f => f(env)), ok = a.join() === b.join(); if (!ok) bad++;
+          html += `<td class="${ok ? "" : "bad"}" title="raw: ${a.join(",")}">(${b.join(",")})</td>`;
+        }
+        html += "</tr>";
+      }
+      G.$("#ch06-rgrid").innerHTML = html + "</table>";
+      G.$("#ch06-rcheck").innerHTML = `<span class="ch06-badge ${bad ? "bad" : ""}">raw vs simplified input index agree at ${rows * cols - bad}/${rows * cols} output positions</span> <span style="color:var(--dim);font-size:13px">each cell = the input coordinate (${st.in.map((_, i) => "i" + i).join(",")}) read for that output position, input shape (${st.in.join(",")})</span>`;
+    }
+    sel.onchange = run; run();
+  });
+})();
+
+// =====================================================================================
+// Demo 3: "simplify this": real before/after pairs + the rule chain that fired
+// =====================================================================================
+(function () {
+  const DISTRACT = ["(x//2)", "0", "(z//8)", "(z%2)", "(x//6)", "(x*2+x*2)", "(x*2+1)", "(z<7)", "False", "(x<3)", "(x%4+1)", "(x//4)", "(x%16)", "-1", "(x*2)", "(z+1)", "r0", "(x+5)", "(x*2)"];
+  const EXTRA = { 8: "(z<2)" };   // when the answer is "unchanged", one more distractor
+  DATA.then(d => {
+    const G2 = d.game; let i = 0, score = 0, answered = new Map();
+    const ranges = s => [/x/.test(s) && "x∈[0,100]", /z/.test(s) && "z∈[0,7]", /r0/.test(s) && "r0∈[0,8)"].filter(Boolean).join("  ");
+    function show() {
+      const g = G2[i]; G.$("#ch06-gnum").textContent = `${i + 1} / ${G2.length}`; G.$("#ch06-gq").textContent = g.before; G.$("#ch06-grange").textContent = ranges(g.before);
+      let opts = [g.after, g.before === g.after ? EXTRA[i] : g.before, DISTRACT[i]];
+      opts = [...new Set(opts)]; const rot = (i * 2 + 1) % opts.length; opts = opts.slice(rot).concat(opts.slice(0, rot));
+      const box = G.$("#ch06-gopts"); box.innerHTML = ""; const ex = G.$("#ch06-gexplain"); ex.style.display = "none";
+      opts.forEach(o => {
+        const btn = G.el("button", { class: "opt2" }, o === g.before ? `${o}   (unchanged)` : o);
+        btn.onclick = () => {
+          if (!answered.has(i)) { answered.set(i, o === g.after); if (o === g.after) score++; }
+          G.$$(".opt2", box).forEach((b2, j) => { b2.classList.toggle("right", opts[j] === g.after); b2.classList.toggle("wrong", b2 === btn && o !== g.after); });
+          ex.style.display = "block";
+          ex.innerHTML = `<h5>${o === g.after ? "✓ correct" : "✗ tinygrad returns " + G.escape(g.after)} · interval of the input: [${g.vmin}, ${g.vmax}]</h5>` +
+            (g.rules.length ? `<div class="rules">${g.rules.map((r, k) => `<div>${String(k + 1).padStart(2)}. <a href="${G.src("tinygrad/uop/" + r.rule.split(":")[0], r.rule.split(":")[1])}" target="_blank">${r.rule}</a>  <span style="color:var(--yellow)">${G.escape(r.branch)}</span>\n     ${G.escape(r.before)} → ${G.escape(r.after)}</div>`).join("")}</div>` : `<div>no rule fired: <code>z&lt;3</code> is a genuine question for z ∈ [0,7]; the interval is [False, True].</div>`);
+          G.$("#ch06-gscore").textContent = `score ${score} / ${answered.size}`;
+        };
+        box.append(btn);
+      });
+      G.$("#ch06-gscore").textContent = `score ${score} / ${answered.size}`;
+    }
+    G.$("#ch06-gprev").onclick = () => { i = (i + G2.length - 1) % G2.length; show(); };
+    G.$("#ch06-gnext").onclick = () => { i = (i + 1) % G2.length; show(); };
+    show();
+  });
+})();
+})();
+</script>
+</body>
+</html>

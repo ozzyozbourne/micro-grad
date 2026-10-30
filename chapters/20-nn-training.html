@@ -1,0 +1,1509 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>20. nn, optim &amp; training end-to-end — tinygrad internals</title>
+<link rel="stylesheet" href="../assets/vendor/hljs-dark.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/vendor/highlight.min.js"></script>
+<script src="../assets/vendor/dagre.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/chapters.js"></script>
+<script src="../assets/guide.js"></script>
+<style>
+.ch20-timeline { display: flex; gap: 3px; flex-wrap: wrap; margin: 10px 0; }
+.ch20-k { width: 30px; height: 46px; border-radius: 5px; border: 1px solid var(--line); cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; font-family: var(--mono); font-size: 10px; transition: all .2s; position: relative; }
+.ch20-k b { font-size: 12px; }
+.ch20-k.forward { background: rgba(88,196,221,.25); border-color: var(--blue); }
+.ch20-k.backward { background: rgba(252,98,85,.22); border-color: var(--red); }
+.ch20-k.update { background: rgba(131,193,103,.22); border-color: var(--green); }
+.ch20-k.dim { opacity: .18; }
+.ch20-k.sel { outline: 3px solid var(--yellow); transform: translateY(-3px); }
+.ch20-k.dep { outline: 2px dashed var(--gold); }
+.ch20-k.user { outline: 3px dashed var(--pink); }
+.ch20-phasebar { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0; }
+.ch20-phasebar button .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.ch20-detail { background: #0d0f12; border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; font-size: 13.5px; }
+.ch20-detail pre { max-height: 330px; font-size: 12px; margin: 6px 0 0; }
+.ch20-tag { display: inline-block; font-family: var(--mono); font-size: 12px; padding: 1px 7px; border-radius: 4px; margin: 2px 3px 2px 0; background: var(--bg3); border: 1px solid var(--line); }
+.ch20-tag.w { border-color: var(--yellow); color: var(--yellow); }
+.ch20-tag.p { border-color: var(--green); color: var(--green); }
+.ch20-viz { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
+.ch20-viz canvas { background: #0d0f12; border: 1px solid var(--line); border-radius: 8px; }
+.ch20-stat { font-family: var(--mono); font-size: 13px; color: var(--dim); }
+.ch20-stat b { color: var(--yellow); }
+.ch20-bars { display: grid; grid-template-columns: 170px 1fr; gap: 6px 10px; align-items: center; font-size: 13px; font-family: var(--mono); }
+.ch20-bar { height: 18px; border-radius: 4px; transition: width .5s; min-width: 2px; }
+#demo-adam .uopgraph svg { max-width: none; }
+.ch20-adamgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 1000px) { #demo-adam .uopgraph svg { max-width: none; }
+.ch20-adamgrid { grid-template-columns: 1fr; } }
+.ch20-calc { font-family: var(--mono); font-size: 13px; }
+.ch20-calc .row { display: flex; gap: 8px; align-items: center; margin: 4px 0; }
+.ch20-calc input[type=range] { width: 160px; }
+.ch20-calc table { font-size: 12.5px; }
+.ch20-groupbtns button { margin: 3px; font-size: 12.5px; }
+.ch20-layerk { display: grid; grid-template-columns: 300px 1fr; gap: 6px 12px; font-size: 13px; align-items: center; }
+.ch20-layerk .kk { display: flex; gap: 4px; flex-wrap: wrap; }
+.ch20-layerk .kk span { font-family: var(--mono); font-size: 11.5px; padding: 2px 6px; border-radius: 4px; background: rgba(252,98,85,.15); border: 1px solid var(--red); }
+.ch20-layerk .kk span.E { background: rgba(88,196,221,.15); border-color: var(--blue); }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="sidebar" id="sidebar"></nav>
+<main>
+  <h1><span class="chnum">CHAPTER 20</span>nn, optim &amp; training end-to-end</h1>
+  <p class="lede">Everything in the previous nineteen chapters, used at once. We open <code>tinygrad/nn</code> and find that layers,
+  optimizers and checkpoints are thin Python over Tensor ops. Then we take <b>one</b> training step of a small MLP and follow it
+  through the whole machine: forward graph → loss → gradient UOps → optimizer <code>assign</code>s → one schedule of 30 kernels
+  (we look at each kernel, its reads, writes and C code) → run. We do it again under <code>TinyJit</code>, train to convergence,
+  and finish with <code>tinygrad/llm</code>, a real transformer built from the same parts.</p>
+
+  <div class="callout note">Everything here was run on <code>DEV=CPU</code> at commit <code>6a404871</code>. Every output block is
+  pasted from a script in <code>examples/20_*.py</code>. Timings come from this machine, an orb, and will differ on yours.</div>
+
+  <!-- ===================================================================================== -->
+  <h2 id="intuition"><span class="sec">20.1</span>Intuition: a training step is just a bigger lazy graph</h2>
+  <p>In PyTorch a training step is three phases that run one after the other: forward runs kernels, <code>backward()</code> runs more
+  kernels, and <code>optimizer.step()</code> runs yet more kernels, each one as soon as Python reaches the line. In tinygrad
+  <b>none of those three lines computes anything</b>:</p>
+  <ul>
+    <li><code>model(X)</code> and <code>.sparse_categorical_crossentropy(Y)</code> add UOps to a graph (<a href="02-tensor-laziness.html">Chapter 2</a>).</li>
+    <li><code>.backward()</code> adds the <i>gradient</i> UOps to the same graph and hangs a lazy Tensor on each parameter's <code>.grad</code> (<a href="09-autograd.html">Chapter 9</a>).</li>
+    <li><code>opt.schedule_step()</code> adds the optimizer math and turns each parameter into <code>AFTER(BUFFER, STORE(BUFFER, new_value))</code>:
+      a promise that this buffer will be overwritten.</li>
+  </ul>
+  <p>Only <code>loss.realize(*opt.schedule_step())</code> hands the <i>whole thing</i> (forward, backward and update, one DAG) to the
+  scheduler. The scheduler is free to fuse across what PyTorch would call phase boundaries and to order kernels in any way the data
+  dependencies allow, and the result is a single <code>LINEAR</code> that can be captured and replayed (<a href="18-jit.html">Chapter 18</a>).</p>
+
+  <div class="callout analogy"><span class="title">Analogy</span>A PyTorch training step is a cook who follows a recipe line by line.
+  A tinygrad training step is a recipe card handed to a kitchen manager. The manager reads the whole card (including "afterwards, put
+  the new seasoning back in the jar"), plans the stations, and only then lights the stoves. Because the plan is written down, it
+  can be photocopied and reused tomorrow: that is TinyJit.</div>
+
+  <div class="callout aha"><span class="title">The key idea</span>The optimizer update is <i>not</i> an eager in-place mutation. It is
+  expressed with <code>Tensor.assign</code>, which builds <code>STORE</code> + <code>AFTER</code> UOps. The step is therefore itself a lazy,
+  schedulable, cacheable, JIT-able graph, and the same scheduler that fuses <code>x*2+1</code> also plans "read w, compute w − lr·update,
+  write w".</div>
+
+  <!-- ===================================================================================== -->
+  <h2 id="nn-layers"><span class="sec">20.2</span>nn layers: plain objects holding Tensors</h2>
+  <p><a class="src" data-path="tinygrad/nn/__init__.py" data-line="1">tinygrad/nn/__init__.py</a> is 417 lines. There is no
+  <code>Module</code> base class, no parameter registration, no hooks, no <code>.to(device)</code>. A layer is a Python class whose
+  <code>__init__</code> creates Tensors as attributes and whose <code>__call__</code> calls Tensor methods. Here is <code>Linear</code> in full:</p>
+  <div class="codecap"><b>tinygrad/nn/__init__.py</b> — <a class="src" data-path="tinygrad/nn/__init__.py" data-line="156">class Linear</a></div>
+  <pre><code class="language-python">class Linear:
+  def __init__(self, in_features:int, out_features:int, bias=True):
+    bound = 1 / math.sqrt(in_features)
+    self.weight = Tensor.uniform(out_features, in_features, low=-bound, high=bound)
+    self.bias = Tensor.uniform(out_features, low=-bound, high=bound) if bias else None
+
+  def __call__(self, x:Tensor) -> Tensor: return x.linear(self.weight.transpose(), self.bias)</code></pre>
+  <p>The work happens in Tensor methods defined in the mixins: <a class="src" data-path="tinygrad/mixin/op.py" data-line="1277">Tensor.linear</a>
+  calls <a class="src" data-path="tinygrad/mixin/op.py" data-line="390">Tensor.dot</a>, which reshapes both operands so they broadcast,
+  multiplies, and sums over the shared axis:</p>
+  <pre><code class="language-python"># mixin/op.py, dot() (abridged)
+x = x.reshape(*x.shape[0:-1], *[1]*min(dx-1, dw-1, 1), x.shape[-1])
+w = w.reshape(*w.shape[0:-2], *[1]*min(dx-1, dw-1, 1), *w.shape[axis_w:]).transpose(-1, axis_w)
+return (x*w).sum(-1, dtype=dtype).cast(least_upper_dtype(x.dtype, w.dtype) if dtype is None else dtype)</code></pre>
+  <p>There is no "matmul op" in tinygrad. A matrix multiply is <code>MUL</code> of two broadcast views, followed by
+  <code>REDUCE(ADD)</code> (<a href="08-decompositions.html">Chapter 8</a>). Even the weight initialization (<code>Tensor.uniform</code>) is lazy: it is a
+  threefry RNG graph until something realizes it.</p>
+
+  <table>
+    <tr><th>layer</th><th>what <code>__call__</code> really is</th><th>state</th></tr>
+    <tr><td><a class="src" data-path="tinygrad/nn/__init__.py" data-line="156">Linear</a></td><td><code>x.linear(W.T, b)</code> → reshape · MUL · REDUCE · ADD</td><td>weight, bias</td></tr>
+    <tr><td><a class="src" data-path="tinygrad/nn/__init__.py" data-line="80">Conv2d</a></td><td><code>x.conv2d(W, b, …)</code> → pad/pool (movement ops) · MUL · REDUCE, or Winograd with <code>WINO=1</code></td><td>weight, bias</td></tr>
+    <tr><td><a class="src" data-path="tinygrad/nn/__init__.py" data-line="235">LayerNorm</a></td><td><code>(x - x.mean()).rmsnorm()</code> · weight + bias</td><td>weight, bias</td></tr>
+    <tr><td><a class="src" data-path="tinygrad/nn/__init__.py" data-line="281">RMSNorm</a></td><td><code>x.float().rmsnorm().cast(x.dtype) * weight</code></td><td>weight</td></tr>
+    <tr><td><a class="src" data-path="tinygrad/nn/__init__.py" data-line="8">BatchNorm</a></td><td>batch statistics when <code>TRAINING</code> (plus <code>assign</code> to the running stats), stored statistics otherwise · <code>x.batchnorm(…)</code></td><td>weight, bias, running_mean/var, num_batches_tracked (non-params)</td></tr>
+    <tr><td><a class="src" data-path="tinygrad/nn/__init__.py" data-line="374">Embedding</a></td><td><code>(arange == idx[...,None])[...,None].where(W, 0).sum(-2)</code>: a one-hot mask-and-reduce, no gather op (<a class="src" data-path="tinygrad/nn/__init__.py" data-line="366">_embedding_fwd</a>). With <code>USE_ATOMICS=1</code> the backward pass is a custom atomic scatter-add kernel.</td><td>weight</td></tr>
+  </table>
+
+  <p>Let's watch <code>nn.Linear(3,2)(x)</code> get built up piece by piece. The script rebuilds Linear by hand, following
+  <code>Linear → linear → dot</code> one call at a time, and checks that the result is the <i>same UOp object</i> that <code>lin(x)</code>
+  produces. Hash-consing (<a href="04-uop.html">Chapter 4</a>) makes that identity check meaningful.</p>
+  <div class="codecap"><b>examples/20_layers.py</b> — run with <code>DEV=CPU python3 examples/20_layers.py</code></div>
+  <pre><code class="language-python"># Chapter 20 — nn layers are just Tensor ops
+# Run: DEV=CPU python3 examples/20_layers.py
+#
+# tinygrad/nn/__init__.py has no "layer" machinery: no Module base class, no hooks, no registered parameters.
+# A layer is a plain Python object that holds Tensors as attributes and has a __call__ that calls Tensor methods.
+# This script shows:
+#   1. what nn.Linear(3,2)(x) becomes as a UOp graph (and how each Tensor method contributes nodes)
+#   2. how many kernels a few layers turn into when realized
+#   3. nn.state: get_state_dict / get_parameters walk __dict__, safe_save / safe_load round-trip
+#   4. the TRAINING context var (what used to be Tensor.training) changes BatchNorm and gates the optimizer
+import json, os, sys, tempfile
+from tinygrad import Tensor, nn, Context, GlobalCounters
+from tinygrad.uop.ops import Ops
+from tinygrad.uop.render import render_uir
+from tinygrad.engine.realize import lower_and_compile, run_linear
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
+from uop2json import uop_to_graph
+DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
+
+def slim(g:dict) -&gt; dict:
+  # drop the shape-argument plumbing (STACK of CONSTs feeding movement ops / buffer sizes) so the picture shows the dataflow
+  keep_ops = {n["id"] for n in g["nodes"] if n["op"] not in ("STACK", "CONST")}
+  consumers = {}
+  for s, d, _ in g["edges"]: consumers.setdefault(s, []).append(d)
+  ops = {n["id"]: n["op"] for n in g["nodes"]}
+  for n in g["nodes"]:  # keep CONSTs that feed real math (e.g. the 0 of relu's max), drop shape consts
+    if n["op"] == "CONST" and any(ops[c] not in ("STACK", "BUFFER") for c in consumers.get(n["id"], [])): keep_ops.add(n["id"])
+  return {"nodes": [n for n in g["nodes"] if n["id"] in keep_ops], "edges": [e for e in g["edges"] if e[0] in keep_ops and e[1] in keep_ops]}
+
+Tensor.manual_seed(0)
+print("=== 1. nn.Linear(3, 2) forward as UOps ===")
+lin = nn.Linear(3, 2)
+x = Tensor([[1., 2, 3], [4, 5, 6], [7, 8, 9], [1, 0, 1]])
+Tensor.realize(lin.weight, lin.bias, x)          # make weights real buffers so the graph starts at BUFFERs
+print("weight", lin.weight.shape, "bias", lin.bias.shape, "x", x.shape)
+ids: dict = {}
+# rebuild Linear step by step, exactly as Linear.__call__ -&gt; Tensor.linear -&gt; Tensor.dot do it (mixin/op.py)
+wT = lin.weight.transpose()                       # Linear.__call__: x.linear(self.weight.transpose(), self.bias)
+xr = x.reshape(4, 1, 3)                            # dot(): x.reshape(*x.shape[0:-1], 1, x.shape[-1])
+wr = wT.reshape(1, 3, 2).transpose(-1, -2)         # dot(): w.reshape(..., 1, *w.shape[-2:]).transpose(-1, -2)
+prod = xr * wr                                     # broadcasting MUL: (4,1,3) * (1,2,3) -&gt; (4,2,3)
+summed = prod.sum(-1)                              # REDUCE over the shared axis -&gt; (4,2)
+y = lin(x)                                         # the real call
+stages = [("weight.transpose()", wT), ("x * w (broadcast MUL)", prod), ("(x*w).sum(-1)  == x.dot(w.T)", summed), ("+ bias  == nn.Linear(3,2)(x)", y)]
+print(render_uir(y.uop))
+census = {}
+for u in y.uop.toposort(): census[u.op.name] = census.get(u.op.name, 0) + 1
+print("op census:", dict(sorted(census.items(), key=lambda kv: -kv[1])))
+graphs = [{"title": t, "graph": slim(uop_to_graph(s.uop, ids))} for t, s in stages]
+print("the same graph is what you'd get by hand:", (y.uop is (summed + lin.bias).uop), "(hash-consing: identical UOps are the same object)")
+
+print("\n=== 2. how many kernels does each layer become? ===")
+def kernels_of(name, fn):
+  out = fn()
+  lin_ = Tensor.schedule_linear(out)               # LINEAR of CALLs; the tensors now point at (not yet written) buffers
+  lin_ = lower_and_compile(lin_)                    # codegen: each CALL's body becomes a PROGRAM (that's where kernels get names)
+  names = [c.src[0].src[0].arg.name if c.src[0].op is Ops.PROGRAM else "copy" for c in lin_.src]
+  run_linear(lin_)                                  # actually run it, so later code sees real values
+  print(f"  {name:38s} -&gt; {len(names)} kernel(s): {names}")
+  return {"layer": name, "kernels": names}
+rows = []
+xb = Tensor.rand(8, 3, 4, 4); xb.realize()
+ln, bn, emb, conv = nn.LayerNorm(16), nn.BatchNorm(3), nn.Embedding(10, 4), nn.Conv2d(3, 4, 3)
+Tensor.realize(*nn.state.get_parameters([ln, bn, emb, conv]))
+xl = Tensor.rand(5, 16).realize(); idx = Tensor([1, 2, 3, 1]).realize()
+rows.append(kernels_of("Linear(3,2)(x)", lambda: lin(x)))
+rows.append(kernels_of("LayerNorm(16)(x[5,16])", lambda: ln(xl)))
+rows.append(kernels_of("BatchNorm(3)(x[8,3,4,4])  (eval)", lambda: bn(xb)))
+with Context(TRAINING=1): rows.append(kernels_of("BatchNorm(3)(x[8,3,4,4])  (TRAINING=1)", lambda: bn(xb)))
+rows.append(kernels_of("Embedding(10,4)(idx[4])", lambda: emb(idx)))
+rows.append(kernels_of("Conv2d(3,4,3)(x[8,3,4,4])", lambda: conv(xb)))
+la, lb = nn.Linear(3, 8), nn.Linear(8, 2); Tensor.realize(*nn.state.get_parameters([la, lb]))
+rows.append(kernels_of("Linear(3,8) -&gt; relu -&gt; Linear(8,2)", lambda: lb(la(x).relu())))
+
+print("\n=== 3. nn.state ===")
+class Net:
+  def __init__(self): self.l1, self.l2, self.norm = nn.Linear(4, 5), nn.Linear(5, 6), nn.LayerNorm(6)
+  def __call__(self, x): return self.norm(self.l2(self.l1(x).relu()))
+net = Net()
+sd = nn.state.get_state_dict(net)
+Tensor.realize(*sd.values())                      # Linear weights start as lazy Tensor.uniform graphs; make them real first
+for k, v in sd.items(): print(f"  {k:14s} {str(v.shape):8s} is_param={v.is_param}")
+print("  get_parameters -&gt;", len(nn.state.get_parameters(net)), "tensors (just the values of get_state_dict)")
+bn_sd = nn.state.get_state_dict(bn)
+print("  BatchNorm state:", {k: (tuple(v.shape), v.is_param) for k, v in bn_sd.items()})
+fn = os.path.join(tempfile.gettempdir(), "ch20_net.safetensors")
+nn.state.safe_save(sd, fn)
+with open(fn, "rb") as f: raw = f.read()
+hlen = int.from_bytes(raw[:8], "little")
+print(f"  safe_save wrote {len(raw)} bytes: 8-byte header length ({hlen}) + JSON header + raw tensor bytes")
+print("  header:", raw[8:8+hlen].decode().strip()[:150], "...")
+loaded = nn.state.safe_load(fn)
+print("  safe_load -&gt;", {k: (v.device.split(":")[0], tuple(v.shape), v.uop.op.name) for k, v in list(loaded.items())[:2]}, "...")
+print("  loaded['l1.weight'] is a lazy view of the file bytes -- nothing is read until realize:")
+print("\n".join("    "+l for l in render_uir(loaded["l1.weight"].uop).splitlines()))
+net2 = Net()
+nn.state.load_state_dict(net2, loaded, verbose=False)
+xt = Tensor.rand(2, 4).realize()
+print("  same outputs after load_state_dict:", (net(xt) - net2(xt)).abs().max().item() == 0.0)
+
+print("\n=== 4. TRAINING context var ===")
+from tinygrad.helpers import TRAINING
+print("  TRAINING default:", TRAINING.value)
+opt = nn.optim.SGD(nn.state.get_parameters(net), lr=0.1)
+try: opt.step()
+except RuntimeError as e: print("  opt.step() without TRAINING -&gt;", str(e).strip().splitlines()[0])
+with Context(TRAINING=1):
+  print("  inside Context(TRAINING=1):", TRAINING.value)
+  _ = bn(xb).realize()
+print("  BatchNorm running_mean after one TRAINING forward:", [round(v, 4) for v in bn.running_mean.tolist()])
+print("  num_batches_tracked:", bn.num_batches_tracked.item(), "(we ran two TRAINING forwards: one in section 2, one here)")
+
+json.dump({"linear_stages": graphs, "linear_uir": render_uir(y.uop), "kernel_rows": rows}, open(os.path.join(DATA, "ch20_layers.json"), "w"), indent=1)
+print("\nwrote data/ch20_layers.json")</code></pre>
+  <pre class="output"><code>=== 1. nn.Linear(3, 2) forward as UOps ===
+weight (2, 3) bias (2,) x (4, 3)
+%0 = buffer 12 : dtype=f32 slot=11 device=CPU
+%1 = reshape %0, (4, 3)
+%2 = reshape %1, (4, 1, 3)
+%3 = buffer 6 : dtype=f32 slot=8 device=CPU
+%4 = reshape %3, (2, 3)
+%5 = permute %4, (1, 0)
+%6 = reshape %5, (1, 3, 2)
+%7 = permute %6, (0, 2, 1)
+%8 = mul %2, %7
+%9 = permute %8, (2, 0, 1)
+%10 = reduce %9 : op=add pop=1
+%11 = buffer 2 : dtype=f32 slot=10 device=CPU
+%12 = add %10, %11
+op census: {'CONST': 7, 'STACK': 7, 'RESHAPE': 4, 'BUFFER': 3, 'PERMUTE': 3, 'MUL': 1, 'REDUCE': 1, 'ADD': 1}
+the same graph is what you'd get by hand: True (hash-consing: identical UOps are the same object)
+
+… (37 more lines)</code></pre>
+
+  <div class="demo" id="demo-linear">
+    <div class="demo-title">Linear, built one Tensor method at a time</div>
+    <div class="demo-desc">Step through the four stages. Nodes keep their ids across stages (they are the same hash-consed UOps), so the graph
+    grows rather than being redrawn. Hover a node for its full UOp. Shape-argument plumbing (<code>STACK</code>/<code>CONST</code> sources of
+    movement ops) is hidden to keep the picture readable; it is in the UIR printout above.</div>
+    <div class="ctl"></div>
+    <div class="graph"></div>
+  </div>
+
+  <h3>How many kernels is a layer?</h3>
+  <p>Section 2 of the script schedules each layer on its own and lists the kernel names the codegen gives them. <code>r_</code> means the
+  kernel contains a reduce and <code>E_</code> means elementwise; the numbers are the loop sizes (<a href="13-kernel-ast.html">Chapter 13</a>).</p>
+  <pre class="output"><code>… (18 earlier lines omitted)
+=== 2. how many kernels does each layer become? ===
+  Linear(3,2)(x)                         -&gt; 1 kernel(s): ['r_4_2_3']
+  LayerNorm(16)(x[5,16])                 -&gt; 3 kernel(s): ['r_5_16', 'r_5_16', 'E_5_4_4']
+  BatchNorm(3)(x[8,3,4,4])  (eval)       -&gt; 1 kernel(s): ['E_8_3_4_4']
+  BatchNorm(3)(x[8,3,4,4])  (TRAINING=1) -&gt; 3 kernel(s): ['r_3_8_16', 'r_3_8_16', 'E_8_3_4_4']
+  Embedding(10,4)(idx[4])                -&gt; 1 kernel(s): ['E_4_4']
+  Conv2d(3,4,3)(x[8,3,4,4])              -&gt; 1 kernel(s): ['r_8_4_2_2_3_3_3']
+  Linear(3,8) -&gt; relu -&gt; Linear(8,2)     -&gt; 2 kernel(s): ['r_4_8_3', 'r_4_2_8']
+
+… (28 more lines)</code></pre>
+  <div class="ch20-layerk" id="layer-kernels"></div>
+  <p>Read the rows as consequences of the scheduler (<a href="11-kernel-split.html">Chapter 11</a>). Linear is <b>one</b> kernel: the MUL, the
+  REDUCE and the bias ADD fuse. LayerNorm is three: the mean is a reduce, the RMS of the centered values is a second reduce over data that
+  depends on the first, and the normalize is elementwise. BatchNorm is one kernel in eval mode (statistics come from buffers) and three under
+  <code>TRAINING=1</code> (two reduces for the batch statistics). <code>Linear → relu → Linear</code> is two kernels, because the second
+  reduce needs the whole hidden row.</p>
+
+  <!-- ===================================================================================== -->
+  <h2 id="state"><span class="sec">20.3</span>nn.state: state dicts are a walk over <code>__dict__</code></h2>
+  <p>With no Module class, how does tinygrad find the parameters? <a class="src" data-path="tinygrad/nn/state.py" data-line="89">get_state_dict</a>
+  walks the object recursively: Tensors are leaves; objects are expanded through <code>__dict__</code>; lists, tuples and dicts are expanded with
+  index or key prefixes; namedtuples through <code>_asdict</code>. <a class="src" data-path="tinygrad/nn/state.py" data-line="114">get_parameters</a>
+  is just <code>list(get_state_dict(obj).values())</code>.</p>
+  <pre><code class="language-python">def get_state_dict(obj, prefix:str='', tensor_type=Tensor) -> dict[str, Tensor]:
+  if isinstance(obj, tensor_type): return {prefix.strip('.'):obj}
+  if hasattr(obj, '_asdict'): return get_state_dict(obj._asdict(), prefix, tensor_type)  # namedtuple
+  if isinstance(obj, OrderedDict): return get_state_dict(dict(obj), prefix, tensor_type)
+  if hasattr(obj, '__dict__'): return get_state_dict(obj.__dict__, prefix, tensor_type)
+  ...  # lists/tuples -> "prefix.i.", dicts -> "prefix.key."</code></pre>
+  <div class="callout warn">Because <code>get_parameters</code> returns <i>every</i> Tensor it finds, BatchNorm's <code>running_mean</code> is in the
+  list too. The optimizer separates the two kinds with the <code>Tensor.is_param</code> flag: BatchNorm marks its statistics with
+  <code>.is_param_(False)</code> (<a class="src" data-path="tinygrad/nn/__init__.py" data-line="38">nn/__init__.py:38</a>), and
+  <a class="src" data-path="tinygrad/nn/optim.py" data-line="7">Optimizer.__init__</a> splits its input into
+  <code>self.params</code> (updated) and <code>self.buffers</code> (only realized alongside the step).</div>
+
+  <h3>Checkpoints are lazy too</h3>
+  <p><a class="src" data-path="tinygrad/nn/state.py" data-line="64">safe_save</a> writes the safetensors format: an 8-byte little-endian header
+  length, a JSON header (<code>dtype</code>, <code>shape</code>, <code>data_offsets</code>), then the raw bytes. It does this <i>through tinygrad itself</i>:
+  it creates a <code>Tensor.empty(..., device="disk:<file>")</code> and <code>assign</code>s into slices of it.
+  <a class="src" data-path="tinygrad/nn/state.py" data-line="51">safe_load</a> does the reverse: <code>Tensor(pathlib.Path(fn))</code> is a
+  <code>BUFFER</code> on the <code>DISK</code> device, and each entry is <code>SHRINK → BITCAST → RESHAPE</code> of that buffer, which means
+  movement ops (<a href="07-movement.html">Chapter 7</a>) over a file. Nothing is read until you realize, and
+  <a class="src" data-path="tinygrad/nn/state.py" data-line="128">load_state_dict</a> does exactly that by calling
+  <code>v.replace(state_dict[k].to(v.device))</code>, then <code>realize()</code>.</p>
+  <pre class="output"><code>… (27 earlier lines omitted)
+=== 3. nn.state ===
+  l1.weight      (5, 4)   is_param=True
+  l1.bias        (5,)     is_param=True
+  l2.weight      (6, 5)   is_param=True
+  l2.bias        (6,)     is_param=True
+  norm.weight    (6,)     is_param=True
+  norm.bias      (6,)     is_param=True
+  get_parameters -&gt; 6 tensors (just the values of get_state_dict)
+  BatchNorm state: {'weight': ((3,), True), 'bias': ((3,), True), 'num_batches_tracked': ((), False), 'running_mean': ((3,), False), 'running_var': ((3,), False)}
+  safe_save wrote 692 bytes: 8-byte header length (392) + JSON header + raw tensor bytes
+  header: {"l1.weight":{"dtype":"F32","shape":[5,4],"data_offsets":[0,80]},"l1.bias":{"dtype":"F32","shape":[5],"data_offsets":[80,100]},"l2.weight":{"dtype":"F ...
+  safe_load -&gt; {'l1.weight': ('DISK', (5, 4), 'RESHAPE'), 'l1.bias': ('DISK', (5,), 'BITCAST')} ...
+  loaded['l1.weight'] is a lazy view of the file bytes -- nothing is read until realize:
+    %0 = buffer 692 : dtype=u8 slot=110 device='DISK:/tmp/ch20_net.safetensors'
+    %1 = shrink %0, 400, 292
+    %2 = shrink %1, 0, 80
+    %3 = bitcast %2 : f32
+    %4 = reshape %3, (5, 4)
+  same outputs after load_state_dict: True
+
+… (8 more lines)</code></pre>
+  <p><a class="src" data-path="tinygrad/nn/state.py" data-line="207">torch_load</a> reads PyTorch <code>.pth</code> files the same way. It runs a
+  custom <code>pickle.Unpickler</code> whose <code>find_class</code> intercepts <code>torch._rebuild_tensor_v2</code> and the
+  <code>*Storage</code> classes and returns slices of the file Tensor (zip, tar and legacy layouts), so torch is never imported.
+  <code>gguf_load</code> / <a class="src" data-path="tinygrad/llm/gguf.py" data-line="198">gguf_parse</a> now live in
+  <code>tinygrad/llm/gguf.py</code> and decode quantized llama.cpp blocks with Tensor ops. <a class="src" data-path="tinygrad/nn/datasets.py" data-line="1">nn/datasets.py</a>
+  is 14 lines: <code>mnist()</code> and <code>cifar()</code> are <code>Tensor.from_url(...)</code> plus slicing and reshapes.</p>
+
+  <!-- ===================================================================================== -->
+  <h2 id="optim"><span class="sec">20.4</span>nn.optim: an update rule written with <code>assign</code></h2>
+  <p><a class="src" data-path="tinygrad/nn/optim.py" data-line="1">nn/optim.py</a> is 179 lines and contains every optimizer. There are only two
+  real classes. <b>LARS</b> covers SGD (trust coefficient 0), momentum, Nesterov and Muon (Newton–Schulz). <b>LAMB</b> covers Adam and AdamW
+  (trust ratio fixed at 1). <code>SGD</code>, <code>Adam</code>, <code>AdamW</code> and <code>Muon</code> are functions that return a configured LARS or LAMB:</p>
+  <pre><code class="language-python">def Adam(params, lr=0.001, b1=0.9, b2=0.999, eps=1e-8, device=None, fused=FUSE_OPTIM):
+  return LAMB(params, lr, b1, b2, eps, 0.0, adam=True, device=device, fused=fused)</code></pre>
+  <p>The base class does the bookkeeping and the parameter write-back:</p>
+  <div class="codecap"><b>tinygrad/nn/optim.py</b> — <a class="src" data-path="tinygrad/nn/optim.py" data-line="41">Optimizer.schedule_step</a></div>
+  <pre><code class="language-python">def step(self):
+  Tensor.realize(*self.schedule_step())
+
+def schedule_step(self) -> list[Tensor]:
+  if not TRAINING: raise RuntimeError(...)          # TRAINING must be enabled to use the optimizer
+  ...
+  updates, extra = self._step(self.params, [unwrap(t.grad) for t in self.params])
+  for i, tt in enumerate(self.params): tt.assign(self._apply_update(tt, updates[i]))
+  return extra+self.params+self.buffers
+
+def _apply_update(self, t:Tensor, up:Tensor) -> Tensor: return t.detach() - up.to(t.device)</code></pre>
+  <p>And LAMB's <code>_step</code> (<a class="src" data-path="tinygrad/nn/optim.py" data-line="161">optim.py:161</a>) is Adam written directly as Tensor math:</p>
+  <pre><code class="language-python">self.b1_t *= self.b1                     # Tensor.__imul__ is self.assign(self.mul(x))
+self.b2_t *= self.b2
+for i, (t, g) in enumerate(zip(params, grads)):
+  self.m[i].assign((self.b1 * self.m[i] + (1.0 - self.b1) * g).cast(self.m[i].dtype))
+  self.v[i].assign((self.b2 * self.v[i] + (1.0 - self.b2) * (g * g)).cast(self.v[i].dtype))
+  m_hat = self.m[i] / (1.0 - self.b1_t)
+  v_hat = self.v[i] / (1.0 - self.b2_t)
+  up = (m_hat / (v_hat.sqrt() + self.eps)).shard_like(t) + self.wd * t.detach()
+  ...
+  ret.append((self.lr * r * up).cast(t.dtype))
+return ret, [self.b1_t, self.b2_t] + self.m + self.v</code></pre>
+  <p>In mathematical notation, with step counter \(t\), learning rate \(\eta\) and \(\beta_1^t\), \(\beta_2^t\) stored as the running products <code>b1_t</code>, <code>b2_t</code>:</p>
+  \[ m \leftarrow \beta_1 m + (1-\beta_1) g,\qquad v \leftarrow \beta_2 v + (1-\beta_2) g^2,\qquad
+     w \leftarrow w - \eta\,\frac{m/(1-\beta_1^t)}{\sqrt{v/(1-\beta_2^t)}+\epsilon} \]
+
+  <h3>What <code>assign</code> builds</h3>
+  <p><a class="src" data-path="tinygrad/tensor.py" data-line="234">Tensor.assign</a> handles several cases (disk, views, initializing a
+  still-pending value). For a realized parameter it takes the simple path at the end:</p>
+  <pre><code class="language-python">self.uop = self.uop.after(self.uop.store(x.uop))   # AFTER(BUFFER, STORE(BUFFER, value))</code></pre>
+  <p>The Tensor object stays the same Python object, so the model still points at it, but its <code>.uop</code> now means "this buffer, read
+  after the store has happened". Anything built from the parameter later (for example the next step's forward pass, if you do not realize in
+  between) reads the <i>new</i> value. That is the read-after-write ordering the scheduler enforces (<a href="12-schedule.html">Chapter 12</a>).
+  Note <code>t.detach()</code> in <code>_apply_update</code>: the update must not be differentiated through.</p>
+  <div class="codecap"><b>examples/20_adam_uops.py</b> — run with <code>DEV=CPU python3 examples/20_adam_uops.py</code></div>
+  <pre><code class="language-python"># Chapter 20 — the Adam update, as UOps
+# Run: DEV=CPU python3 examples/20_adam_uops.py
+#
+# nn.optim.Adam is LAMB(..., adam=True). Its _step (nn/optim.py) is ordinary Tensor math plus .assign():
+#     b1_t *= b1 ; b2_t *= b2                                  (assign via __imul__)
+#     m.assign(b1*m + (1-b1)*g) ; v.assign(b2*v + (1-b2)*g*g)
+#     up = (m/(1-b1_t)) / (sqrt(v/(1-b2_t)) + eps)            (m_hat / (sqrt(v_hat)+eps))
+#     w.assign(w.detach() - lr*up)                             (Optimizer._apply_update)
+# We give one tiny parameter a hand-made gradient, call schedule_step(), and dump the resulting UOp graph before
+# anything runs. Then we realize, print the kernels, and check the numbers against a pure-python Adam.
+import json, math, os, sys
+from tinygrad import Tensor, nn, Context
+from tinygrad.uop.ops import Ops
+from tinygrad.uop.render import render_uir
+from tinygrad.engine.realize import lower_and_compile, run_linear
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
+from uop2json import uop_to_graph
+DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
+
+def slim(g:dict) -&gt; dict:   # hide STACK/CONST shape plumbing (same helper as examples/20_layers.py)
+  ops = {n["id"]: n["op"] for n in g["nodes"]}
+  cons = {}
+  for s, d, _ in g["edges"]: cons.setdefault(s, []).append(d)
+  keep = {n["id"] for n in g["nodes"] if n["op"] not in ("STACK", "CONST") or
+          (n["op"] == "CONST" and any(ops[c] not in ("STACK", "BUFFER") for c in cons.get(n["id"], [])))}
+  return {"nodes": [n for n in g["nodes"] if n["id"] in keep], "edges": [e for e in g["edges"] if e[0] in keep and e[1] in keep]}
+
+w = Tensor([1.0, -2.0, 0.5])
+opt = nn.optim.Adam([w], lr=0.1)
+Tensor.realize(w, opt.lr, opt.m[0], opt.v[0], opt.b1_t, opt.b2_t)
+names = {w.uop: "w", opt.lr.uop: "lr", opt.m[0].uop: "m", opt.v[0].uop: "v", opt.b1_t.uop: "b1_t", opt.b2_t.uop: "b2_t"}
+g_vals = [0.5, -1.0, 2.0]
+w.grad = Tensor(g_vals).realize()                 # pretend backward() produced this gradient
+names[w.grad.uop] = "g"
+
+with Context(TRAINING=1):
+  outs = opt.schedule_step()
+print("schedule_step() returned:", [("b1_t", "b2_t", "m", "v", "w")[i] for i in range(len(outs))])
+for nm, t in (("b1_t", opt.b1_t), ("m", opt.m[0]), ("w", w)):
+  print(f"\n--- {nm}.uop after schedule_step ({len(t.uop.toposort())} UOps) ---")
+  print(render_uir(t.uop))
+
+ids: dict = {}
+graph = slim(uop_to_graph(w.uop, ids))
+for n in graph["nodes"]:          # label the input buffers with their python names
+  for u, nm in names.items():
+    if ids.get(u) == n["id"]: n["label"] = f"BUFFER {nm}"
+def group(t): return sorted({ids[u] for u in t.toposort() if u in ids})
+store = w.uop.src[1]
+groups = {"b1_t *= b1": group(opt.b1_t.uop), "b2_t *= b2": group(opt.b2_t.uop), "m = b1*m + (1-b1)*g": group(opt.m[0].uop),
+          "v = b2*v + (1-b2)*g²": group(opt.v[0].uop), "w - lr*m̂/(√v̂+ε)": group(store.src[1]), "STORE into w": group(w.uop)}
+
+linear = Tensor.schedule_linear(*outs)
+compiled = lower_and_compile(linear)
+kernels = []
+for c in compiled.src:
+  prg = c.without_after.body
+  kernels.append({"name": prg.src[0].arg.name, "src": next(s.arg for s in prg.src if s.op is Ops.SOURCE)})
+print("\nkernels:", [k["name"] for k in kernels])
+run_linear(linear)
+
+# pure python Adam (eps=1e-8, b1=0.9, b2=0.999, t=1) to check the numbers
+b1, b2, eps, lr = 0.9, 0.999, 1e-8, 0.1
+ref = []
+for wi, gi in zip([1.0, -2.0, 0.5], g_vals):
+  m_ = (1 - b1) * gi; v_ = (1 - b2) * gi * gi
+  ref.append(wi - lr * (m_ / (1 - b1)) / (math.sqrt(v_ / (1 - b2)) + eps))
+print("tinygrad w after 1 step:", [round(x, 6) for x in w.tolist()])
+print("python   w after 1 step:", [round(x, 6) for x in ref])
+print("m:", [round(x, 6) for x in opt.m[0].tolist()], " v:", [round(x, 8) for x in opt.v[0].tolist()], " b1_t:", opt.b1_t.item())
+print("note: at t=1, m_hat = g and v_hat = g*g, so every coordinate moves by ~lr*sign(g) regardless of |g|")
+
+json.dump({"graph": graph, "groups": groups, "kernels": kernels, "uir": {"b1_t": render_uir(opt.b1_t.uop), "w": render_uir(store.src[1])}},
+          open(os.path.join(DATA, "ch20_adam.json"), "w"), indent=1)
+print("wrote data/ch20_adam.json")</code></pre>
+  <pre class="output"><code>schedule_step() returned: ['b1_t', 'b2_t', 'm', 'v', 'w']
+
+--- b1_t.uop after schedule_step (6 UOps) ---
+%0 = buffer 1 : dtype=f32 slot=10 device=CPU
+%1 = mul %0, 0.9
+%2 = store %0, %1
+%3 = after %0, %2
+
+--- m.uop after schedule_step (10 UOps) ---
+%0 = buffer 3 : dtype=f32 slot=8 device=CPU
+%1 = mul 0.9, %0
+%2 = buffer 3 : dtype=f32 slot=13 device=CPU
+%3 = mul 0.09999999999999998, %2
+%4 = add %1, %3
+%5 = store %0, %4
+%6 = after %0, %5
+
+--- w.uop after schedule_step (55 UOps) ---
+%0 = buffer 3 : dtype=f32 slot=6 device=CPU
+%1 = detach %0
+%2 = buffer 1 : dtype=f32 slot=7 device=CPU
+%3 = mul %2, 1.0
+%4 = buffer 3 : dtype=f32 slot=8 device=CPU
+%5 = mul 0.9, %4
+%6 = buffer 3 : dtype=f32 slot=13 device=CPU
+%7 = mul 0.09999999999999998, %6
+%8 = add %5, %7
+%9 = store %4, %8
+%10 = after %4, %9
+%11 = buffer 1 : dtype=f32 slot=10 device=CPU
+%12 = mul %11, 0.9
+%13 = store %11, %12
+%14 = after %11, %13
+%15 = mul %14, -1.0
+%16 = add 1.0, %15
+%17 = recip %16
+%18 = mul %10, %17
+%19 = buffer 3 : dtype=f32 slot=9 device=CPU
+%20 = mul 0.999, %19
+%21 = mul %6, %6
+%22 = mul 0.0010000000000000009, %21
+%23 = add %20, %22
+%24 = store %19, %23
+%25 = after %19, %24
+%26 = buffer 1 : dtype=f32 slot=11 device=CPU
+%27 = mul %26, 0.999
+%28 = store %26, %27
+%29 = after %26, %28
+%30 = mul %29, -1.0
+%31 = add 1.0, %30
+%32 = recip %31
+%33 = mul %25, %32
+%34 = sqrt %33
+%35 = add %34, 1e-08
+%36 = recip %35
+%37 = mul %18, %36
+%38 = mul 0.0, %1
+%39 = add %37, %38
+%40 = mul %3, %39
+%41 = mul %40, -1.0
+%42 = add %1, %41
+%43 = store %0, %42
+%44 = after %0, %43
+
+kernels: ['E', 'E', 'E_3', 'E_3', 'E_3', 'E_3']
+tinygrad w after 1 step: [0.900001, -1.900001, 0.400001]
+python   w after 1 step: [0.9, -1.9, 0.4]
+m: [0.05, -0.1, 0.2]  v: [0.00025, 0.001, 0.004]  b1_t: 0.8999999761581421
+note: at t=1, m_hat = g and v_hat = g*g, so every coordinate moves by ~lr*sign(g) regardless of |g|
+wrote data/ch20_adam.json</code></pre>
+  <p>Every line of <code>_step</code> is visible in the UIR. <code>%14 = after %11, %13</code> is <code>b1_t</code> <i>after</i> its
+  <code>*= 0.9</code>; it feeds <code>1 - b1_t</code> (written as <code>add 1.0, mul(%14, -1.0)</code>, because subtraction is ADD of a negation);
+  and <code>%38 = mul 0.0, %1</code> is the <code>self.wd * t.detach()</code> term with <code>wd=0</code>, which symbolic simplification removes
+  later. Six kernels: <code>b1_t</code>, <code>b2_t</code>, <code>m</code>, <code>v</code>, the new <code>w</code> into a temporary, and the copy back
+  into <code>w</code> (the next section explains why). The <code>0.000001</code> difference from the Python reference is float32 rounding: tinygrad stores
+  <code>b1_t</code> as float32 <code>0.89999998</code>.</p>
+
+  <div class="demo" id="demo-adam">
+    <div class="demo-title">The Adam update as UOps</div>
+    <div class="demo-desc">Bottom: the real graph of <code>w.uop</code> after <code>schedule_step()</code> (from <code>data/ch20_adam.json</code>). Click a line
+    of the update rule to highlight the UOps it adds (scroll the graph; hover for details). Top: a calculator using the same formula, in the same operation order as the
+    UOps. Drag the gradient and the step to see bias correction at work. At \(t=1\) every coordinate moves by almost exactly \(\eta\), whatever
+    the size of the gradient.</div>
+    <div class="ch20-calc"></div>
+    <div class="ch20-groupbtns" style="margin-top:12px"></div>
+    <div class="graph"></div>
+  </div>
+
+  <div class="callout deep"><span class="title"><code>Tensor.training</code> is gone</span>Older tinygrad had a class attribute
+  <code>Tensor.training</code> and a <code>Tensor.train()</code> decorator. In this version neither exists (<code>grep training tinygrad/tensor.py</code>
+  finds nothing). Their job is done by the <code>TRAINING</code> <a class="src" data-path="tinygrad/helpers.py" data-line="241">ContextVar</a>, which you
+  turn on with <code>Context(TRAINING=1)</code>, as a decorator <code>@Context(TRAINING=1)</code> (see <code>examples/beautiful_mnist.py</code>), or with
+  the env var <code>TRAINING=1</code>. Two places read it: BatchNorm (batch statistics and running-stat updates) and
+  <code>Optimizer.schedule_step</code>, which refuses to run without it. The output of <code>20_layers.py</code> section 4 shows both.</div>
+  <pre class="output"><code>… (47 earlier lines omitted)
+=== 4. TRAINING context var ===
+  TRAINING default: 0
+  opt.step() without TRAINING -&gt; TRAINING=0, TRAINING must be enabled to use the optimizer.
+  inside Context(TRAINING=1): 1
+  BatchNorm running_mean after one TRAINING forward: [0.0991, 0.0993, 0.0838]
+  num_batches_tracked: 2 (we ran two TRAINING forwards: one in section 2, one here)
+
+wrote data/ch20_layers.json</code></pre>
+
+  <div class="quiz" data-answer="2">
+    <div class="q">After <code>opt.schedule_step()</code> returns, what has happened to the parameter buffers?</div>
+    <button class="opt">They hold the updated weights; schedule_step ran the update kernels.</button>
+    <button class="opt">They are unchanged, and the Tensor objects were replaced with new Tensors holding the update.</button>
+    <button class="opt">They are unchanged; each parameter Tensor's <code>.uop</code> is now AFTER(BUFFER, STORE(BUFFER, update)) and nothing runs until realize.</button>
+    <div class="explain"><code>schedule_step</code> only builds graphs. <code>assign</code> mutates the Tensor's <code>.uop</code> in place, so the same Python
+    object (the one your model holds) now denotes "the buffer after the store". The scheduler turns that STORE into a kernel when you realize.</div>
+  </div>
+
+  <!-- ===================================================================================== -->
+  <h2 id="one-step"><span class="sec">20.5</span>The centerpiece: one training step, traced through the stack</h2>
+  <p>The model is a 2 → 32 → 2 MLP with ReLU, trained with Adam(lr=0.02) on 128 points from a two-armed spiral (pure Python, no numpy).
+  The script splits <code>Tensor.realize</code> into its two halves (<code>Tensor.schedule_linear</code>, then <code>run_linear</code>) so we can stop
+  in between and look at each phase. Before the step it realizes everything that already exists (parameters, Adam's <code>m</code>/<code>v</code>,
+  <code>lr</code>, the data), so the step's graph starts at real <code>BUFFER</code>s.</p>
+  <div class="codecap"><b>examples/20_train_step.py</b> — run with <code>DEV=CPU python3 examples/20_train_step.py</code></div>
+  <pre><code class="language-python"># Chapter 20 — ONE training step of a small MLP, traced through the whole stack
+# Run: DEV=CPU python3 examples/20_train_step.py
+#
+#   forward graph -&gt; loss -&gt; backward (gradient UOps) -&gt; optimizer assign -&gt; schedule (LINEAR of CALLs)
+#   -&gt; codegen (one C function per kernel) -&gt; run
+#
+# Nothing here is special API: it is exactly what `loss.realize(*opt.schedule_step())` does inside
+# Tensor.realize (tensor.py), split into its two halves so we can look in between:
+#   linear = Tensor.schedule_linear(...)      # tensor graph -&gt; LINEAR(CALL, CALL, ...)
+#   run_linear(linear)                        # lower_and_compile + execute every CALL
+import json, math, os, random, sys
+from collections import Counter
+from tinygrad import Tensor, nn, Context
+from tinygrad.uop.ops import Ops, UOp
+from tinygrad.uop.render import render_uir
+from tinygrad.engine.realize import lower_and_compile, run_linear
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
+from uop2json import uop_to_graph
+DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
+
+# ---------- synthetic data: a two-armed spiral (pure python, no numpy) ----------
+def spiral(n_per_class=64, seed=0):
+  rnd = random.Random(seed)
+  pts, labels = [], []
+  for c in range(2):
+    for i in range(n_per_class):
+      r = 0.15 + 0.85 * i / n_per_class
+      t = 1.6 * math.pi * i / n_per_class + c * math.pi + rnd.gauss(0, 0.12)
+      pts.append([r * math.cos(t), r * math.sin(t)]); labels.append(c)
+  return pts, labels
+
+class MLP:
+  def __init__(self, hidden=32):
+    self.l1, self.l2 = nn.Linear(2, hidden), nn.Linear(hidden, 2)
+  def __call__(self, x:Tensor) -&gt; Tensor: return self.l2(self.l1(x).relu())
+
+if __name__ == "__main__":
+  Tensor.manual_seed(0)
+  pts, labels = spiral()
+  X, Y = Tensor(pts), Tensor(labels)                  # (128, 2) float32, (128,) int32
+  model = MLP()
+  params = nn.state.get_parameters(model)
+  opt = nn.optim.Adam(params, lr=0.02)
+  # realize everything that exists *before* the step so the step's graph starts at real BUFFERs
+  Tensor.realize(*params, X, Y, *opt.m, *opt.v, opt.b1_t, opt.b2_t, opt.lr)
+  names = {X.uop: "X", Y.uop: "Y", opt.lr.uop: "adam.lr", opt.b1_t.uop: "adam.b1_t", opt.b2_t.uop: "adam.b2_t"}
+  for k, v in nn.state.get_state_dict(model).items(): names[v.uop] = k
+  for i, (k, _) in enumerate(nn.state.get_state_dict(model).items()): names[opt.m[i].uop], names[opt.v[i].uop] = f"adam.m[{k}]", f"adam.v[{k}]"
+  bufname = {u.buffer: n for u, n in names.items()}
+  print("parameters:", {k: tuple(v.shape) for k, v in nn.state.get_state_dict(model).items()})
+  print("X", X.shape, X.dtype, " Y", Y.shape, Y.dtype)
+
+  def census(u:UOp) -&gt; str:
+    c = Counter(x.op.name for x in u.toposort())
+    return f"{sum(c.values())} UOps: " + ", ".join(f"{k}={v}" for k, v in c.most_common(9))
+
+  with Context(TRAINING=1):
+    opt.zero_grad()
+    # ---------- 1. forward ----------
+    logits = model(X)
+    print("\n[1] forward  logits:", logits.shape, "|", census(logits.uop))
+    loss = logits.sparse_categorical_crossentropy(Y)
+    print("    loss    :", loss.shape, "|", census(loss.uop))
+    fwd_uops = set(loss.uop.toposort())
+    # ---------- 2. backward ----------
+    loss.backward()
+    g = model.l2.bias.grad
+    print("\n[2] backward: every param now has .grad, a *lazy* Tensor (nothing computed yet)")
+    for k, v in nn.state.get_state_dict(model).items():
+      new = len(set(v.grad.uop.toposort()) - fwd_uops)
+      print(f"    {k:10s}.grad {str(v.grad.shape):8s} graph has {len(v.grad.uop.toposort()):3d} UOps, {new:3d} of them new (not in the forward graph)")
+    print("    l2.bias.grad as UIR (shared forward subgraph included):")
+    uir = render_uir(g.uop).splitlines()
+    print("\n".join("      " + l for l in uir[-12:]))
+    print(f"      ... ({len(uir)} lines total)")
+    # ---------- 3. optimizer ----------
+    before = model.l2.bias.uop
+    outs = opt.schedule_step()                         # builds assign()s, does NOT run anything
+    after = model.l2.bias.uop
+    print("\n[3] opt.schedule_step() returned", len(outs), "tensors to realize: b1_t, b2_t, 4 m's, 4 v's, then the 4 params")
+    print("    l2.bias.uop before:", before.op, "  after:", after.op, "with src ops", [s.op.name for s in after.src])
+    store = after.src[1]
+    print("    the STORE writes into", store.src[0].op.name, "the value", store.src[1].op.name, f"({len(store.src[1].toposort())} UOps deep)")
+    # ---------- 4. schedule ----------
+    linear = Tensor.schedule_linear(loss, *outs)
+  print(f"\n[4] Tensor.schedule_linear -&gt; {linear.op.name} with {len(linear.src)} CALLs")
+
+  # ---------- 5. codegen every kernel ----------
+  compiled = lower_and_compile(linear)
+  def base(u:UOp) -&gt; UOp:
+    while u.op in (Ops.BITCAST, Ops.SHRINK, Ops.RESHAPE): u = u.src[0]
+    return u
+  bufname[loss.uop.buffer] = "loss"
+  def argname(u:UOp) -&gt; str:
+    b = base(u)
+    n = bufname.get(b.buffer) if b.op is Ops.BUFFER else None
+    return n if n is not None else "tmp" + str(tuple(u.shape))
+  kernels, last_writer = [], {}
+  for i, c in enumerate(compiled.src):
+    c = c.without_after
+    prg = c.body
+    args = list(c.src[1:])
+    outs_i, ins_i = [args[j] for j in prg.arg.outs], [args[j] for j in prg.arg.ins]
+    src = next(s.arg for s in prg.src if s.op is Ops.SOURCE)
+    deps = sorted({last_writer[a] for a in ins_i if a in last_writer})
+    for a in outs_i: last_writer[a] = i
+    kernels.append({"i": i, "name": prg.src[0].arg.name, "outs": [argname(a) for a in outs_i], "ins": [argname(a) for a in ins_i],
+                    "deps": deps, "src": src, "ast": render_uir(linear.src[i].src[0]), "opts": str(prg.src[0].arg.applied_opts)})
+  # label phases from dataflow: forward = everything the loss kernel transitively depends on
+  loss_k = next(k["i"] for k in kernels if "loss" in k["outs"])
+  fwd, stack = set(), [loss_k]
+  while stack:
+    j = stack.pop()
+    if j in fwd: continue
+    fwd.add(j); stack += kernels[j]["deps"]
+  for k in kernels:
+    touches_opt = any(n.startswith("adam.") for n in k["outs"] + k["ins"]) or any(n in names.values() and not n.startswith(("X", "Y", "adam")) for n in k["outs"])
+    k["phase"] = "forward" if k["i"] in fwd else "update" if touches_opt else "backward"
+  print("\n[5] the kernels, in schedule order (phase is derived from dataflow, see the script):")
+  for k in kernels:
+    print(f"    {k['i']:2d} {k['phase']:8s} {k['name']:14s} writes {', '.join(k['outs']):16s} reads {', '.join(k['ins'])}")
+  print("    per phase:", dict(Counter(k["phase"] for k in kernels)))
+  for k in (kernels[0], kernels[loss_k]):
+    print(f"\n    --- generated C for kernel {k['i']} ({k['name']}, {k['phase']}) ---")
+    print("\n".join("    " + l for l in k["src"].strip().splitlines()))
+
+  # ---------- 6. run ----------
+  run_linear(linear)
+  print(f"\n[6] run_linear done. loss = {loss.item():.4f}")
+  print("    Adam bias-correction state b1_t, b2_t =", opt.b1_t.item(), opt.b2_t.item(), "(= 0.9**1, 0.999**1)")
+
+  # ---------- data for the chapter's timeline demo ----------
+  json.dump({"kernels": kernels, "loss": loss.item()}, open(os.path.join(DATA, "ch20_step.json"), "w"), indent=1)
+  print("\nwrote data/ch20_step.json")</code></pre>
+  <pre class="output"><code>parameters: {'l1.weight': (32, 2), 'l1.bias': (32,), 'l2.weight': (2, 32), 'l2.bias': (2,)}
+X (128, 2) dtypes.f32  Y (128,) dtypes.i32
+
+[1] forward  logits: (128, 2) | 44 UOps: STACK=10, CONST=8, RESHAPE=7, PERMUTE=6, BUFFER=5, MUL=2, REDUCE=2, ADD=2, CMPLT=1
+    loss    : () | 118 UOps: CONST=19, RESHAPE=17, STACK=16, MUL=14, PERMUTE=12, REDUCE=9, BUFFER=6, ADD=6, CAST=5
+
+[2] backward: every param now has .grad, a *lazy* Tensor (nothing computed yet)
+    l1.weight .grad (32, 2)  graph has 152 UOps,  51 of them new (not in the forward graph)
+    l1.bias   .grad (32,)    graph has 145 UOps,  44 of them new (not in the forward graph)
+    l2.weight .grad (2, 32)  graph has 140 UOps,  39 of them new (not in the forward graph)
+    l2.bias   .grad (2,)     graph has 132 UOps,  31 of them new (not in the forward graph)
+    l2.bias.grad as UIR (shared forward subgraph included):
+      %85 = reshape %84, (128, 1)
+      %86 = mul %85, 0.6931471805599453
+      %87 = recip %86
+      %88 = mul %82, %87
+      %89 = reshape %88, 128
+      %90 = expand %89, 2
+      %91 = permute %90, (1, 0)
+      %92 = mul %77, %91
+      %93 = mul %92, 0.6931471805599453
+      %94 = mul 1.4426950408889634, %93
+      %95 = add %43, %94
+      %96 = reduce %95 : op=add pop=1
+      ... (97 lines total)
+
+[3] opt.schedule_step() returned 14 tensors to realize: b1_t, b2_t, 4 m's, 4 v's, then the 4 params
+    l2.bias.uop before: Ops.BUFFER   after: Ops.AFTER with src ops ['BUFFER', 'STORE']
+    the STORE writes into BUFFER the value ADD (178 UOps deep)
+
+[4] Tensor.schedule_linear -&gt; LINEAR with 30 CALLs
+
+[5] the kernels, in schedule order (phase is derived from dataflow, see the script):
+     0 forward  r_32_8_4_4_2   writes tmp(4096,)       reads X, l1.weight, l1.bias
+     1 update   E              writes adam.b1_t        reads adam.b1_t
+     2 update   E              writes adam.b2_t        reads adam.b2_t
+     3 forward  r_128_2_32     writes tmp(256,)        reads tmp(4096,), l2.weight, l2.bias
+     4 forward  r_128_2        writes tmp(128,)        reads tmp(256,)
+     5 forward  r_128_2        writes tmp(128,)        reads tmp(256,), tmp(128,)
+     6 forward  r_32_4         writes loss             reads tmp(256,), tmp(128,), tmp(128,), Y
+     7 backward E_32_4         writes tmp(128,)        reads Y, tmp(128,)
+     8 backward E_128_2        writes tmp(256,)        reads Y, tmp(256,), tmp(128,), tmp(128,)
+     9 backward r_32_8_4_4_2   writes tmp(4096,)       reads tmp(4096,), l2.weight, tmp(256,)
+    10 backward r_2_32_32_4    writes tmp(64,)         reads tmp(4096,), tmp(256,)
+    11 backward r_2_32_4       writes tmp(2,)          reads tmp(256,)
+    12 backward r_32_2_32_4    writes tmp(64,)         reads X, tmp(4096,)
+    13 backward r_32_32_4      writes tmp(32,)         reads tmp(4096,)
+    14 update   E_16_4         writes adam.m[l2.weight] reads adam.m[l2.weight], tmp(64,)
+    15 update   E_16_4         writes adam.v[l2.weight] reads adam.v[l2.weight], tmp(64,)
+    16 update   E_2            writes adam.m[l2.bias]  reads adam.m[l2.bias], tmp(2,)
+    17 update   E_2            writes adam.v[l2.bias]  reads adam.v[l2.bias], tmp(2,)
+    18 update   E_16_4         writes adam.m[l1.weight] reads adam.m[l1.weight], tmp(64,)
+    19 update   E_16_4         writes adam.v[l1.weight] reads adam.v[l1.weight], tmp(64,)
+    20 update   E_8_4          writes adam.m[l1.bias]  reads adam.m[l1.bias], tmp(32,)
+    21 update   E_8_4          writes adam.v[l1.bias]  reads adam.v[l1.bias], tmp(32,)
+    22 update   E_16_4         writes tmp(64,)         reads l2.weight, adam.lr, adam.m[l2.weight], adam.b1_t, adam.v[l2.weight], adam.b2_t
+    23 update   E_2            writes tmp(2,)          reads l2.bias, adam.lr, adam.m[l2.bias], adam.b1_t, adam.v[l2.bias], adam.b2_t
+    24 update   E_16_4         writes tmp(64,)         reads l1.weight, adam.lr, adam.m[l1.weight], adam.b1_t, adam.v[l1.weight], adam.b2_t
+    25 update   E_8_4          writes tmp(32,)         reads l1.bias, adam.lr, adam.m[l1.bias], adam.b1_t, adam.v[l1.bias], adam.b2_t
+    26 update   E_16_4         writes l2.weight        reads tmp(64,)
+    27 update   E_2            writes l2.bias          reads tmp(2,)
+    28 update   E_16_4         writes l1.weight        reads tmp(64,)
+    29 update   E_8_4          writes l1.bias          reads tmp(32,)
+    per phase: {'forward': 5, 'update': 18, 'backward': 7}
+… (115 more lines)</code></pre>
+
+  <h3>Reading the trace</h3>
+  <div class="kv">
+    <span>[1] forward</span><span>The logits are 44 UOps: two <code>REDUCE</code>s (one per Linear), and ReLU as <code>CMPLT</code>+<code>WHERE</code>
+      (<code>relu</code> is <code>(x&gt;0).where(x,0)</code>). The loss adds log_softmax (a max-reduce, an exp-sum reduce and a log), a one-hot built from
+      <code>Y</code>, and a mean: 118 UOps.</span>
+    <span>[2] backward</span><span><code>backward()</code> runs <a class="src" data-path="tinygrad/mixin/gradient.py" data-line="114">compute_gradient</a>:
+      the chain rule as a reverse toposort that applies <a class="src" data-path="tinygrad/mixin/gradient.py" data-line="65">pm_gradient</a> rules
+      (<a href="09-autograd.html">Chapter 9</a>). Each <code>.grad</code> graph has 130–150 UOps, but only 31–51 of them are new; the rest are the
+      forward graph, shared because backward needs the forward activations. The printed tail of <code>l2.bias.grad</code> shows the derivative
+      of log2 (<code>recip(x·ln2)</code>) and an <code>EXPAND</code> undoing a reduce.</span>
+    <span>[3] update</span><span><code>l2.bias.uop</code> changed from <code>BUFFER</code> to <code>AFTER(BUFFER, STORE)</code>. The stored value is 178 UOps
+      deep: it contains the gradient, which contains the forward graph.</span>
+    <span>[4] schedule</span><span>One <code>LINEAR</code> of <b>30</b> <code>CALL</code>s for the whole step (<a href="12-schedule.html">Chapter 12</a>).</span>
+    <span>[5] kernels</span><span>Each CALL's body is lowered to a <code>PROGRAM</code> containing C source (<a href="15-lowering.html">Chapters 15</a>–<a href="16-linearize-render.html">16</a>).</span>
+  </div>
+
+  <h3>The 30 kernels</h3>
+  <p>Phases are not something tinygrad knows about. The script derives them from the dataflow: <i>forward</i> means "the loss kernel depends on
+  it", <i>update</i> means "touches optimizer state or writes a parameter", and the rest is <i>backward</i>. Things to notice:</p>
+  <ul>
+    <li><b>The schedule is a toposort, not program order.</b> Kernels 1–2 (<code>b1_t *= 0.9</code>, <code>b2_t *= 0.999</code>) are "update" kernels
+      but run second and third: they depend on nothing, and <a class="src" data-path="tinygrad/schedule/__init__.py" data-line="31">create_schedule</a>
+      emits ready kernels in BFS order.</li>
+    <li><b>Kernel 0 fuses all of Linear 1</b> (MUL + REDUCE + bias) into one <code>r_32_8_4_4_2</code> that writes the pre-ReLU hidden layer
+      (128×32 = 4096 floats). ReLU is not a kernel of its own: it is fused into kernel 3, the consumer (<code>r_128_2_32</code> = Linear 2).</li>
+    <li><b>log_softmax + the loss is 3 kernels</b> (4, 5, 6): max over classes, sum of exp, then the masked mean. Kernel 6's C (below) contains a whole
+      polynomial: on CPU, <code>LOG2</code> is decomposed by the transcendental rewrites (<a href="15-lowering.html">Chapter 15</a>).</li>
+    <li><b>Backward is 7 kernels</b> (7–13): softmax − one-hot gradient, then for each Linear one reduce for the weight gradient (Xᵀ·δ), one for the bias
+      gradient (Σδ), and one to propagate δ back through Linear 2 and the ReLU mask.</li>
+    <li><b>The update is 16 kernels</b>: one each for m and v of each of the 4 parameters (14–21), then a new value per parameter into a <i>temporary</i>
+      (22–25), then a copy back (26–29). Why the temporary? The value stored into <code>w</code> reads <code>w</code>.
+      <a class="src" data-path="tinygrad/schedule/indexing.py" data-line="32">realize_store_after_src</a> materializes the source of a STORE whenever
+      it reads its own destination, which is how the scheduler avoids a write-after-read hazard in general. In this purely elementwise case each
+      element reads only itself, so the copy is conservative.</li>
+  </ul>
+
+  <div class="demo" id="demo-timeline">
+    <div class="demo-title">Training-step timeline: 30 kernels, three phases</div>
+    <div class="demo-desc">Each box is one real kernel from <code>data/ch20_step.json</code>, in schedule order. Click a phase to filter. Click a kernel
+    to see what it reads and writes, its <span class="hl-gold">producers</span> (gold dashed) and <span style="color:var(--pink)">consumers</span> (pink dashed),
+    and its generated C and kernel AST.</div>
+    <div class="ch20-phasebar"></div>
+    <div class="ch20-timeline"></div>
+    <div class="ch20-detail">Click a kernel.</div>
+  </div>
+
+  <h3>Generated C for two of them</h3>
+  <pre class="output"><code>… (65 earlier lines omitted)
+    --- generated C for kernel 0 (r_32_8_4_4_2, forward) ---
+    typedef float float4 __attribute__((aligned(4),ext_vector_type(4)));
+    struct r_32_8_4_4_2_args { float* arg0; float* arg1; float* arg2; float* arg3; };
+    void r_32_8_4_4_2(const struct r_32_8_4_4_2_args* args) {
+      float* data0_4096 = args-&gt;arg0;
+      float* data1_256 = args-&gt;arg1;
+      float* data2_64 = args-&gt;arg2;
+      float* data3_32 = args-&gt;arg3;
+      for (int Lidx1 = 0; Lidx1 &lt; 32; Lidx1++) {
+        int alu0 = (Lidx1&lt;&lt;3);
+        float4 val0 = (*((float4*)((data1_256+(alu0+4)))));
+        float4 val1 = (*((float4*)((data1_256+alu0))));
+        for (int Lidx2 = 0; Lidx2 &lt; 8; Lidx2++) {
+          int alu1 = (Lidx2&lt;&lt;3);
+          float4 val2 = (*((float4*)((data2_64+(alu1+4)))));
+          float4 val3 = (*((float4*)((data2_64+alu1))));
+          int alu2 = (Lidx2&lt;&lt;2);
+          float4 val4 = (*((float4*)((data3_32+alu2))));
+          int alu3 = ((Lidx1&lt;&lt;7)+alu2);
+          *((float4*)((data0_4096+(alu3+32)))) = (float4){((val1[2]*val3[0])+(val1[3]*val3[1])+val4[0]),((val1[2]*val3[2])+(val1[3]*val3[3])+val4[1]),((val1[2]*val2[0])+(val1[3]*val2[1])+val4[2]),((val1[2]*val2[2])+(val1[3]*val2[3])+val4[3])};
+          *((float4*)((data0_4096+(alu3+64)))) = (float4){((val0[0]*val3[0])+(val0[1]*val3[1])+val4[0]),((val0[0]*val3[2])+(val0[1]*val3[3])+val4[1]),((val0[0]*val2[0])+(val0[1]*val2[1])+val4[2]),((val0[0]*val2[2])+(val0[1]*val2[3])+val4[3])};
+          *((float4*)((data0_4096+(alu3+96)))) = (float4){((val0[2]*val3[0])+(val0[3]*val3[1])+val4[0]),((val0[2]*val3[2])+(val0[3]*val3[3])+val4[1]),((val0[2]*val2[0])+(val0[3]*val2[1])+val4[2]),((val0[2]*val2[2])+(val0[3]*val2[3])+val4[3])};
+          *((float4*)((data0_4096+alu3))) = (float4){((val1[0]*val3[0])+(val1[1]*val3[1])+val4[0]),((val1[0]*val3[2])+(val1[1]*val3[3])+val4[1]),((val1[0]*val2[0])+(val1[1]*val2[1])+val4[2]),((val1[0]*val2[2])+(val1[1]*val2[3])+val4[3])};
+        }
+      }
+    }
+
+    --- generated C for kernel 6 (r_32_4, forward) ---
+    typedef int int4 __attribute__((aligned(4),ext_vector_type(4)));
+    typedef float float4 __attribute__((aligned(4),ext_vector_type(4)));
+    struct r_32_4_args { float* arg0; float* arg1; float* arg2; float* arg3; int* arg4; };
+    void r_32_4(const struct r_32_4_args* args) {
+      float* data0_1 = args-&gt;arg0;
+      float* data1_256 = args-&gt;arg1;
+      float* data2_128 = args-&gt;arg2;
+      float* data3_128 = args-&gt;arg3;
+      int* data4_128 = args-&gt;arg4;
+      float buf0[1];
+      *(buf0+0) = 0.0f;
+      for (int Lidx1 = 0; Lidx1 &lt; 32; Lidx1++) {
+        int alu1 = (Lidx1&lt;&lt;2);
+        int4 val0 = (*((int4*)((data4_128+alu1))));
+        int alu2 = (Lidx1&lt;&lt;3);
+        _Bool alu3 = ((-1&lt;val0[0])&amp;(val0[0]&lt;2));
+        float val1 = (alu3?*(data1_256+(val0[0]+alu2)):0.0f);
+        _Bool alu4 = ((-1&lt;val0[1])&amp;(val0[1]&lt;2));
+        float val2 = (alu4?*(data1_256+(val0[1]+alu2+2)):0.0f);
+        _Bool alu5 = ((-1&lt;val0[2])&amp;(val0[2]&lt;2));
+        float val3 = (alu5?*(data1_256+(val0[2]+alu2+4)):0.0f);
+        _Bool alu6 = ((-1&lt;val0[3])&amp;(val0[3]&lt;2));
+        float val4 = (alu6?*(data1_256+(val0[3]+alu2+6)):0.0f);
+        float4 val5 = (*((float4*)((data2_128+alu1))));
+        float4 val6 = (*((float4*)((data3_128+alu1))));
+        _Bool alu7 = (val6[0]&lt;9.999999747378752e-05f);
+        float alu8 = (alu7?(val6[0]*1.8446744073709552e+19f):val6[0]);
+        float cast0 = ((float)((((__builtin_bit_cast(int, (float)((alu8*1.3333333730697632f)))&gt;&gt;23)&amp;255)+-127)));
+        _Bool alu9 = (val6[1]&lt;9.999999747378752e-05f);
+        float alu10 = (alu9?(val6[1]*1.8446744073709552e+19f):val6[1]);
+        float cast1 = ((float)((((__builtin_bit_cast(int, (float)((alu10*1.3333333730697632f)))&gt;&gt;23)&amp;255)+-127)));
+        _Bool alu11 = (val6[2]&lt;9.999999747378752e-05f);
+        float alu12 = (alu11?(val6[2]*1.8446744073709552e+19f):val6[2]);
+        float cast2 = ((float)((((__builtin_bit_cast(int, (float)((alu12*1.3333333730697632f)))&gt;&gt;23)&amp;255)+-127)));
+        _Bool alu13 = (val6[3]&lt;9.999999747378752e-05f);
+        float alu14 = (alu13?(val6[3]*1.8446744073709552e+19f):val6[3]);
+        float cast3 = ((float)((((__builtin_bit_cast(int, (float)((alu14*1.3333333730697632f)))&gt;&gt;23)&amp;255)+-127)));
+        float cast4 = __builtin_bit_cast(float, (int)((__builtin_bit_cast(int, (float)(alu8))+(((int)(-cast0))&lt;&lt;23))));
+        float cast5 = __builtin_bit_cast(float, (int)((__builtin_bit_cast(int, (float)(alu10))+(((int)(-cast1))&lt;&lt;23))));
+        float cast6 = __builtin_bit_cast(float, (int)((__builtin_bit_cast(int, (float)(alu12))+(((int)(-cast2))&lt;&lt;23))));
+        float cast7 = __builtin_bit_cast(float, (int)((__builtin_bit_cast(int, (float)(alu14))+(((int)(-cast3))&lt;&lt;23))));
+        float alu15 = ((cast4+-1.0f)/(cast4+1.0f));
+        float alu16 = (alu15*alu15);
+        float alu17 = (alu7?(cast0+-64.0f):cast0);
+        float alu18 = ((cast5+-1.0f)/(cast5+1.0f));
+        float alu19 = (alu18*alu18);
+        float alu20 = (alu9?(cast1+-64.0f):cast1);
+        float alu21 = ((cast6+-1.0f)/(cast6+1.0f));
+        float alu22 = (alu21*alu21);
+        float alu23 = (alu11?(cast2+-64.0f):cast2);
+        float alu24 = ((cast7+-1.0f)/(cast7+1.0f));
+        float alu25 = (alu24*alu24);
+        float alu26 = (alu13?(cast3+-64.0f):cast3);
+        float alu27 = ((val6[0]!=((float)(__builtin_inff())))?((((((0.43745502829551697f*alu16)+0.5764790177345276f)*alu16)+0.961801290512085f)*alu15*alu16)+alu17+(alu15*2.885390043258667f)+(alu15*3.2734472910078694e-08f)):((float)(__builtin_inff())));
+        float alu28 = ((val6[0]!=0.0f)?alu27:((float)(-__builtin_inff())));
+        float alu29 = ((val6[0]&lt;-0.0f)?((float)(__builtin_nanf(""))):alu28);
+        float alu30 = (((1.0f/val6[0])!=((float)(-__builtin_inff())))?alu29:((float)(-__builtin_inff())));
+        float alu31 = ((val6[0]!=val6[0])?((float)(__builtin_nanf(""))):alu30);
+        float alu32 = ((val6[1]!=((float)(__builtin_inff())))?((((((0.43745502829551697f*alu19)+0.5764790177345276f)*alu19)+0.961801290512085f)*alu18*alu19)+alu20+(alu18*2.885390043258667f)+(alu18*3.2734472910078694e-08f)):((float)(__builtin_inff())));
+        float alu33 = ((val6[1]!=0.0f)?alu32:((float)(-__builtin_inff())));
+        float alu34 = ((val6[1]&lt;-0.0f)?((float)(__builtin_nanf(""))):alu33);
+        float alu35 = (((1.0f/val6[1])!=((float)(-__builtin_inff())))?alu34:((float)(-__builtin_inff())));
+        float alu36 = ((val6[1]!=val6[1])?((float)(__builtin_nanf(""))):alu35);
+        float alu37 = ((val6[2]!=((float)(__builtin_inff())))?((((((0.43745502829551697f*alu22)+0.5764790177345276f)*alu22)+0.961801290512085f)*alu21*alu22)+alu23+(alu21*2.885390043258667f)+(alu21*3.2734472910078694e-08f)):((float)(__builtin_inff())));
+        float alu38 = ((val6[2]!=0.0f)?alu37:((float)(-__builtin_inff())));
+        float alu39 = ((val6[2]&lt;-0.0f)?((float)(__builtin_nanf(""))):alu38);
+        float alu40 = (((1.0f/val6[2])!=((float)(-__builtin_inff())))?alu39:((float)(-__builtin_inff())));
+        float alu41 = ((val6[2]!=val6[2])?((float)(__builtin_nanf(""))):alu40);
+        float alu42 = (alu3?((val1-val5[0])+(alu31*-0.6931471824645996f)):0.0f);
+        float alu43 = (alu4?((val2-val5[1])+(alu36*-0.6931471824645996f)):0.0f);
+        float alu44 = (alu5?((val3-val5[2])+(alu41*-0.6931471824645996f)):0.0f);
+        float alu45 = ((val6[3]!=((float)(__builtin_inff())))?((((((0.43745502829551697f*alu25)+0.5764790177345276f)*alu25)+0.961801290512085f)*alu24*alu25)+alu26+(alu24*2.885390043258667f)+(alu24*3.2734472910078694e-08f)):((float)(__builtin_inff())));
+        float alu46 = ((val6[3]!=0.0f)?alu45:((float)(-__builtin_inff())));
+        float alu47 = ((val6[3]&lt;-0.0f)?((float)(__builtin_nanf(""))):alu46);
+        float alu48 = (((1.0f/val6[3])!=((float)(-__builtin_inff())))?alu47:((float)(-__builtin_inff())));
+        float alu49 = ((val6[3]!=val6[3])?((float)(__builtin_nanf(""))):alu48);
+        float alu50 = (alu6?((val4-val5[3])+(alu49*-0.6931471824645996f)):0.0f);
+        *(buf0+0) = ((*(buf0+0))+alu42+alu43+alu44+alu50);
+      }
+      *(data0_1+0) = ((*(buf0+0))*-0.0078125f);
+    }
+
+[6] run_linear done. loss = 0.6861
+    Adam bias-correction state b1_t, b2_t = 0.8999999761581421 0.9990000128746033 (= 0.9**1, 0.999**1)
+
+wrote data/ch20_step.json</code></pre>
+  <p>The kernel-0 C shows the optimizer from <a href="14-optimizations.html">Chapter 14</a> at work: the <code>128×32</code> output was split into loops of
+  32 and 8, with two axes upcast by 4 (hence the <code>float4</code> loads and four <code>float4</code> stores per iteration). The 2-element reduce
+  (the input dimension) was unrolled away completely.</p>
+
+  <div class="quiz" data-answer="1">
+    <div class="q">Why does the step have 4 kernels that only copy a temporary into a parameter (26–29)?</div>
+    <button class="opt">The memory planner needs every parameter to be written last.</button>
+    <button class="opt">The new parameter value reads the parameter itself, and a STORE whose source reads its destination gets its source materialized first, to avoid a write-after-read hazard.</button>
+    <button class="opt">TinyJit needs the parameters to be in fresh buffers.</button>
+    <button class="opt">Adam's bias correction cannot be fused with the subtraction.</button>
+    <div class="explain"><code>realize_store_after_src</code> in <code>schedule/indexing.py</code>: <code>if dest.base in src.toposort(): realize src</code>.
+    The update <code>w.detach() - lr*up</code> contains <code>w</code>, so it goes to a temporary buffer, and the STORE becomes a copy kernel. The rule is
+    general (it is needed when, say, a transpose of <code>w</code> is assigned into <code>w</code>); here it happens to be stricter than necessary.</div>
+  </div>
+
+  <!-- ===================================================================================== -->
+  <h2 id="jit"><span class="sec">20.6</span>Same step, again and again: the schedule cache and TinyJit</h2>
+  <p>Run the exact <code>beautiful_mnist</code> pattern (<code>loss.realize(*opt.schedule_step())</code>) several times with <code>DEBUG=1</code> and watch the
+  scheduler line:</p>
+  <div class="codecap"><b>examples/20_schedule_cache.py</b> — run with <code>DEV=CPU DEBUG=1 python3 examples/20_schedule_cache.py</code></div>
+  <pre><code class="language-python"># Chapter 20 — why the first two training steps are slow and the rest are not (no JIT)
+# Run: DEV=CPU DEBUG=1 python3 examples/20_schedule_cache.py
+#
+# DEBUG=1 prints one "scheduled N kernels ... CACHE MISS / cache hit &lt;key&gt;" line per realize (schedule/__init__.py,
+# lower_sink_to_linear). The key is the hash of the tensor graph *with buffers replaced by numbered PARAMs*, so the
+# same step on new data/weights hits the schedule cache.
+import importlib.util, os
+spec = importlib.util.spec_from_file_location("ts", os.path.join(os.path.dirname(os.path.abspath(__file__)), "20_train_step.py"))
+ts = importlib.util.module_from_spec(spec); spec.loader.exec_module(ts)     # reuse spiral() and MLP (its __main__ part does not run)
+from tinygrad import Tensor, nn, Context
+Tensor.manual_seed(0)
+pts, labels = ts.spiral()
+X, Y = Tensor(pts).realize(), Tensor(labels).realize()
+model = ts.MLP()
+opt = nn.optim.Adam(nn.state.get_parameters(model), lr=0.02)   # note: params, m, v, lr are all still *lazy* here
+for i in range(4):
+  print("step", i)
+  with Context(TRAINING=1):
+    opt.zero_grad()
+    loss = model(X).sparse_categorical_crossentropy(Y).backward()
+    loss.realize(*opt.schedule_step())
+print("opt.lr is still lazy:", opt.lr.uop.op, "&lt;- a COPY from the PYTHON device, re-run every step (the 31st kernel)")</code></pre>
+  <pre class="output"><code>opened device PYTHON from pid:N
+opened device CPU from pid:N
+step 0
+scheduled    47 kernels in   272.07 ms | CACHE MISS cb226b62 |    2807 uops in cache | /home/user/workspace/tinygrad-guide/examples/20_schedule_cache.py:21
+memory reduced from 0.04 MB -&gt; 0.04 MB, 14 -&gt; 2 bufs
+step 1
+scheduled    31 kernels in    99.03 ms | CACHE MISS 1d51af32 |    4555 uops in cache | /home/user/workspace/tinygrad-guide/examples/20_schedule_cache.py:21
+memory reduced from 0.04 MB -&gt; 0.04 MB, 16 -&gt; 2 bufs
+step 2
+scheduled    31 kernels in     3.34 ms |  cache hit 1d51af32 |    5051 uops in cache | /home/user/workspace/tinygrad-guide/examples/20_schedule_cache.py:21
+memory reduced from 0.04 MB -&gt; 0.04 MB, 16 -&gt; 2 bufs
+step 3
+scheduled    31 kernels in     3.09 ms |  cache hit 1d51af32 |    5054 uops in cache | /home/user/workspace/tinygrad-guide/examples/20_schedule_cache.py:21
+memory reduced from 0.04 MB -&gt; 0.04 MB, 16 -&gt; 2 bufs
+opt.lr is still lazy: Ops.COPY &lt;- a COPY from the PYTHON device, re-run every step (the 31st kernel)</code></pre>
+  <ul>
+    <li><b>Step 0 is 47 kernels</b>: the parameters are still unrealized <code>Tensor.uniform</code> graphs and Adam's state is unrealized
+      <code>Tensor.zeros</code>, so the RNG and zero-fill are scheduled as well.</li>
+    <li><b>Step 1 is a new graph</b> (everything is now a BUFFER), so it is a cache miss again. Scheduling takes about 100 ms.</li>
+    <li><b>From step 2 on it is a cache hit</b>, and scheduling takes about 3 ms. The key is the hash of the graph after
+      <a class="src" data-path="tinygrad/schedule/__init__.py" data-line="248">pm_replace_buf</a> has replaced every concrete buffer with a numbered
+      <code>PARAM</code> (<a class="src" data-path="tinygrad/schedule/__init__.py" data-line="257">transform_to_call</a>). New weight values do not
+      change the key; a new graph shape does.</li>
+    <li>31 kernels, not 30: <code>opt.lr</code> was never realized, so it is a <code>COPY</code> from the PYTHON device that runs every step.
+      (<code>20_train_step.py</code> realizes <code>opt.lr</code> up front, which is why it shows 30.)</li>
+  </ul>
+  <p>The schedule cache removes scheduling, but Python still rebuilds the whole graph every step (forward, backward, optimizer: hundreds of UOp
+  constructions) and still walks the LINEAR. <a class="src" data-path="tinygrad/engine/jit.py" data-line="102">TinyJit</a> removes that as well: call 0 runs
+  normally, call 1 records every LINEAR that is run (<code>capturing</code> in <code>engine/realize.py</code>), merges them, memory-plans and compiles them,
+  and calls 2+ only replay the captured <code>LINEAR</code> with the new input buffers (<a href="18-jit.html">Chapter 18</a>).</p>
+  <div class="codecap"><b>examples/20_train_loop.py</b> — run with <code>DEV=CPU python3 examples/20_train_loop.py</code></div>
+  <pre><code class="language-python"># Chapter 20 — the same training step, without and with TinyJit, then trained to convergence
+# Run: DEV=CPU python3 examples/20_train_loop.py
+#
+# Part 1: time the plain step (python builds the graph, schedule cache, run) vs a @TinyJit step (replays the captured LINEAR).
+# Part 2: train to convergence on the spiral and record, every few steps, the loss and the model's predictions on a
+#         32x32 grid of the input plane -&gt; data/ch20_train.json (replayed by the chapter's decision-boundary demo).
+import json, math, os, random, time
+from tinygrad import Tensor, nn, Context, TinyJit, GlobalCounters
+DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
+
+def spiral(n_per_class=64, seed=0):   # identical to examples/20_train_step.py
+  rnd = random.Random(seed)
+  pts, labels = [], []
+  for c in range(2):
+    for i in range(n_per_class):
+      r = 0.15 + 0.85 * i / n_per_class
+      t = 1.6 * math.pi * i / n_per_class + c * math.pi + rnd.gauss(0, 0.12)
+      pts.append([r * math.cos(t), r * math.sin(t)]); labels.append(c)
+  return pts, labels
+
+class MLP:
+  def __init__(self, hidden=32): self.l1, self.l2 = nn.Linear(2, hidden), nn.Linear(hidden, 2)
+  def __call__(self, x:Tensor) -&gt; Tensor: return self.l2(self.l1(x).relu())
+
+def make(seed=0):
+  Tensor.manual_seed(seed)
+  model = MLP()
+  opt = nn.optim.Adam(nn.state.get_parameters(model), lr=0.02)
+  return model, opt
+
+pts, labels = spiral()
+X, Y = Tensor(pts).realize(), Tensor(labels).realize()
+
+def step(model, opt):
+  with Context(TRAINING=1):
+    opt.zero_grad()
+    loss = model(X).sparse_categorical_crossentropy(Y).backward()
+    return loss.realize(*opt.schedule_step())
+
+def timed(fn, n):
+  ts = []
+  for _ in range(n):
+    GlobalCounters.reset()
+    st = time.perf_counter(); out = fn(); out.item(); ts.append((time.perf_counter() - st) * 1e3)
+  return ts, GlobalCounters.kernel_count
+
+print("=== Part 1: plain step vs TinyJit step ===")
+model, opt = make()
+plain_ms, kc = timed(lambda: step(model, opt), 12)
+print(f"plain : {kc} kernels/step, step 1 {plain_ms[0]:7.1f} ms (cold: schedule+codegen+compile), "
+      f"step 2 {plain_ms[1]:6.1f} ms, median of steps 3-12 {sorted(plain_ms[2:])[5]:6.2f} ms")
+
+model, opt = make()
+@TinyJit
+def jit_step(): return step(model, opt)
+jit_ms, kc = timed(jit_step, 12)
+print(f"jit   : {kc} kernels/step, step 1 {jit_ms[0]:7.1f} ms (runs normally), step 2 {jit_ms[1]:6.1f} ms (capture), "
+      f"median of steps 3-12 {sorted(jit_ms[2:])[5]:6.2f} ms (replay)")
+print(f"jit captured {len(jit_step.captured._linear.src)} calls in one LINEAR")
+
+print("\n=== Part 2: train to convergence ===")
+model, opt = make()
+@TinyJit
+def train_step(): return step(model, opt)
+G = 32
+grid = Tensor([[-1.1 + 2.2 * c / (G - 1), 1.1 - 2.2 * r / (G - 1)] for r in range(G) for c in range(G)]).realize()
+@TinyJit
+def predict(): return model(grid).softmax(-1)[:, 1].realize()     # P(class 1) for every grid point (TRAINING=0: plain forward)
+@TinyJit
+def accuracy(): return (model(X).argmax(-1) == Y).mean().realize()
+
+losses, frames = [], []
+STEPS, EVERY = 400, 10
+st = time.perf_counter()
+for i in range(STEPS + 1):
+  if i % EVERY == 0:
+    frames.append({"step": i, "acc": round(accuracy().item(), 4), "p": [round(v, 2) for v in predict().tolist()]})
+  if i == STEPS: break
+  losses.append(round(train_step().item(), 5))
+el = time.perf_counter() - st
+for i in (0, 1, 10, 50, 100, 200, 300, 399): print(f"step {i:3d}  loss {losses[i]:.4f}")
+print(f"final accuracy {frames[-1]['acc']*100:.1f}%  ({STEPS} steps + {len(frames)} grid evals in {el:.2f} s)")
+
+json.dump({"points": [[round(a, 4), round(b, 4)] for a, b in pts], "labels": labels, "grid": G, "extent": 1.1, "every": EVERY,
+           "loss": losses, "frames": frames, "plain_ms": [round(t, 3) for t in plain_ms], "jit_ms": [round(t, 3) for t in jit_ms]},
+          open(os.path.join(DATA, "ch20_train.json"), "w"))
+print("wrote data/ch20_train.json")</code></pre>
+  <pre class="output"><code>=== Part 1: plain step vs TinyJit step ===
+plain : 31 kernels/step, step 1  1026.1 ms (cold: schedule+codegen+compile), step 2  291.2 ms, median of steps 3-12  39.38 ms
+jit   : 31 kernels/step, step 1    65.9 ms (runs normally), step 2   44.0 ms (capture), median of steps 3-12   3.03 ms (replay)
+jit captured 31 calls in one LINEAR
+
+=== Part 2: train to convergence ===
+step   0  loss 0.6861
+step   1  loss 0.6646
+step  10  loss 0.5210
+step  50  loss 0.2368
+step 100  loss 0.0736
+step 200  loss 0.0150
+step 300  loss 0.0060
+step 399  loss 0.0033
+final accuracy 100.0%  (400 steps + 41 grid evals in 2.67 s)
+wrote data/ch20_train.json</code></pre>
+  <div class="demo" id="demo-jit">
+    <div class="demo-title">Per-step wall time: plain vs TinyJit (real measurements)</div>
+    <div class="demo-desc">The 12 timed steps of each run from <code>data/ch20_train.json</code>. Toggle the log scale. Steady state is about 40 ms vs about 3 ms
+    for the same 31 kernels; the difference is Python building and walking graphs.</div>
+    <div class="controls"><label><input type="checkbox" class="log" checked> log scale</label></div>
+    <div class="ch20-bars"></div>
+  </div>
+  <div class="callout warn"><span class="title">What a JIT-ed step cannot do</span>Inside a TinyJit function, anything that reads a Tensor's value
+  during capture (<code>.item()</code>, <code>.tolist()</code>, Python <code>if</code> on data) is baked in or raises <code>JitError</code>
+  (<code>Tensor._buffer</code> checks <code>capturing</code>). Randomness works because the RNG counter is itself a Tensor that is <code>assign</code>ed
+  (<code>Tensor._next_counter</code>), so it is part of the captured graph.</div>
+
+  <!-- ===================================================================================== -->
+  <h2 id="converge"><span class="sec">20.7</span>Train to convergence: watching the decision boundary form</h2>
+  <p>Part 2 of the same script runs 400 JIT-ed steps. Every 10 steps it evaluates the model on a 32×32 grid over the input plane (another TinyJit:
+  <code>model(grid).softmax(-1)[:,1]</code>) and records the probability of class 1 at each grid point. The demo replays the recording.</p>
+  <div class="demo" id="demo-train">
+    <div class="demo-title">Loss curve and decision boundary (replayed from real training data)</div>
+    <div class="demo-desc">Drag the scrubber or press play. Left: P(class 1) on the grid (blue = class 0, orange = class 1) with the 128 training points. Right: the
+    per-step loss on a log scale, with the cursor. Notice the boundary is first a straight line (a nearly linear model), then bends, then wraps around
+    the spiral arms.</div>
+    <div class="controls"><button class="play primary">▶ play</button><input type="range" class="scrub" min="0" max="40" value="0" style="width:340px"><span class="ch20-stat"></span></div>
+    <div class="ch20-viz"><canvas class="field" width="360" height="360"></canvas><canvas class="curve" width="460" height="360"></canvas></div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">The grid evaluation <code>predict()</code> runs between JIT-ed training steps. Why doesn't it accidentally update BatchNorm-style running statistics or need <code>zero_grad</code>?</div>
+    <button class="opt">It runs outside <code>Context(TRAINING=1)</code> and never calls backward or the optimizer, so its graph is a plain forward pass with no assigns.</button>
+    <button class="opt">TinyJit automatically disables gradients.</button>
+    <button class="opt">softmax detaches its input.</button>
+    <div class="explain">The training step enters <code>Context(TRAINING=1)</code> only inside <code>step()</code>. <code>predict()</code> builds a forward graph with
+    no STORE/AFTER. (This MLP has no BatchNorm anyway, but the same reasoning applies.)</div>
+  </div>
+
+  <!-- ===================================================================================== -->
+  <h2 id="hammer"><span class="sec">20.8</span>Hammer it again: the same step from the outside</h2>
+  <p>Here is the same 30-kernel picture again, built from the other end: what <code>DEBUG=2</code> prints for a steady-state step. The line format comes from
+  <a class="src" data-path="tinygrad/engine/realize.py" data-line="61">track_stats</a>: device, global kernel number, kernel name, number of buffer arguments,
+  memory in use, time, and estimated GFLOPS and GB/s. Compare the <code>arg</code> counts with the reads/writes in the timeline demo. For example, the four
+  "new parameter" kernels have 7 args: output, w, lr, m, b1_t, v, b2_t.</p>
+  <div class="codecap">run with <code>DEV=CPU DEBUG=2 NO_COLOR=1 python3 examples/20_schedule_cache.py</code>, kernel lines of step 3 (the global kernel counter keeps counting from steps 0–2)</div>
+  <pre class="output"><code>*** CPU      112 r_32_8_4_4_2                                   arg  4 mem   0.00 GB tm     12.84us/     5.97ms (      1 GFLOPS    1|2      GB/s)
+*** CPU      113 E                                              arg  1 mem   0.00 GB tm      4.63us/     5.98ms (      0 GFLOPS    0|0      GB/s)
+*** CPU      114 E                                              arg  1 mem   0.00 GB tm      2.96us/     5.98ms (      0 GFLOPS    0|0      GB/s)
+*** PYTHON   115 copy        4 B,     CPU &lt;- PYTHON             arg  2 mem   0.00 GB tm    609.73us/     6.59ms (      0 GFLOPS    0|0      GB/s)
+*** CPU      116 r_128_2_32                                     arg  4 mem   0.00 GB tm      8.35us/     6.60ms (      3 GFLOPS    2|6      GB/s)
+*** CPU      117 r_128_2                                        arg  2 mem   0.00 GB tm      5.51us/     6.60ms (      0 GFLOPS    0|0      GB/s)
+*** CPU      118 r_128_2                                        arg  3 mem   0.00 GB tm      6.26us/     6.61ms (      2 GFLOPS    0|0      GB/s)
+*** CPU      119 r_32_4                                         arg  5 mem   0.00 GB tm      5.13us/     6.62ms (      1 GFLOPS    0|0      GB/s)
+*** CPU      120 E_32_4                                         arg  3 mem   0.00 GB tm      4.01us/     6.62ms (      0 GFLOPS    0|0      GB/s)
+*** CPU      121 E_128_2                                        arg  5 mem   0.00 GB tm      4.57us/     6.62ms (      2 GFLOPS    1|1      GB/s)
+*** CPU      122 r_32_8_4_4_2                                   arg  4 mem   0.00 GB tm      7.61us/     6.63ms (      3 GFLOPS    4|6      GB/s)
+*** CPU      123 r_2_32_32_4                                    arg  3 mem   0.00 GB tm     11.48us/     6.64ms (      3 GFLOPS    2|6      GB/s)
+*** CPU      124 r_2_32_4                                       arg  2 mem   0.00 GB tm      5.05us/     6.65ms (      0 GFLOPS    0|0      GB/s)
+*** CPU      125 r_32_2_32_4                                    arg  3 mem   0.00 GB tm     11.20us/     6.66ms (      1 GFLOPS    2|6      GB/s)
+*** CPU      126 r_32_32_4                                      arg  2 mem   0.00 GB tm      5.90us/     6.67ms (      1 GFLOPS    3|3      GB/s)
+*** CPU      127 E_16_4                                         arg  2 mem   0.00 GB tm      3.07us/     6.67ms (      0 GFLOPS    0|0      GB/s)
+*** CPU      128 E_16_4                                         arg  2 mem   0.00 GB tm      3.28us/     6.67ms (      0 GFLOPS    0|0      GB/s)
+*** CPU      129 E_2                                            arg  2 mem   0.00 GB tm      3.17us/     6.68ms (      0 GFLOPS    0|0      GB/s)
+*** CPU      130 E_2                                            arg  2 mem   0.00 GB tm      3.22us/     6.68ms (      0 GFLOPS    0|0      GB/s)
+*** CPU      131 E_16_4                                         arg  2 mem   0.00 GB tm      2.69us/     6.68ms (      0 GFLOPS    0|0      GB/s)
+*** CPU      132 E_16_4                                         arg  2 mem   0.00 GB tm      2.71us/     6.68ms (      0 GFLOPS    0|0      GB/s)
+*** CPU      133 E_8_4                                          arg  2 mem   0.00 GB tm      2.65us/     6.69ms (      0 GFLOPS    0|0      GB/s)
+*** CPU      134 E_8_4                                          arg  2 mem   0.00 GB tm      2.64us/     6.69ms (      0 GFLOPS    0|0      GB/s)
+*** CPU      135 E_16_4                                         arg  7 mem   0.00 GB tm      4.84us/     6.69ms (      0 GFLOPS    0|0      GB/s)
+*** CPU      136 E_2                                            arg  7 mem   0.00 GB tm      4.35us/     6.70ms (      0 GFLOPS    0|0      GB/s)
+*** CPU      137 E_16_4                                         arg  7 mem   0.00 GB tm      3.71us/     6.70ms (      0 GFLOPS    0|0      GB/s)
+*** CPU      138 E_8_4                                          arg  7 mem   0.00 GB tm      4.48us/     6.71ms (      0 GFLOPS    0|0      GB/s)
+*** CPU      139 E_16_4                                         arg  2 mem   0.00 GB tm      3.16us/     6.71ms (      0 GFLOPS    0|0      GB/s)
+*** CPU      140 E_2                                            arg  2 mem   0.00 GB tm      2.83us/     6.71ms (      0 GFLOPS    0|0      GB/s)
+*** CPU      141 E_16_4                                         arg  2 mem   0.00 GB tm      2.85us/     6.72ms (      0 GFLOPS    0|0      GB/s)
+*** CPU      142 E_8_4                                          arg  2 mem   0.00 GB tm      2.74us/     6.72ms (      0 GFLOPS    0|0      GB/s)</code></pre>
+  <p>Line 4 is the unrealized <code>opt.lr</code> being copied from the PYTHON device. Lines 24–27 (<code>arg 7</code>) compute the new parameters, and 28–31 copy them back.
+  <a href="21-debugging.html">Chapter 21</a> covers every DEBUG level.</p>
+  <p>The program behind it is also worth knowing: <a class="src" data-path="docs/abstractions3.py" data-line="1">docs/abstractions3.py</a> is the
+  official 50-line walkthrough of this chapter's pipeline (MNIST, an SGD step, <code>schedule_step()</code>, <code>Tensor.schedule_linear</code>,
+  <code>run_linear</code>). Read it next to <code>20_train_step.py</code>.</p>
+
+  <!-- ===================================================================================== -->
+  <h2 id="llm"><span class="sec">20.9</span>A real model from the same pieces: tinygrad/llm</h2>
+  <p><code>python -m tinygrad.llm</code> (<a class="src" data-path="tinygrad/llm/cli.py" data-line="157">cli.py main</a>) downloads a GGUF model (Llama 3.2,
+  Qwen3/3.5/3.6, OLMoE, GLM, …), parses it with <a class="src" data-path="tinygrad/llm/gguf.py" data-line="198">gguf_parse</a>, builds a
+  <a class="src" data-path="tinygrad/llm/model.py" data-line="510">Transformer</a> and chats, or serves an OpenAI-compatible API with <code>--serve</code>.
+  The model file is about 770 lines and is built from what you have seen:</p>
+  <ul>
+    <li><code>nn.Embedding</code> for <code>token_embd</code>, <code>nn.RMSNorm</code> for every norm, and <code>Linear</code>, a subclass of <code>nn.Linear</code> in
+      <code>llm/kernels/amd.py</code> that can also hold packed quantized GGUF weights.</li>
+    <li>Each block's body is a <a href="18-jit.html"><code>@function(precompile=True)</code></a> (<a class="src" data-path="tinygrad/llm/model.py" data-line="152">FFNBlock.__call__</a>),
+      so every layer with the same shapes shares one schedule.</li>
+    <li>The KV cache is updated with a raw <code>STORE</code> + <code>AFTER</code>, the same UOps <code>assign</code> builds:
+      <code>store = self.cache_kv[...].uop.store(...)</code>; <code>Tensor(self.cache_kv.uop.after(store))</code>.</li>
+    <li><code>forward</code> is wrapped in two TinyJits, one for prefill and one for single-token decode, and sampling is the Gumbel-max trick
+      done with Tensor ops (<code>argmax(logits/T − log(−log u))</code>).</li>
+  </ul>
+  <div class="codecap"><b>examples/20_llm_tiny.py</b> — run with <code>DEV=CPU python3 examples/20_llm_tiny.py</code> (random weights, no download)</div>
+  <pre><code class="language-python"># Chapter 20 — tinygrad/llm builds a real transformer out of the same pieces
+# Run: DEV=CPU python3 examples/20_llm_tiny.py
+#
+# tinygrad/llm/model.py's Transformer is made of nn.RMSNorm, nn.Embedding and Linear (a subclass of nn.Linear in
+# llm/kernels/amd.py that can also hold quantized GGUF weights). Here we build a *tiny random* one (no download),
+# list its state_dict (the same names a GGUF checkpoint uses, which is how from_gguf loads weights with
+# load_state_dict), and run a prefill and one decode step on the CPU.
+from tinygrad import Tensor, nn, GlobalCounters
+from tinygrad.llm.model import Transformer, TransformerConfig
+
+cfg = TransformerConfig(num_blocks=2, dim=32, hidden_dim=64, n_heads=4, n_kv_heads=2, norm_eps=1e-5, vocab_size=50,
+                        head_dim=8, rope_theta=10000.0, rope_dim=8, v_head_dim=8, max_context=16)
+Tensor.manual_seed(0)
+model = Transformer(cfg)
+sd = nn.state.get_state_dict(model)
+print(f"{len(sd)} tensors, {sum(v.numel() for v in sd.values())} parameters")
+for k, v in sd.items():
+  if k.startswith("blk.1."): continue
+  print(f"  {k:26s} {str(tuple(v.shape)):10s} {type(getattr(model, 'blk')[0]).__name__ if k.startswith('blk') else ''}")
+print("  blk.1.* : same 9 tensors as blk.0")
+print("layer types:", sorted({type(x).__module__ + "." + type(x).__name__ for x in
+      [model.token_embd, model.output_norm, model.output, model.blk[0].attn_q, model.blk[0].ffn_norm]}))
+
+GlobalCounters.reset()
+tok = model(Tensor([[1, 2, 3, 4]]), 0, Tensor([0.0]))          # prefill 4 tokens, greedy (temperature 0)
+print(f"prefill -&gt; next token {tok.item()}  ({GlobalCounters.kernel_count} kernels)")
+GlobalCounters.reset()
+tok = model(Tensor([[tok.item()]]), 4, Tensor([0.0]))           # one decode step at position 4
+print(f"decode  -&gt; next token {tok.item()}  ({GlobalCounters.kernel_count} kernels)")</code></pre>
+  <pre class="output"><code>21 tensors, 21792 parameters
+  blk.0.attn_norm.weight     (32,)      TransformerBlock
+  blk.0.ffn_norm.weight      (32,)      TransformerBlock
+  blk.0.ffn_gate.weight      (64, 32)   TransformerBlock
+  blk.0.ffn_up.weight        (64, 32)   TransformerBlock
+  blk.0.ffn_down.weight      (32, 64)   TransformerBlock
+  blk.0.attn_q.weight        (32, 32)   TransformerBlock
+  blk.0.attn_k.weight        (16, 32)   TransformerBlock
+  blk.0.attn_v.weight        (16, 32)   TransformerBlock
+  blk.0.attn_output.weight   (32, 32)   TransformerBlock
+  token_embd.weight          (50, 32)   
+  output_norm.weight         (32,)      
+  output.weight              (50, 32)   
+  blk.1.* : same 9 tensors as blk.0
+layer types: ['tinygrad.llm.kernels.amd.Linear', 'tinygrad.nn.Embedding', 'tinygrad.nn.RMSNorm']
+prefill -&gt; next token 14  (79 kernels)
+decode  -&gt; next token 8  (38 kernels)</code></pre>
+  <p>The state-dict names (<code>blk.0.attn_q.weight</code>, <code>token_embd.weight</code>, …) are the GGUF tensor names, which is why
+  <code>Transformer.from_gguf</code> can load a checkpoint with <code>load_state_dict</code>, the same function we used for the safetensors round-trip.</p>
+
+  <div class="quiz" data-answer="3">
+    <div class="q">Which of these is <b>not</b> needed to train a model in tinygrad?</div>
+    <button class="opt"><code>Context(TRAINING=1)</code> around the optimizer step</button>
+    <button class="opt">A way to collect the parameters (<code>nn.state.get_parameters</code>)</button>
+    <button class="opt">Realizing the parameters together with the loss (<code>loss.realize(*opt.schedule_step())</code> or <code>opt.step()</code>)</button>
+    <button class="opt">A <code>Module</code> base class so the optimizer can find the parameters</button>
+    <div class="explain">There is no Module class. <code>get_state_dict</code> walks any object's <code>__dict__</code>, lists and dicts.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">You call <code>loss.backward()</code> but never realize the gradients or call the optimizer. How many kernels did <code>backward()</code> run?</div>
+    <button class="opt">One per parameter</button>
+    <button class="opt">As many as the forward pass</button>
+    <button class="opt">Zero: it only built gradient UOps and attached lazy Tensors to <code>.grad</code></button>
+    <div class="explain">Output [2] of <code>20_train_step.py</code> shows it: each <code>.grad</code> is a 130–150 UOp lazy graph, and nothing has run.</div>
+  </div>
+
+  <div class="summary-box"><h3>Chapter summary</h3><ul>
+    <li><code>tinygrad/nn</code> layers are plain classes holding Tensors. <code>Linear</code> is <code>reshape · MUL · REDUCE · ADD</code> and fuses into one kernel.</li>
+    <li><code>nn.state.get_state_dict</code> walks <code>__dict__</code>/lists/dicts. safetensors, torch and gguf loading are lazy views of a DISK buffer, read on realize.</li>
+    <li>Optimizers are two classes (LARS, LAMB). The update is Tensor math plus <code>assign</code>, which turns each parameter's <code>.uop</code> into
+      <code>AFTER(BUFFER, STORE(...))</code>. <code>schedule_step()</code> runs nothing, and the <code>TRAINING</code> ContextVar gates it.</li>
+    <li>One step of a 2-32-2 MLP with Adam is one LINEAR of 30 kernels: 5 forward, 7 backward, 18 update. The order is a toposort, so independent
+      update kernels run early. Self-reading stores go through a temporary.</li>
+    <li>The schedule cache keys on the graph with buffers replaced by PARAMs, so a steady-state step skips scheduling. TinyJit also skips graph building:
+      about 40 ms down to about 3 ms per step here.</li>
+    <li><code>tinygrad/llm</code> is a full LLM runner built from the same nn layers, <code>@function</code>, STORE/AFTER KV caches and TinyJit.</li>
+  </ul></div>
+</main>
+</div>
+<script>
+(async function () {
+  const G = Guide, el = G.el;
+  const [layers, step, train, adam] = await Promise.all(["layers", "step", "train", "adam"].map((n) => G.loadJSON(`../data/ch20_${n}.json`)));
+
+  // ---------------- demo: Linear morph ----------------
+  {
+    const box = G.$("#demo-linear");
+    const bufName = { "(6,)": "weight (2,3)", "(12,)": "x (4,3)", "(2,)": "bias (2,)" };
+    for (const st of layers.linear_stages) for (const n of st.graph.nodes) if (n.op === "BUFFER") n.sub = bufName[n.shape] || n.shape;
+    const graph = G.uopGraph(G.$(".graph", box), layers.linear_stages[0].graph, { height: 660 });
+    const notes = [
+      "<b>weight.transpose()</b>: the (2,3) weight BUFFER is reshaped to its shape and PERMUTEd to (3,2). No data moves; this is a view.",
+      "<b>x * w</b>: dot() reshapes x to (4,1,3) and w to (1,2,3) (the transpose undoes the permute), so a single broadcasting <b>MUL</b> forms all 4·2·3 products.",
+      "<b>.sum(-1)</b>: a PERMUTE moves the summed axis, and <b>REDUCE(ADD)</b> collapses it, giving (4,2). This is the whole matmul.",
+      "<b>+ bias</b>: one <b>ADD</b> with the (2,) bias BUFFER (broadcast). This graph is <i>identical</i> (same object) to <code>nn.Linear(3,2)(x).uop</code>.",
+    ];
+    G.stepper(G.$(".ctl", box), layers.linear_stages.map((s, i) => ({ caption: notes[i] })), (i) => graph.setGraph(layers.linear_stages[i].graph));
+    // kernel table
+    const kt = G.$("#layer-kernels");
+    for (const r of layers.kernel_rows) {
+      kt.append(el("div", {}, r.layer), el("div", { class: "kk" }, r.kernels.map((k) => el("span", { class: k[0] === "E" ? "E" : "" }, k))));
+    }
+  }
+
+  // ---------------- demo: training-step timeline ----------------
+  {
+    const box = G.$("#demo-timeline");
+    const ks = step.kernels;
+    const consumers = ks.map(() => []);
+    ks.forEach((k) => k.deps.forEach((d) => consumers[d].push(k.i)));
+    const colors = { forward: "#58C4DD", backward: "#FC6255", update: "#83C167" };
+    let phase = null, sel = null;
+    const pb = G.$(".ch20-phasebar", box);
+    const btns = {};
+    for (const ph of ["all", "forward", "backward", "update"]) {
+      const n = ph === "all" ? ks.length : ks.filter((k) => k.phase === ph).length;
+      btns[ph] = el("button", { onclick: () => { phase = ph === "all" ? null : ph; render(); } }, ph !== "all" ? el("span", { class: "sw", style: `background:${colors[ph]}` }) : null, `${ph} (${n})`);
+      pb.append(btns[ph]);
+    }
+    const tl = G.$(".ch20-timeline", box);
+    const boxes = ks.map((k) => {
+      const b = el("div", { class: "ch20-k " + k.phase, title: k.name, onclick: () => { sel = k.i; render(); } }, el("b", {}, k.i), k.name.split("_")[0]);
+      tl.append(b); return b;
+    });
+    const det = G.$(".ch20-detail", box);
+    function tags(list, cls) { return list.map((n) => el("span", { class: "ch20-tag " + (n.startsWith("tmp") ? "" : cls) }, n)); }
+    function render() {
+      Object.entries(btns).forEach(([p, b]) => b.classList.toggle("active", (p === "all" && !phase) || p === phase));
+      boxes.forEach((b, i) => {
+        b.classList.toggle("dim", !!phase && ks[i].phase !== phase);
+        b.classList.toggle("sel", sel === i);
+        b.classList.toggle("dep", sel !== null && ks[sel].deps.includes(i));
+        b.classList.toggle("user", sel !== null && consumers[sel].includes(i));
+      });
+      if (sel === null) { det.innerHTML = "Click a kernel."; return; }
+      const k = ks[sel];
+      det.innerHTML = "";
+      det.append(
+        el("div", {}, el("b", { style: `color:${colors[k.phase]}` }, `#${k.i} ${k.name}`), `  · phase: ${k.phase} · applied opts: `, el("code", {}, k.opts)),
+        el("div", {}, "writes ", tags(k.outs, "w"), "  reads ", tags(k.ins, "p")),
+        el("div", {}, "runs after kernels ", k.deps.length ? k.deps.join(", ") : "(nothing: inputs are pre-existing buffers)", " · read by ", consumers[k.i].length ? consumers[k.i].join(", ") : "(nobody in this step)"),
+      );
+      const tabs = el("div", { class: "tabs" },
+        el("div", { class: "tabpane active", "data-title": "generated C" }, el("pre", {}, el("code", { class: "language-c" }, k.src))),
+        el("div", { class: "tabpane", "data-title": "kernel AST (render_uir)" }, el("pre", {}, el("code", { class: "nohl" }, k.ast))));
+      const bar = el("div", { class: "tabbar" });
+      const panes = G.$$(".tabpane", tabs);
+      panes.forEach((p, i) => bar.append(el("button", { class: i ? "" : "active", onclick: () => { panes.forEach((q, j) => q.classList.toggle("active", i === j)); G.$$("button", bar).forEach((q, j) => q.classList.toggle("active", i === j)); } }, p.dataset.title)));
+      tabs.prepend(bar);
+      det.append(tabs);
+      if (window.hljs) G.$$("code.language-c", det).forEach((c) => hljs.highlightElement(c));
+    }
+    sel = 0; render();
+  }
+
+  // ---------------- demo: JIT bars ----------------
+  {
+    const box = G.$("#demo-jit");
+    const bars = G.$(".ch20-bars", box);
+    const rows = [];
+    train.plain_ms.forEach((t, i) => rows.push(["plain step " + i, t, "#FC6255"]));
+    train.jit_ms.forEach((t, i) => rows.push(["jit step " + i + (i === 0 ? " (run)" : i === 1 ? " (capture)" : " (replay)"), t, "#58C4DD"]));
+    const els = rows.map(([lab, t, c]) => { const b = el("div", { class: "ch20-bar", style: `background:${c}` }); bars.append(el("div", {}, lab), el("div", { style: "display:flex;align-items:center;gap:8px" }, b, el("span", {}, t.toFixed(1) + " ms"))); return b; });
+    const mx = Math.max(...rows.map((r) => r[1]));
+    function draw() {
+      const log = G.$(".log", box).checked;
+      els.forEach((b, i) => { const t = rows[i][1]; b.style.width = (log ? Math.log10(t + 1) / Math.log10(mx + 1) : t / mx) * 70 + "%"; });
+    }
+    G.$(".log", box).addEventListener("change", draw); draw();
+  }
+
+  // ---------------- demo: training replay ----------------
+  {
+    const box = G.$("#demo-train");
+    const fc = G.$(".field", box), cc = G.$(".curve", box);
+    const fx = fc.getContext("2d"), cx = cc.getContext("2d");
+    const N = train.grid, E = train.extent, F = train.frames, L = train.loss;
+    const scrub = G.$(".scrub", box); scrub.max = F.length - 1;
+    const stat = G.$(".ch20-stat", box);
+    const toPx = (v, size) => ((v + E) / (2 * E)) * size;
+    function mix(p) { // blue (0) -> dark -> orange (1)
+      const a = [88, 196, 221], b = [240, 172, 95], m = [20, 22, 26];
+      const t = Math.abs(p - 0.5) * 2, c = p < 0.5 ? a : b;
+      return `rgb(${m.map((v, i) => Math.round(v + (c[i] - v) * t * 0.85)).join(",")})`;
+    }
+    function drawField(f) {
+      const W = fc.width, cs = W / N;
+      for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) { fx.fillStyle = mix(f.p[r * N + c]); fx.fillRect(c * cs, r * cs, cs + 1, cs + 1); }
+      // 0.5 contour: mark cells where neighbors straddle 0.5
+      fx.fillStyle = "rgba(244,211,69,.9)";
+      for (let r = 0; r < N - 1; r++) for (let c = 0; c < N - 1; c++) {
+        const p = f.p[r * N + c], q = f.p[r * N + c + 1], s = f.p[(r + 1) * N + c];
+        if ((p - 0.5) * (q - 0.5) < 0 || (p - 0.5) * (s - 0.5) < 0) fx.fillRect((c + 0.5) * cs + cs / 2 - 1.5, (r + 0.5) * cs + cs / 2 - 1.5, 3, 3);
+      }
+      train.points.forEach(([x, y], i) => {
+        fx.beginPath(); fx.arc(toPx(x, W), W - toPx(y, W), 3.6, 0, 7);
+        fx.fillStyle = train.labels[i] ? "#b35c00" : "#14607a"; fx.fill(); fx.strokeStyle = "#fff"; fx.lineWidth = 1.2; fx.stroke();
+      });
+    }
+    const lmin = Math.log10(Math.min(...L)), lmax = Math.log10(Math.max(...L));
+    function drawCurve(stepIdx) {
+      const W = cc.width, H = cc.height, pad = 40;
+      cx.clearRect(0, 0, W, H);
+      cx.strokeStyle = "#2f343c"; cx.fillStyle = "#9aa3ad"; cx.font = "11px monospace";
+      for (let e = Math.ceil(lmin); e <= Math.floor(lmax); e++) {
+        const y = H - pad - ((e - lmin) / (lmax - lmin)) * (H - 2 * pad);
+        cx.beginPath(); cx.moveTo(pad, y); cx.lineTo(W - 10, y); cx.stroke(); cx.fillText("1e" + e, 4, y + 4);
+      }
+      cx.fillText("loss (log scale) vs step", pad, 16);
+      const X = (i) => pad + (i / (L.length - 1)) * (W - pad - 10), Y = (v) => H - pad - ((Math.log10(v) - lmin) / (lmax - lmin)) * (H - 2 * pad);
+      cx.beginPath(); L.forEach((v, i) => (i ? cx.lineTo(X(i), Y(v)) : cx.moveTo(X(i), Y(v)))); cx.strokeStyle = "#58C4DD"; cx.lineWidth = 1.6; cx.stroke(); cx.lineWidth = 1;
+      const s = Math.min(stepIdx, L.length - 1);
+      cx.strokeStyle = "#F4D345"; cx.beginPath(); cx.moveTo(X(s), pad - 10); cx.lineTo(X(s), H - pad); cx.stroke();
+      cx.fillStyle = "#F4D345"; cx.beginPath(); cx.arc(X(s), Y(L[s]), 4, 0, 7); cx.fill();
+      cx.fillStyle = "#9aa3ad"; [0, 100, 200, 300, 400].forEach((t) => cx.fillText(t, X(Math.min(t, L.length - 1)) - 8, H - pad + 16));
+    }
+    function show(i) {
+      const f = F[i]; drawField(f); drawCurve(f.step);
+      stat.innerHTML = `step <b>${f.step}</b> · loss <b>${(L[Math.min(f.step, L.length - 1)]).toFixed(4)}</b> · accuracy <b>${(f.acc * 100).toFixed(1)}%</b>`;
+    }
+    scrub.addEventListener("input", () => show(+scrub.value));
+    let timer = null; const play = G.$(".play", box);
+    play.addEventListener("click", () => {
+      if (timer) { clearInterval(timer); timer = null; play.textContent = "▶ play"; return; }
+      if (+scrub.value >= F.length - 1) scrub.value = 0;
+      play.textContent = "❚❚ pause";
+      timer = setInterval(() => { if (+scrub.value >= F.length - 1) { clearInterval(timer); timer = null; play.textContent = "▶ play"; return; } scrub.value = +scrub.value + 1; show(+scrub.value); }, 160);
+    });
+    show(0);
+  }
+
+  // ---------------- demo: Adam as UOps ----------------
+  {
+    const box = G.$("#demo-adam");
+    for (const n of adam.graph.nodes) if (n.op === "BUFFER") n.sub = "f32 " + n.shape;
+    const gctl = G.uopGraph(G.$(".graph", box), adam.graph, { height: 640, compact: true });
+    const gb = G.$(".ch20-groupbtns", box);
+    const names = Object.keys(adam.groups);
+    // show each group's *own* contribution: its ids minus those of earlier groups it builds on
+    const own = {};
+    const seen = new Set();
+    names.forEach((n) => { own[n] = adam.groups[n].filter((id) => !seen.has(id)); adam.groups[n].forEach((id) => seen.add(id)); });
+    const btn = names.map((n) => el("button", { onclick: () => { G.$$("button", gb).forEach((b) => b.classList.remove("active")); btn[names.indexOf(n)].classList.add("active"); gctl.highlight(own[n]);
+      const hl = G.$$(".node.hl", gctl.svg), wrap = G.$(".uopgraph", box);
+      if (hl.length) { const xs = hl.map((e) => new DOMMatrix(getComputedStyle(e).transform).m41), ys = hl.map((e) => new DOMMatrix(getComputedStyle(e).transform).m42);
+        wrap.scrollTo({ left: Math.max(0, (Math.min(...xs) + Math.max(...xs)) / 2 - wrap.clientWidth / 2), top: Math.max(0, (Math.min(...ys) + Math.max(...ys)) / 2 - wrap.clientHeight / 2), behavior: "smooth" }); } } }, n));
+    gb.append(el("button", { onclick: () => { G.$$("button", gb).forEach((b) => b.classList.remove("active")); gctl.clear(); } }, "clear"), ...btn);
+    // calculator
+    const calc = G.$(".ch20-calc", box);
+    const st = { g: 0.5, w: 1.0, t: 1, lr: 0.1, gscale: 1 };
+    const mk = (key, lab, min, max, stp) => {
+      const out = el("span", {});
+      const inp = el("input", { type: "range", min, max, step: stp, value: st[key], oninput: () => { st[key] = +inp.value; draw(); } });
+      calc.append(el("div", { class: "row" }, el("span", { style: "width:150px" }, lab), inp, out));
+      return out;
+    };
+    const o = { g: mk("g", "gradient g (same every step)", -3, 3, 0.05), t: mk("t", "step t", 1, 60, 1), lr: mk("lr", "lr η", 0.001, 0.3, 0.001) };
+    const res = el("div", {}); calc.append(res);
+    function draw() {
+      o.g.textContent = st.g.toFixed(2); o.t.textContent = st.t; o.lr.textContent = st.lr.toFixed(3);
+      const b1 = 0.9, b2 = 0.999, eps = 1e-8;
+      let m = 0, v = 0, w = st.w, b1t = 1, b2t = 1, rows = [];
+      for (let t = 1; t <= st.t; t++) {
+        b1t *= b1; b2t *= b2;                                 // kernels E, E   (b1_t *= b1)
+        m = b1 * m + (1 - b1) * st.g;                          // kernel E_3     (m.assign)
+        v = b2 * v + (1 - b2) * st.g * st.g;                   // kernel E_3     (v.assign)
+        const mh = m * (1 / (1 - b1t)), vh = v * (1 / (1 - b2t));   // mul by recip(add(1, mul(b_t,-1)))
+        const up = mh * (1 / (Math.sqrt(vh) + eps));
+        w = w + (st.lr * up) * -1;                             // add(w, mul(mul(lr, up), -1))
+        if (t <= 3 || t === st.t) rows.push([t, b1t, m, v, mh, vh, st.lr * up, w]);
+      }
+      res.innerHTML = "";
+      const tbl = el("table", {}, el("tr", {}, ["t", "b1_t", "m", "v", "m̂", "v̂", "η·update", "w"].map((h) => el("th", {}, h))));
+      rows.forEach((r) => tbl.append(el("tr", {}, r.map((x, i) => el("td", {}, i ? (Math.abs(x) < 1e-3 && x !== 0 ? x.toExponential(2) : x.toFixed(4)) : x)))));
+      res.append(tbl, el("div", { style: "color:var(--dim);font-size:12.5px" },
+        "Each row runs the same six kernels as the real step: E (b1_t), E (b2_t), E_3 (m), E_3 (v), E_3 (new w into a temporary), E_3 (copy into w). ",
+        "Without bias correction, m would be only 0.1·g at t=1; dividing by 1−b1_t = 0.1 restores it. Since m̂/√v̂ ≈ g/|g| = ±1, the step size is about η."));
+    }
+    draw();
+  }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,1650 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>17. Devices, buffers &amp; running kernels — tinygrad internals</title>
+<link rel="stylesheet" href="../assets/vendor/hljs-dark.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/vendor/highlight.min.js"></script>
+<script src="../assets/vendor/dagre.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/chapters.js"></script>
+<script src="../assets/guide.js"></script>
+<style>
+.ch17-arch { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 14px; }
+@media (max-width: 1000px) { .ch17-arch { grid-template-columns: 1fr; } }
+.ch17-arch svg { width: 100%; height: auto; background: #0d0f12; border: 1px solid var(--line); border-radius: 8px; }
+.ch17-arch .box { cursor: pointer; }
+.ch17-arch .box rect { transition: all .2s; }
+.ch17-arch .box:hover rect { stroke-width: 3; }
+.ch17-arch .box.sel rect { stroke: var(--yellow) !important; stroke-width: 3.5; filter: drop-shadow(0 0 6px rgba(244,211,69,.6)); }
+.ch17-panel { background: var(--bg3); border-radius: 8px; padding: 12px 14px; font-size: 14px; min-height: 300px; }
+.ch17-panel h4 { margin: 0 0 4px; color: var(--yellow); font-family: var(--mono); }
+.ch17-panel .meth { font-family: var(--mono); font-size: 12.5px; color: var(--teal); }
+.ch17-panel ul { margin: 6px 0; padding-left: 18px; }
+.ch17-panel li { margin: 3px 0; }
+.ch17-mem { display: grid; grid-template-columns: repeat(8, 28px); gap: 3px; margin: 6px 0; }
+.ch17-mem .b { width: 28px; height: 30px; border-radius: 4px; border: 1px solid var(--line); background: var(--bg3); font-family: var(--mono); font-size: 10px; display: flex; align-items: center; justify-content: center; transition: all .35s; }
+.ch17-mem .b.alloc { background: rgba(88,196,221,.18); border-color: var(--blue); }
+.ch17-mem .b.data { background: rgba(131,193,103,.35); border-color: var(--green); color: #fff; }
+.ch17-mem .b.view { outline: 2px solid var(--yellow); }
+.ch17-mem .b.cached { background: rgba(154,114,172,.3); border-color: var(--purple); }
+.ch17-bl { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 10px; }
+@media (max-width: 900px) { .ch17-bl { grid-template-columns: 1fr; } }
+.ch17-card { background: #0d0f12; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font-family: var(--mono); font-size: 12.5px; }
+.ch17-card .t { color: var(--gold); font-weight: 700; margin-bottom: 4px; font-family: var(--sans); font-size: 13px; }
+.ch17-card .on { color: var(--green); } .ch17-card .off { color: var(--red); }
+.ch17-code { font-family: var(--mono); font-size: 13px; background: #0d0f12; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; margin-top: 8px; color: var(--teal); white-space: pre-wrap; }
+.ch17-dbg { font-family: var(--mono); font-size: 12.5px; background: #0a0c0e; border: 1px solid var(--line); border-radius: 8px; padding: 12px 10px; white-space: pre-wrap; word-break: normal; line-height: 2.1; }
+.ch17-dbg span.col { border-radius: 4px; padding: 2px 0; cursor: help; transition: background .2s; }
+.ch17-dbg span.col:hover, .ch17-dbg span.col.on { background: rgba(244,211,69,.25); outline: 1px solid var(--yellow); }
+.ch17-explain { background: var(--bg3); border-radius: 8px; padding: 10px 14px; min-height: 92px; font-size: 14.5px; margin-top: 8px; }
+.ch17-explain b { color: var(--yellow); font-family: var(--mono); }
+.ch17-emu { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 12px; }
+@media (max-width: 1000px) { .ch17-emu { grid-template-columns: 1fr; } }
+.ch17-uops { font-family: var(--mono); font-size: 12px; background: #0d0f12; border: 1px solid var(--line); border-radius: 8px; padding: 6px 0; max-height: 560px; overflow-y: auto; }
+.ch17-uops div { padding: 1px 10px; white-space: pre; color: #c9d1d9; border-left: 3px solid transparent; }
+.ch17-uops div.cur { background: rgba(244,211,69,.18); border-left-color: var(--yellow); color: #fff; }
+.ch17-uops div.src { background: rgba(88,196,221,.10); }
+.ch17-uops div.done { color: #7b8590; }
+.ch17-memgrid { display: grid; grid-template-columns: max-content 1fr; gap: 6px 10px; align-items: center; font-family: var(--mono); font-size: 12px; }
+.ch17-memgrid .cells { display: flex; gap: 3px; }
+.ch17-memgrid .cells span { min-width: 46px; height: 28px; display: flex; align-items: center; justify-content: center; background: var(--bg3); border: 1px solid var(--line); border-radius: 4px; transition: all .3s; }
+.ch17-memgrid .cells span.hit { background: rgba(244,211,69,.45); border-color: var(--yellow); color: #000; }
+.ch17-memgrid .cells span.rd { background: rgba(88,196,221,.35); border-color: var(--blue); }
+.ch17-vals { font-family: var(--mono); font-size: 12.5px; background: var(--bg3); border-radius: 6px; padding: 8px 10px; margin: 8px 0; min-height: 64px; white-space: pre-wrap; }
+.ch17-pipe-out { background: var(--bg3); border-radius: 8px; padding: 10px 14px; font-size: 14px; }
+.ch17-pipe-out .io { display: grid; grid-template-columns: 90px 1fr; gap: 4px 10px; }
+.ch17-pipe-out .io > :nth-child(odd) { color: var(--gold); font-family: var(--mono); font-size: 12.5px; }
+.ch17-hcq svg { width: 100%; height: auto; background: #0d0f12; border: 1px solid var(--line); border-radius: 8px; }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="sidebar" id="sidebar"></nav>
+<main>
+  <h1><span class="chnum">CHAPTER 17</span>Devices, buffers &amp; running kernels</h1>
+  <p class="lede">The scheduler (Part III) handed us a <code>LINEAR</code> of <code>CALL</code>s, and codegen (Part IV) can turn each kernel AST
+  into source code. This chapter is the last mile: <em>where</em> does memory come from, <em>who</em> compiles and loads the code, and <em>what
+  exactly happens</em> between <code>run_linear(linear)</code> and a CPU instruction touching your floats? We open
+  <a class="src" data-path="tinygrad/device.py" data-line="1">device.py</a>, the runtimes in <code>runtime/ops_*.py</code>, and
+  <a class="src" data-path="tinygrad/engine/realize.py" data-line="1">engine/realize.py</a>, and we watch a kernel execute UOp by UOp in the
+  pure-Python emulator.</p>
+
+  <div class="callout note"><span class="title">Version note</span>This is commit <code>6a404871</code> (v0.14.0, Oct 2026). Several things you may
+  remember are gone or changed: there is no <code>LRUAllocator</code> class (LRU caching lives inside <code>Allocator</code> itself), no
+  <code>Buffer.copyin/copyout</code> methods (use <code>copy_from</code> / <code>as_memoryview</code>; the allocator keeps <code>_copyin/_copyout</code>),
+  no <code>CompiledRunner</code>/<code>ExecItem</code> classes (a CALL is dispatched by a PatternMatcher, <code>pm_exec</code>), the compiler hangs off the
+  <em>renderer</em>, and HCQ was rewritten as <a class="src" data-path="tinygrad/runtime/support/hcq2.py" data-line="1">runtime/support/hcq2.py</a>
+  (there is no <code>hcq.py</code>), where command queues are themselves expressed as UOps.</div>
+
+  <!-- ============================================================ -->
+  <h2 id="intuition"><span class="sec">17.1</span>Intuition: a kitchen that runs recipes</h2>
+  <p>Think of the schedule as a list of recipe cards (<code>CALL</code>s). To cook one, a kitchen needs four things:</p>
+  <ul>
+    <li><b class="hl-gold">A pantry</b> (the <em>Allocator</em>) that hands out containers (storage) and takes them back — and, being lazy, keeps
+      washed containers on a shelf so the next request for the same size doesn't need a trip to the store (the LRU cache).</li>
+    <li><b class="hl-blue">A translator</b> (the <em>Renderer</em>) that rewrites the recipe in the local language (C, LLVM IR, PTX, Metal, WGSL…),
+      and <b class="hl-blue">a typesetter</b> (the <em>Compiler</em>) that prints it into a binary the cooks can follow.</li>
+    <li><b class="hl-green">A cook</b> (the <em>Program</em>) that loads that binary and runs it with the given containers.</li>
+    <li><b class="hl-purple">A manager</b> (<code>run_linear</code>) who walks the card list, makes sure everything is translated and printed (with a
+      team of helpers in parallel), and calls the right cook for each card.</li>
+  </ul>
+  <p>In tinygrad the kitchen is a <code>Compiled</code> device, and "Device" is the reception desk that knows which kitchens exist.
+  Data containers are <code>Buffer</code>s. Everything below is just making those words precise.</p>
+
+  <div class="callout aha"><span class="title">The key idea</span>A device is <b>a bundle of four pluggable parts</b>:
+  <code>Compiled(device, allocator, renderers, runtime)</code>. Every backend — CPU, CUDA, AMD, Metal, WebGPU, the Python emulator, even the fake
+  NULL device — is the same four-slot bundle with different parts plugged in. The rest of tinygrad never talks to hardware; it only talks to these
+  four interfaces.</div>
+
+  <!-- ============================================================ -->
+  <h2 id="registry"><span class="sec">17.2</span>The Device registry: names, DEV and lazy opening</h2>
+  <p><code>Device</code> is a singleton of class <code>_Device</code>. At import it does not import any backend — it just lists the files
+  <code>runtime/ops_*.py</code>. A backend module is imported the first time someone indexes <code>Device["CUDA"]</code>, and its class
+  (by convention <code>&lt;Name&gt;Device</code>, found by a case-insensitive name match) is instantiated once and cached with <code>functools.cache</code>.</p>
+  <div class="codecap"><b>tinygrad/device.py</b> — <a class="src" data-path="tinygrad/device.py" data-line="23">_Device</a></div>
+  <pre><code class="language-python" data-src="tinygrad/device.py:23-63">class _Device:
+  def __init__(self) -&gt; None:
+    self._devices = [x.stem[len("ops_"):].upper() for x in (pathlib.Path(__file__).parent/"runtime").iterdir() if x.stem.startswith("ops_")]
+    self._opened_devices:set[str] = set()
+  @functools.cache  # this class is a singleton, pylint: disable=method-cache-max-size-none
+  def _canonicalize(self, device:str) -&gt; str: return re.sub(r":0$", "", (d:=device.split(":", 1)[0].upper()) + device[len(d):])
+  # NOTE: you can't cache canonicalize in case Device.DEFAULT changes
+  def canonicalize(self, device:str|None) -&gt; str: return self._canonicalize(device if device is not None else Device.DEFAULT)
+  def __getitem__(self, ix:str) -&gt; Compiled:
+    ix = self.canonicalize(ix)
+    assert ALLOW_DEVICE_USAGE or ix.split(":")[0] in ["DISK", "NPY", "PYTHON"], f"usage of device {ix} disallowed"
+    return self.__get_canonicalized_item(ix)
+  @functools.cache  # this class is a singleton, pylint: disable=method-cache-max-size-none
+  def get_class(self, ix:str):
+    base = (__package__ or __name__).split('.')[0]  # tinygrad
+    x = ix.split(":")[0].lower()
+    return [cls for cname, cls in inspect.getmembers(importlib.import_module(f'{base}.runtime.ops_{x}')) if (cname.lower() == x + "device")][0]
+  @functools.cache  # this class is a singleton, pylint: disable=method-cache-max-size-none
+  def __get_canonicalized_item(self, ix:str) -&gt; Compiled:
+    ret = self.get_class(ix)(ix)
+    if DEBUG &gt;= 1: print(f"opened device {ix} from pid:{os.getpid()}")
+    self._opened_devices.add(ix)
+    return ret
+  @property
+  def default(self) -&gt; Compiled: return self[self.DEFAULT]
+  def get_available_devices(self) -&gt; Iterator[str]:
+    for device in ALL_DEVICES:
+      with contextlib.suppress(Exception): yield self[device].device
+  @property
+  def DEFAULT(self) -&gt; str: return DEV.device or self._select_device
+  @DEFAULT.setter
+  def DEFAULT(self, v): raise AttributeError(f'setting Device.DEFAULT is deprecated, use "with Context(DEV={v!r})" or "DEV.value = {v!r}"')
+  @functools.cached_property
+  def _select_device(self) -&gt; str:
+    assert (dev:=next((d for d in self._devices if d not in ["DISK", "NPY"] and getenv(d) == 1), None)) is None, \
+      f"{dev}=1 is deprecated, use DEV={dev} instead"
+    try:
+      device = next(self.get_available_devices())
+      os.environ["DEV"] = device   # we set this in environment for spawned children
+      return device
+    except StopIteration as exc: raise RuntimeError("no usable devices") from exc</code></pre>
+  <p>Three details matter:</p>
+  <ul>
+    <li><b>Canonical names.</b> <code>_canonicalize</code> upper-cases the backend part and strips a trailing <code>:0</code>. So
+      <code>"cpu"</code>, <code>"CPU"</code> and <code>"CPU:0"</code> are the <em>same</em> device (and the same cached object), while
+      <code>"CPU:1"</code> is a second instance of <code>CPUDevice</code>. This is what makes multi-device on one CPU possible (<a href="19-multi.html">Chapter 19</a>).</li>
+    <li><b>Selecting the default.</b> <code>Device.DEFAULT</code> is <code>DEV.device</code> if <code>DEV</code> is set, otherwise the first backend in
+      <code>ALL_DEVICES = ["METAL", "AMD", "NV", "QCOM", "CUDA", "HIP", "CL", "CPU", "DSP", "WEBGPU"]</code> that opens without raising. The old
+      <code>CUDA=1</code> style is now an assertion error telling you to use <code>DEV=CUDA</code>.</li>
+    <li><b>DEV is a <code>Target</code>.</b> The env var is parsed by <a class="src" data-path="tinygrad/helpers.py" data-line="198">Target.parse</a> as
+      <code>[interface[:indices]+]DEVICE[:RENDERER[:ARCH]]</code>. <code>DEV=CPU:LLVM</code> keeps the CPU device but picks the LLVM renderer;
+      <code>DEV=PCI+AMD</code> picks the PCI interface of the AMD driver. Several targets can be given separated by <code>;</code>.</li>
+  </ul>
+  <div class="codecap"><b>examples/17_devices.py</b> — run with <code>DEV=CPU python3 examples/17_devices.py</code></div>
+  <pre><code class="language-python" data-file="examples/17_devices.py"># Chapter 17 — the Device registry and what a Compiled device is made of.
+# run: DEV=CPU python3 examples/17_devices.py
+from tinygrad import Device
+from tinygrad.device import Compiled, canonicalize_device
+from tinygrad.helpers import Target
+
+# 1) The registry is built by listing tinygrad/runtime/ops_*.py — nothing is imported yet.
+print("backends found on disk:", sorted(Device._devices))
+
+# 2) Device names are canonicalized: upper-case the backend, drop a trailing ':0'.
+for s in ["cpu", "CPU:0", "cpu:1", "amd:2", ("CPU:0", "cpu:1")]:
+  print(f"canonicalize({s!r:22}) -&gt; {canonicalize_device(s)!r}")
+
+# 3) DEV is parsed into a Target(device, renderer, arch, interface, indices)
+for s in ["CPU", "CPU:LLVM", "AMD:LLVM:gfx1100", "PCI+AMD"]:
+  print(f"Target.parse({s!r:20}) -&gt; {Target.parse(s)!r:20} fields={Target.parse(s).__dict__}")
+print("Device.DEFAULT =", Device.DEFAULT)
+
+# 4) Device[...] imports runtime/ops_cpu.py, finds the class named CPUDevice, instantiates it ONCE (functools.cache)
+cpu = Device["CPU"]
+print("\nDevice['CPU'] is", type(cpu).__name__, "| same object again?", Device["cpu:0"] is cpu)
+print("isinstance Compiled:", isinstance(cpu, Compiled))
+
+# 5) A Compiled device = allocator + renderer(s) (each renderer owns its compiler) + a Program runtime class
+print("  allocator :", type(cpu.allocator).__name__, "-&gt;", [c.__name__ for c in type(cpu.allocator).__mro__[:3]])
+print("  renderers :", [r.__name__ for r in cpu.renderers])
+print("  renderer  :", type(cpu.renderer).__name__, " (picked from DEV's renderer field, default = first that initializes)")
+print("  compiler  :", type(cpu.compiler).__name__, "cachekey =", cpu.compiler.cachekey)
+print("  runtime_t :", cpu.runtime_t.__name__)
+print("  arch      :", cpu.arch)
+
+# 6) Other host devices
+py = Device["PYTHON"]
+print("\nDevice['PYTHON']:", type(py).__name__, type(py.allocator).__name__, type(py.renderer).__name__,
+      type(py.compiler).__name__, py.runtime_t.__name__)
+null = Device["NULL"]
+print("Device['NULL']  :", type(null).__name__, type(null.allocator).__name__, type(null.renderer).__name__, null.runtime_t.__name__)
+print("opened so far:", sorted(Device._opened_devices))</code></pre>
+  <pre class="output"><code data-out="17_devices">backends found on disk: ['AMD', 'CL', 'CPU', 'CUDA', 'DISK', 'DSP', 'HIP', 'METAL', 'NPY', 'NULL', 'NV', 'PYTHON', 'QCOM', 'RDMA', 'WEBGPU']
+canonicalize('cpu'                 ) -&gt; 'CPU'
+canonicalize('CPU:0'               ) -&gt; 'CPU'
+canonicalize('cpu:1'               ) -&gt; 'CPU:1'
+canonicalize('amd:2'               ) -&gt; 'AMD:2'
+canonicalize(('CPU:0', 'cpu:1')    ) -&gt; ('CPU', 'CPU:1')
+Target.parse('CPU'               ) -&gt; CPU                  fields={'device': 'CPU', 'renderer': '', 'arch': '', 'interface': '', 'indices': ''}
+Target.parse('CPU:LLVM'          ) -&gt; CPU:LLVM             fields={'device': 'CPU', 'renderer': 'LLVM', 'arch': '', 'interface': '', 'indices': ''}
+Target.parse('AMD:LLVM:gfx1100'  ) -&gt; AMD:LLVM:gfx1100     fields={'device': 'AMD', 'renderer': 'LLVM', 'arch': 'gfx1100', 'interface': '', 'indices': ''}
+Target.parse('PCI+AMD'           ) -&gt; PCI+AMD              fields={'device': 'AMD', 'renderer': '', 'arch': '', 'interface': 'PCI', 'indices': ''}
+Device.DEFAULT = CPU
+
+Device['CPU'] is CPUDevice | same object again? True
+isinstance Compiled: True
+  allocator : HostAllocator -&gt; ['HostAllocator', 'Allocator', 'Generic']
+  renderers : ['ClangRenderer', 'CPULLVMRenderer', 'LVPRenderer', 'X86Renderer']
+  renderer  : ClangRenderer  (picked from DEV's renderer field, default = first that initializes)
+  compiler  : ClangCompiler cachekey = compile_clang_obj_x86_64_native
+  runtime_t : CPUProgram
+  arch      : x86_64,native
+
+Device['PYTHON']: PythonDevice HostAllocator PythonRenderer PythonCompiler PythonProgram
+Device['NULL']  : NullDevice NullAllocator NullRenderer NullProgram
+opened so far: ['CPU', 'NULL', 'PYTHON']</code></pre>
+  <p>Notice "opened so far": we touched <code>PYTHON</code> and <code>NULL</code> only because we asked for them. Opening a device can be expensive
+  (a GPU driver initialises contexts, queues, firmware), so laziness is a real feature, not a style choice.</p>
+
+  <div class="quiz" data-answer="2">
+    <div class="q">Which pair of strings refers to two <em>different</em> device objects?</div>
+    <button class="opt"><code>"cpu"</code> and <code>"CPU:0"</code></button>
+    <button class="opt"><code>"CPU"</code> and <code>"cpu"</code></button>
+    <button class="opt"><code>"CPU:0"</code> and <code>"CPU:1"</code></button>
+    <div class="explain"><code>_canonicalize</code> upper-cases and removes <code>:0</code>, so the first two pairs both become <code>"CPU"</code> and hit the
+    same <code>functools.cache</code> entry. <code>"CPU:1"</code> stays distinct and builds a second <code>CPUDevice</code>.</div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="compiled"><span class="sec">17.3</span>Anatomy of a <code>Compiled</code> device</h2>
+  <div class="codecap"><b>tinygrad/device.py</b> — <a class="src" data-path="tinygrad/device.py" data-line="369">class Compiled</a></div>
+  <pre><code class="language-python" data-src="tinygrad/device.py:385-416">  def __init__(self, device:str, allocator:Allocator, renderers:list[type[Renderer]], runtime:type[Program[Self]]|None, arch=None):
+    from tinygrad.renderer import Renderer
+
+    self.device, self.allocator, self.runtime_t, self.renderers = device, allocator, runtime, renderers or [Renderer]
+    self.device_id, self.arch = (int(idx) if ":" in device and (idx:=device.split(":")[1]).isdigit() else 0), arch
+    self.peer_group = getattr(getattr(self, 'iface', None), 'peer_group', device.split(":")[0])
+    self.cached_renderer:dict[Any, Renderer] = {}
+
+    # profiling
+    self.prof_ents:dict[tuple[Buffer, int], ProfileGraphEntry] = {} # (a batch's timestamps, start slot) -&gt; entry, read at synchronize
+
+  @property
+  def has_copy_queue(self) -&gt; bool: return True
+
+  @property
+  def host(self) -&gt; str: return f"CPU:{self.peer_group[7:]}" if self.peer_group.startswith("remote:") else HCQ_RUNTIME_DEV.device
+
+  @property
+  def renderer(self) -&gt; Renderer: return self._select_renderer()
+
+  @property
+  def compiler(self) -&gt; Compiler: return self.renderer.compiler
+
+  def runtime(self, obj:TinyELF, links:dict[str,Program[Self]]={}) -&gt; Program[Self]:
+    return unwrap(self.runtime_t)(self, obj, links=links)
+
+  @functools.cached_property
+  def timeline(self) -&gt; Buffer: # [the signal, the value the last submitted batch signals]
+    return Buffer(self.device, 16, options=BufferSpec(host=True, uncached=True, cpu_access=True), initial_value=bytes(16))
+
+  @functools.cached_property
+  def error_state(self) -&gt; Buffer: return Buffer(self.host, 8, options=BufferSpec(nolru=True), preallocate=True)</code></pre>
+  <p>Read the constructor signature as the contract: <b>device name</b>, an <b>Allocator</b> instance, a list of <b>Renderer classes</b> (the first
+  one that initialises wins, unless <code>DEV</code> names one), a <b>Program class</b> (<code>runtime_t</code>, may be <code>None</code> for HCQ backends, see
+  §17.10) and an optional <b>arch</b> string. The <code>compiler</code> is not a constructor argument any more: it is
+  <code>self.renderer.compiler</code>, because what you compile with depends on what you rendered (C source → clang, LLVM IR → LLVM, PTX → the CUDA
+  driver…). A <code>Program</code> is anything with <code>__init__(dev, TinyELF, links)</code> and <code>__call__(*args, global_size, local_size, wait)</code>.</p>
+  <p>Two more things every device has: a <b>timeline</b> buffer (16 bytes: <code>[signal, last submitted value]</code>) and an <b>error_state</b>
+  buffer. <code>synchronize()</code> spins until <code>timeline[0] ≥ timeline[1]</code>. For the CPU nothing is asynchronous so this returns at once, but the
+  same mechanism is what GPU queues signal into (§17.10). These are also the mysterious extra 16 + 8 bytes you will see in
+  <code>GlobalCounters.mem_used</code>.</p>
+
+  <div class="demo" id="demo-arch">
+    <div class="demo-title">Device architecture explorer</div>
+    <div class="demo-desc">Pick a backend, then click any box. The panel shows the real class plugged into that slot, where it lives, and its
+    methods. Arrows are "calls into" / "produces".</div>
+    <div class="controls" id="arch-backends"></div>
+    <div class="ch17-arch"><div id="arch-svg"></div><div class="ch17-panel" id="arch-panel"><i>click a box…</i></div></div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="buffer"><span class="sec">17.4</span>Buffers: lazy handles to storage</h2>
+  <p>A <code>Buffer</code> is <em>not</em> memory. It is a small Python object: <code>(device, nbytes, options, offset, base)</code> plus a slot
+  <code>_storage</code> that is <code>None</code> until someone needs the bytes. The UOp graph refers to buffers (a <code>BUFFER</code> UOp's
+  <code>arg.buffer</code>), the scheduler creates thousands of them, and the memory planner (<a href="12-schedule.html">Chapter 12</a>) may decide most
+  of them are views into one arena — so allocation is deferred to the last possible moment: <code>ensure_allocated()</code> inside
+  <code>exec_kernel</code>/<code>exec_copy</code>.</p>
+  <div class="codecap"><b>tinygrad/device.py</b> — <a class="src" data-path="tinygrad/device.py" data-line="111">Buffer.__init__</a></div>
+  <pre><code class="language-python" data-src="tinygrad/device.py:111-131">class Buffer:
+  profile_events:list[ProfileEvent] = []
+  def __init__(self, device:str, nbytes:int, opaque:Any=None, options:BufferSpec|None=None,
+               initial_value:bytes|pickle.PickleBuffer|None=None, base:Buffer|None=None, offset:int=0, preallocate=False,
+               allocator:Allocator|None=None):
+    self.device, self.nbytes, self.offset, self._base = Device.canonicalize(device), nbytes, offset, base
+    if allocator is not None: self.allocator = allocator
+    self.options = options if options is not None else BufferSpec()
+    self._storage:BufferStorage|None = None
+    if base is None:
+      assert offset == 0, "base buffers can't have offset"
+      if opaque is not None: self.allocate(opaque)
+      if initial_value is not None:
+        self.allocate()
+        if (host:=self.get_storage().host) is not None: host[:] = memoryview(initial_value).cast('B')
+        else: self.copy_from(Buffer("PYTHON", self.nbytes, initial_value=initial_value))
+        if isinstance(initial_value, pickle.PickleBuffer): initial_value.release()
+    else:
+      assert base._base is None, "base can't have a base"
+      assert self.device == base.device, "base must have the same device"
+    if preallocate: self.allocate()</code></pre>
+  <div class="codecap"><b>tinygrad/device.py</b> — <a class="src" data-path="tinygrad/device.py" data-line="163">is_allocated / ensure_allocated / allocate</a></div>
+  <pre><code class="language-python" data-src="tinygrad/device.py:163-201">  def is_allocated(self) -&gt; bool: return self._storage is not None and (self._base is None or self._base_storage is self.base._storage)
+  def ensure_allocated(self) -&gt; Buffer: return self.allocate() if not self.is_allocated() else self
+  def allocate(self, opaque=None, external_ptr=None) -&gt; Buffer:
+    assert not self.is_allocated(), "can't allocate already allocated buffer"
+    if DEBUG &gt;= 7: print(f"buffer: allocate {self.nbytes} bytes on {self.device}")
+    # MAX_BUFFER_SIZE limits raw storage bytes (not logical elements).
+    if not self.device.startswith("NULL") and self.nbytes &gt; MAX_BUFFER_SIZE &gt; 0 and self.options.external_ptr is None:
+      raise RuntimeError(f"buffer of size {self.nbytes/1e6:.2f}MB is too large")
+    if external_ptr is not None: self.options = replace(self.options, external_ptr=external_ptr)
+    if self._base is not None:
+      storage = replace(self.base.get_storage(), buf=self.allocator._offset(self.base._buf, self.nbytes, self.offset), maps={})
+    elif opaque is not None:
+      self.options = replace(self.options, nolru=True)
+      if is_numpy_ndarray(opaque):
+        if not opaque.flags.c_contiguous: opaque = opaque.copy(order='C')
+        opaque = BufferStorage(addr:=opaque.ctypes.data, memoryview(opaque), MMIOInterface(addr, self.nbytes))
+      elif isinstance(opaque, memoryview):
+        opaque = BufferStorage(addr:=mv_address(opaque) if self.nbytes else 0, opaque, MMIOInterface(addr, self.nbytes))
+      storage = opaque if isinstance(opaque, BufferStorage) else BufferStorage(opaque)
+    else: storage = self.allocator.alloc(self.nbytes, self.options)
+    storage = replace(storage, host=storage.host.view(self.offset, self.nbytes, fmt='B') if storage.host is not None else None)
+    if self._base is None:
+      if not self.device.startswith("DISK") and self.options.external_ptr is None:
+        GlobalCounters.mem_used += self.nbytes
+        GlobalCounters.mem_used_per_device[self.device] += self.nbytes
+      if PROFILE: Buffer.profile_events.append(ProfilePointEvent(self.device, "alloc", self.trace_num, {"nbytes":self.nbytes}))
+    self._storage, self._base_storage = storage, self.base._storage if self._base else None
+    return self
+
+  def deallocate(self):
+    assert self._storage is not None, "buffer must be allocated to deallocate"
+    if DEBUG is not None and DEBUG &gt;= 7: print(f"buffer: deallocate {self.nbytes} bytes on {self.device}")
+    if self._base is None:
+      if GlobalCounters is not None and not self.device.startswith("DISK") and self.options.external_ptr is None:
+        GlobalCounters.mem_used -= self.nbytes
+        GlobalCounters.mem_used_per_device[self.device] -= self.nbytes
+      if PROFILE: Buffer.profile_events.append(ProfilePointEvent(self.device, "free", self.trace_num))
+      self.allocator.free(self._storage, self.nbytes, self.options)
+    self._storage, self._base_storage = None, None</code></pre>
+  <p>Things to notice in <code>allocate</code>:</p>
+  <ul>
+    <li><b>Three sources of storage.</b> A <em>view</em> (<code>_base</code> set) asks the allocator for <code>_offset(base._buf, nbytes, offset)</code> —
+      on the CPU that is literally <code>base + offset</code>. An <em>opaque</em> object (a numpy array or memoryview you already own) is wrapped without
+      copying and marked <code>nolru</code>. Otherwise <code>allocator.alloc(nbytes, options)</code>.</li>
+    <li><b>What is a <code>BufferStorage</code>?</b> A frozen dataclass <code>(buf, meta, host, maps)</code>: <code>buf</code> is the device handle (an
+      address for CPU, a <code>CUdeviceptr</code> for CUDA…), <code>meta</code> keeps any Python object alive (the <code>mmap</code>), <code>host</code> is
+      an <code>MMIOInterface</code> if the CPU can read it directly, and <code>maps</code> caches this storage mapped into <em>other</em> devices
+      (for peer access).</li>
+    <li><b>Accounting.</b> Only base buffers count toward <code>GlobalCounters.mem_used</code> (views are free), and DISK buffers never count.</li>
+    <li><b>Limits.</b> <code>MAX_BUFFER_SIZE</code> (env, bytes) raises early for oversized buffers — except on NULL, which has no real memory.</li>
+  </ul>
+  <p>And the old <code>copyin</code>/<code>copyout</code>? Data enters a device through <code>copy_from</code>, which is not a memcpy but a tiny
+  <em>schedule</em>: it builds a one-call <code>LINEAR</code> whose body is a <code>STORE</code> and runs it through the normal executor. That way
+  "host → GPU", "GPU → GPU" and "disk → GPU" all go through one code path (<code>exec_copy</code>, or a copy queue on HCQ devices).</p>
+  <div class="codecap"><b>tinygrad/device.py</b> — <a class="src" data-path="tinygrad/device.py" data-line="225">as_memoryview / copy_from / view</a></div>
+  <pre><code class="language-python" data-src="tinygrad/device.py:225-244">  def as_memoryview(self, allow_zero_copy=False) -&gt; memoryview:
+    if (mv:=self._host_mv()) is not None:
+      self.allocator.dev.synchronize()
+      if allow_zero_copy: return mv
+      with cpu_profile(f"{self.device} -&gt; TINY", f"{self.device}:COPY"): return memoryview(bytearray(mv))
+    Buffer("NPY", self.nbytes, opaque=(mv:=memoryview(bytearray(self.nbytes)))).copy_from(self)
+    return mv
+
+  def copy_from(self, src:Buffer) -&gt; Buffer:
+    assert self.nbytes == src.nbytes, f"copy size mismatch, {self.nbytes} != {src.nbytes}"
+    assert self.is_allocated() and src.is_allocated(), "copy requires allocated buffers"
+    from tinygrad.engine.realize import run_linear
+    from tinygrad.uop.ops import UOp, Ops
+    du, su = UOp.from_buffer(self, dtypes.uint8), UOp.from_buffer(src, dtypes.uint8)
+    run_linear(UOp(Ops.LINEAR, src=(du.store_call(su),)), update_stats=False)
+    return self
+
+  def view(self, nbytes:int, offset:int) -&gt; Buffer:
+    assert offset &lt; self.nbytes, "offset must be less than nbytes"
+    return Buffer(self.device, nbytes, base=self.base, offset=self.offset+offset)</code></pre>
+
+  <div class="codecap"><b>examples/17_buffer_lifecycle.py</b> — run with <code>DEV=CPU python3 examples/17_buffer_lifecycle.py</code></div>
+  <pre><code class="language-python" data-file="examples/17_buffer_lifecycle.py"># Chapter 17 — the life of a Buffer: lazy -&gt; allocated -&gt; filled -&gt; read -&gt; freed into the LRU cache -&gt; reused.
+# run: DEV=CPU python3 examples/17_buffer_lifecycle.py
+import struct
+from tinygrad import Device
+from tinygrad.device import Buffer
+from tinygrad.helpers import GlobalCounters
+
+cpu = Device["CPU"]
+py = Device["PYTHON"]
+# every device owns a 16B timeline + 8B error buffer (lazily created); touch them now so the counters below are clean
+_ = cpu.timeline, cpu.error_state, py.timeline, py.error_state
+base_mem = GlobalCounters.mem_used
+
+# 1) Creating a Buffer allocates NOTHING. It is just (device, nbytes, options).
+b = Buffer("CPU", 16)
+print("1 created   :", b, "| is_allocated:", b.is_allocated())
+
+# 2) allocate() asks the device's Allocator for storage (HostAllocator: an anonymous mmap)
+b.allocate()
+st = b.get_storage()
+print("2 allocated :", b, "| addr", hex(st.buf), "| host view:", type(st.host).__name__,
+      "| mem_used +", GlobalCounters.mem_used - base_mem)
+
+# 3) "copyin": there is no Buffer.copyin any more. Data enters through a source Buffer (here on the PYTHON
+#    device, built from bytes via initial_value) and Buffer.copy_from(), which runs a 1-call LINEAR (a STORE CALL)
+src = Buffer("PYTHON", 16, initial_value=struct.pack("4f", 1, 2, 3, 4))
+b.copy_from(src)
+print("3 filled    :", struct.unpack("4f", b.as_memoryview()))
+del src   # the PYTHON staging buffer is freed (into the PYTHON allocator's cache)
+
+# 4) views share storage: a view is (base, offset, nbytes) and allocates only an offset pointer
+v = b.view(8, 4)                         # bytes 4..12 = float elements [1] and [2]
+print("4 view      :", v, "| base is b:", v.base is b, "| allocated:", v.is_allocated())
+v.ensure_allocated()
+print("  view addr :", hex(v._buf), "= base +", v._buf - b._buf, "-&gt;", struct.unpack("2f", v.as_memoryview()))
+
+# 5) "copyout": as_memoryview() synchronizes the device and copies the bytes out (zero-copy if asked)
+print("5 copyout   :", struct.unpack("4f", b.as_memoryview()), "| zero-copy view type:", type(b.as_memoryview(allow_zero_copy=True)).__name__)
+
+# 6) free: deallocate() hands the storage to Allocator.free -&gt; it goes into the LRU cache keyed by (size, options)
+addr = b._buf
+del v
+b.deallocate()
+cache = {k[0]: len(lst) for k, lst in cpu.allocator.cache.items() if lst}
+print("6 freed     :", b, "| allocator.cache sizes-&gt;count:", cache, "| mem_used +", GlobalCounters.mem_used - base_mem)
+
+# 7) the next alloc of the same (size, options) pops the cached storage: same address, no mmap
+c = Buffer("CPU", 16).allocate()
+print("7 realloc   : same address as before?", c._buf == addr, "| cache now:", {k[0]: len(l) for k, l in cpu.allocator.cache.items() if l})
+
+# 8) a different size misses the cache and really allocates
+d = Buffer("CPU", 32).allocate()
+print("8 other size: new address?", d._buf != addr)
+print("GlobalCounters.mem_used counts live bytes (cached ones are not counted):", GlobalCounters.mem_used - base_mem)</code></pre>
+  <pre class="output"><code data-out="17_buffer_lifecycle">1 created   : &lt;buf real:False device:CPU nbytes:16&gt; | is_allocated: False
+2 allocated : &lt;buf real:True device:CPU nbytes:16&gt; | addr 0x7f029b48c000 | host view: MMIOInterface | mem_used + 16
+3 filled    : (1.0, 2.0, 3.0, 4.0)
+4 view      : &lt;buf real:False device:CPU nbytes:8 offset:4&gt; | base is b: True | allocated: False
+  view addr : 0x7f029b48c004 = base + 4 -&gt; (2.0, 3.0)
+5 copyout   : (1.0, 2.0, 3.0, 4.0) | zero-copy view type: memoryview
+6 freed     : &lt;buf real:False device:CPU nbytes:16&gt; | allocator.cache sizes-&gt;count: {16: 1} | mem_used + 0
+7 realloc   : same address as before? True | cache now: {}
+8 other size: new address? True
+GlobalCounters.mem_used counts live bytes (cached ones are not counted): 48</code></pre>
+
+  <div class="demo" id="demo-life">
+    <div class="demo-title">The life of a Buffer</div>
+    <div class="demo-desc">Step through exactly what the example above did. The three cards show the <code>Buffer</code> object, the bytes of
+    storage it points at, and the allocator's LRU cache. Addresses are the real ones from the run above.</div>
+    <div id="life-stepper"></div>
+    <div class="ch17-bl">
+      <div class="ch17-card" id="life-buf"></div>
+      <div class="ch17-card"><div class="t">storage (16 bytes = 4 × float32)</div><div class="ch17-mem" id="life-mem"></div><div id="life-memnote" style="color:var(--dim)"></div></div>
+      <div class="ch17-card" id="life-cache"></div>
+    </div>
+    <div class="ch17-code" id="life-code"></div>
+  </div>
+
+  <div class="quiz" data-answer="1">
+    <div class="q">You create <code>b = Buffer("CPU", 1&lt;&lt;30)</code> (1 GiB) and never use it. How much memory did tinygrad allocate?</div>
+    <button class="opt">1 GiB — the constructor allocates.</button>
+    <button class="opt">None — a Buffer only allocates in <code>allocate()</code>/<code>ensure_allocated()</code> (or if given <code>initial_value</code>/<code>opaque</code>/<code>preallocate=True</code>).</button>
+    <button class="opt">1 GiB of virtual memory but no physical pages.</button>
+    <div class="explain"><code>__init__</code> stores <code>_storage = None</code> and only calls <code>self.allocate()</code> for <code>opaque</code>,
+    <code>initial_value</code> or <code>preallocate</code>. Executors call <code>ensure_allocated()</code> right before launching.</div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="allocator"><span class="sec">17.5</span>The Allocator and its LRU cache</h2>
+  <div class="codecap"><b>tinygrad/device.py</b> — <a class="src" data-path="tinygrad/device.py" data-line="249">class Allocator</a></div>
+  <pre><code class="language-python" data-src="tinygrad/device.py:249-298">class Allocator(Generic[DeviceType]):
+  lru = True
+
+  def __init__(self, dev:DeviceType):
+    self.dev: DeviceType = dev
+    self.cache:dict[tuple[int, BufferSpec|None], list[tuple[BufferStorage, dict[Compiled, int]]]] = defaultdict(list)
+
+  def alloc(self, size:int, options:BufferSpec|None=None) -&gt; BufferStorage:
+    assert size &gt; 0, f"alloc size must be positive, getting {size}"
+
+    # check if old most is free
+    if (c:=self.cache[(size, options)]) and all(dev.timeline.host.view(fmt='Q')[0] &gt;= freed_at for dev, freed_at in c[0][1].items()):
+      return c.pop(0)[0]
+
+    spec = options if options is not None else BufferSpec()
+    try: return self._alloc(size, spec)
+    except (RuntimeError, MemoryError): self.free_cache()
+    try: return self._alloc(size, spec)
+    except (RuntimeError, MemoryError) as e: raise MemoryError(f"Allocation of {size_to_str(size)} failed on {self.dev.device}. "
+                                                               f"Used: {size_to_str(GlobalCounters.mem_used_per_device[self.dev.device])}") from e
+
+  def free(self, storage:BufferStorage, size:int, options:BufferSpec|None=None):
+    spec = options if options is not None else BufferSpec()
+    if not LRU or not self.lru or spec.nolru or spec.external_ptr is not None: return self.do_free(storage, spec)
+
+    # add that buf to cache
+    users:list[Compiled] = [self.dev, *storage.maps] if storage.host is not None else []
+    freed_at = {dev:dev.timeline.host.view(fmt='Q')[1] for dev in users if 'timeline' in vars(dev)}
+    self.cache[(size, options)].append((storage, freed_at))
+
+  def free_cache(self):
+    for (_, options), storages in self.cache.items():
+      for storage, _ in storages: self.do_free(storage, options if options is not None else BufferSpec())
+      storages.clear()
+
+  def do_free(self, storage:BufferStorage, options:BufferSpec):
+    for dev in storage.maps: dev.synchronize()
+    for dev, mb in storage.maps.items(): dev.allocator._unmap(mb)
+    if options.external_ptr is None: self._free(storage, options)
+
+  def map(self, buf:Buffer) -&gt; BufferStorage: return self._map(buf.ensure_allocated())
+
+  # implemented by the runtime
+  def _alloc(self, size:int, options:BufferSpec) -&gt; BufferStorage: raise NotImplementedError("need alloc")
+  def _free(self, storage:BufferStorage, options:BufferSpec): pass  # if opaque is a Python object, you don't need a free
+  def _copyin(self, dest, src:memoryview): raise NotImplementedError("need copyin")
+  def _copyout(self, dest:memoryview, src): raise NotImplementedError("need copyout")
+  def _map(self, buf) -&gt; BufferStorage: raise NotImplementedError("need map")
+  def _unmap(self, mb): pass  # default no-op; override if _map allocates iface-side state
+  def _offset(self, buf, size:int, offset:int): raise NotImplementedError("need offset")</code></pre>
+  <p>The public half (<code>alloc</code>, <code>free</code>, <code>free_cache</code>, <code>map</code>) is generic; a backend implements only the
+  underscore half (<code>_alloc</code>, <code>_free</code>, <code>_copyin</code>, <code>_copyout</code>, <code>_map</code>, <code>_offset</code>). The cache is a dict
+  <code>(size, options) → [(storage, freed_at)]</code>:</p>
+  <ul>
+    <li><b>free</b> doesn't free (unless <code>LRU=0</code>, the allocator sets <code>lru=False</code>, or the spec is <code>nolru</code>/external). It appends the
+      storage with <code>freed_at</code> = the current "last submitted" value of each user device's timeline.</li>
+    <li><b>alloc</b> pops the oldest cached entry of the same size and spec, <em>but only if every device that used it has passed that timeline value</em>
+      (<code>timeline.host[0] ≥ freed_at</code>). On a GPU a buffer you "freed" may still be read by a kernel in flight — this check is what makes reuse
+      safe without a synchronize.</li>
+    <li><b>Out of memory?</b> <code>_alloc</code> raising <code>RuntimeError/MemoryError</code> triggers <code>free_cache()</code> (really release
+      everything cached) and one retry, then a friendly <code>MemoryError</code> with the per-device usage.</li>
+  </ul>
+  <p><code>HostAllocator</code> (CPU, PYTHON, NPY, the NULL device's host buffers) implements <code>_alloc</code> as an anonymous <code>mmap</code> and
+  <code>_copyin</code>/<code>_copyout</code> as plain slice assignment through an <code>MMIOInterface</code>:</p>
+  <pre><code class="language-python" data-src="tinygrad/device.py:300-324">class HostAllocator(Allocator):
+  def _alloc(self, size:int, options:BufferSpec) -&gt; BufferStorage:
+    if options.external_ptr is not None: view, meta = self._view(options.external_ptr, size), None
+    elif (remote:=getattr(self.dev, "remote", None)) is not None: view, meta = remote.alloc_sysmem(round_up(size, mmap.PAGESIZE))
+    else: view = self._view(mv_address(meta:=mmap.mmap(-1, size, access=mmap.ACCESS_WRITE)), size)
+    return BufferStorage(view.addr, meta, view)
+
+  def _free(self, storage:BufferStorage, options:BufferSpec):
+    if (remote:=getattr(self.dev, "remote", None)) is not None:
+      self.dev.synchronize()
+      remote.free_sysmem(storage.host)
+
+  def _view(self, addr:int, size:int) -&gt; MMIOInterface:
+    return remote.cpu_view(addr, size) if (remote:=getattr(self.dev, "remote", None)) is not None else MMIOInterface(addr, size, fmt='B')
+
+  def _copyin(self, dest:int, src:memoryview):
+    self.dev.synchronize()
+    with cpu_profile(f"TINY -&gt; {self.dev.device}", f"{self.dev.device}:COPY"): self._view(dest, src.nbytes)[:] = src.cast('B')
+  def _copyout(self, dest:memoryview, src:int):
+    self.dev.synchronize()
+    with cpu_profile(f"{self.dev.device} -&gt; TINY", f"{self.dev.device}:COPY"): dest[:] = self._view(src, dest.nbytes)[:]
+  def _map(self, buf:Buffer) -&gt; BufferStorage:
+    if Device[buf.device].host != self.dev.host: raise RuntimeError(f"host memory is not on the node of {self.dev.device}")
+    return BufferStorage(buf.host.addr)
+  def _offset(self, buf:int, size:int, offset:int) -&gt; int: return buf + offset</code></pre>
+  <div class="callout analogy"><span class="title">Why cache at all?</span>A training step frees and re-allocates the same few dozen sizes every
+  iteration. <code>cuMemAlloc</code>/<code>hipMalloc</code>-style calls can take tens of microseconds and may synchronize the device; popping a list is
+  nanoseconds. The JIT (<a href="18-jit.html">Chapter 18</a>) goes further and pre-plans one arena so it doesn't allocate at all.</div>
+
+  <!-- ============================================================ -->
+  <h2 id="compiler"><span class="sec">17.6</span>Compilers and the caches in front of them</h2>
+  <div class="codecap"><b>tinygrad/device.py</b> — <a class="src" data-path="tinygrad/device.py" data-line="330">class Compiler</a></div>
+  <pre><code class="language-python" data-src="tinygrad/device.py:330-339">class Compiler:
+  def __init__(self, cachekey:str|None=None): self.cachekey = cachekey if CCACHE else None
+  def compile(self, src:str) -&gt; bytes: return src.encode()   # NOTE: empty compiler is the default
+  def compile_cached(self, src:str) -&gt; bytes:
+    if self.cachekey is None or (lib := diskcache_get(self.cachekey, src)) is None:
+      assert not getenv("ASSERT_COMPILE"), f"tried to compile with ASSERT_COMPILE set\n{src}"
+      lib = self.compile(src)
+      if self.cachekey is not None: diskcache_put(self.cachekey, src, lib)
+    return lib
+  def disassemble(self, lib:bytes): pass</code></pre>
+  <p><code>compile(src) → bytes</code> is the whole interface. <code>compile_cached</code> wraps it with the sqlite disk cache
+  (<a class="src" data-path="tinygrad/helpers.py" data-line="416">diskcache_get</a>, table = <code>cachekey</code>, key = the source text). The cache key
+  includes the arch (e.g. <code>compile_clang_obj_x86_64_native</code>) so a cache shared between machines can't hand you the wrong ISA.
+  <code>CCACHE=0</code> disables it; <code>ASSERT_COMPILE=1</code> turns a cache miss into an assertion (handy in CI to prove "nothing recompiles").</p>
+  <p>The CPU's <code>ClangCompiler</code> pipes C into <code>clang -c -x c -O2 -fPIC -ffreestanding -fno-math-errno -nostdlib --target=x86_64-none-unknown-elf -march=native - -o -</code>:
+  it produces an <b>ELF relocatable object</b>, not a shared library, because tinygrad loads it itself (next section).</p>
+  <pre><code class="language-python" data-src="tinygrad/runtime/support/compiler_cpu.py:5-24">class ClangCompiler(Compiler):
+  def __init__(self, arch:list[str], cachekey="compile_clang_obj"):
+    assert len(arch) &gt;= 2, f"invalid arch string: {','.join(arch)!r}, expected '&lt;arch&gt;,&lt;cpu&gt;,[&lt;feats&gt;]' (eg. 'x86_64,znver2')"
+    self.arch, cpu, *feats = arch
+    match self.arch:
+      case "x86_64": self.args = [f"-march={cpu}"] + [f"-mno{f}" if f.startswith("-") else f"-m{f}" for f in feats]
+      # on arm march means "runs on this arch and superset" instead of "optimize for this arch". x86 march == arm mcpu
+      # x18 is a reserved platform register. It is clobbered on context switch in macos and is used to store TEB pointer in windows on arm
+      case "arm64": self.args = ["-ffixed-x18", "-mcpu=" + "+".join([cpu] + ["no"+f[1:] if f.startswith("-") else f for f in feats])]
+      case "riscv64": self.args = ["-march=" + "_".join(["rv64g" if cpu == "native" else cpu] + feats)]
+      case _: raise RuntimeError(f"unsupported arch: {self.arch!r}")
+    super().__init__(f"{cachekey}_{'_'.join(arch)}")
+
+  def compile(self, src:str) -&gt; bytes:
+    """Compile C source to ELF object file (before linking)."""
+    # -fno-math-errno is required for __builtin_sqrt to become an instruction instead of a function call
+    return subprocess.check_output([getenv("CC", 'clang'), '-c', '-x', 'c', '-O2', '-fPIC', '-ffreestanding', '-fno-math-errno', '-nostdlib',
+                                    '-fno-ident', f'--target={self.arch}-none-unknown-elf', *self.args, '-', '-o', '-'], input=src.encode('utf-8'))
+
+  def disassemble(self, lib: bytes): cpu_objdump(lib)</code></pre>
+  <p>Compilation is the most expensive thing in the whole stack (≈30 ms per kernel for clang, seconds with BEAM), so there are <b>four caches</b> on
+  the way from a Tensor to running code. Know them by name:</p>
+  <table>
+    <tr><th>cache</th><th>key → value</th><th>where</th><th>survives the process?</th></tr>
+    <tr><td><code>schedule_cache</code></td><td>graph key → LINEAR</td><td><a class="src" data-path="tinygrad/schedule/__init__.py" data-line="119">schedule/__init__.py</a></td><td>with <code>SCACHE≥2</code></td></tr>
+    <tr><td><code>to_program_cache</code></td><td>(AST key, renderer, target, config) → PROGRAM UOp</td><td><a class="src" data-path="tinygrad/codegen/__init__.py" data-line="508">codegen/__init__.py</a></td><td>no</td></tr>
+    <tr><td>disk compile cache</td><td>(cachekey, source) → binary bytes</td><td><code>Compiler.compile_cached</code></td><td>yes (<code>CACHEDB</code>)</td></tr>
+    <tr><td><code>runtime_cache</code></td><td>(PROGRAM key, device) → loaded Program</td><td><a class="src" data-path="tinygrad/engine/realize.py" data-line="105">realize.py</a></td><td>no</td></tr>
+  </table>
+
+  <!-- ============================================================ -->
+  <h2 id="cpu"><span class="sec">17.7</span>Loading and calling code on the CPU</h2>
+  <p>After <code>to_program</code>, a CALL's body is a <code>PROGRAM</code> UOp with four sources: <code>(SINK, LINEAR, SOURCE, BINARY)</code> — the optimized
+  AST, the linearized UOps, the rendered text, and the compiled bytes — and a <code>ProgramInfo</code> arg (launch dims, parameter slots, which
+  slots are outputs/inputs, target). <code>PROGRAM.to_elf()</code> packages the binary into a <code>TinyELF(lib, name, target, signature)</code>
+  and <code>Device.runtime(elf)</code> builds the backend's Program.</p>
+  <div class="codecap"><b>tinygrad/runtime/ops_cpu.py</b> — <a class="src" data-path="tinygrad/runtime/ops_cpu.py" data-line="15">CPUProgram</a></div>
+  <pre><code class="language-python" data-src="tinygrad/runtime/ops_cpu.py:15-57">class CPUProgram(Program['CPUDevice']):
+  rt_lib, libm = DLL('rt', 'System' if OSX else 'gcc_s'), DLL('m', 'm')
+
+  def _load(self, lib, base=0): return lib if lib[:4] != libc.ELFMAG.encode() else jit_loader(lib, base=base, link_libs=list(DLL._loaded_.values()),
+                                                                                              link_syms={n:p.buf.buf for n,p in self.links.items()})
+
+  def __init__(self, dev:CPUDevice, obj:TinyELF, links:dict[str,CPUProgram]):
+    self.dev, self.name, self.signature, self.profile_key, self.links = dev, obj.name, obj.signature, obj.profile_key, links
+    self.lvp = obj.target.renderer == "LVP"
+    self.packer = struct.Struct(''.join(unwrap(dt.fmt) for _, dt in TinyELF.iter_sig(self.signature)))
+    if dev.remote is not None:
+      link_ids = json.dumps({n:p.fxn for n,p in links.items()}).encode()
+      self.fxn:Any = dev.remote.rpc(RemoteCmd.LOAD_PROG, len(obj.lib), len(link_ids), payload=obj.lib + link_ids)[0]
+    else:
+      self.buf = dev.allocator.alloc(len(obj.lib), BufferSpec(nolru=True))
+      loaded = self._load(obj.lib, self.buf.buf)
+      unwrap(self.buf.host)[:len(loaded)] = loaded
+
+      # RWX pages are unrepresentable on apple silicon (https://blog.svenpeter.dev/posts/m1_sprr_gxf/), so flip the written pages to R-X
+      libc.mprotect(ctypes.c_void_p(self.buf.buf), len(obj.lib), libc.PROT_READ | libc.PROT_EXEC)
+
+      # __clear_cache isn't a normal libc function, but a compiler support routine found in libgcc_s for gcc and compiler-rt for clang.
+      # libgcc_s comes as shared library but compiler-rt is only a bunch of static library archives which we can't directly load, but fortunately
+      # it somehow found its way into libSystem on macos (likely because it used __builtin_clear_cache) and libgcc_s is ~always present on linux
+      # Using ["name"] instead of .name because otherwise name is getting mangled: https://docs.python.org/3.12/reference/expressions.html#index-5
+      if 'rt' in DLL._loaded_: CPUProgram.rt_lib["__clear_cache"](ctypes.c_void_p(self.buf.buf), ctypes.c_void_p(self.buf.buf + len(loaded)))
+      else:
+        # msync should be a universal POSIX way to do this
+        libc.msync(ctypes.c_void_p(self.buf.buf), len(loaded), libc.MS_SYNC | libc.MS_INVALIDATE)
+
+      self.fxn = ctypes.CFUNCTYPE(None, ctypes.c_void_p)(self.buf.buf)
+
+  def __call__(self, *args:int, global_size:tuple[int,int,int]=(1,1,1), local_size:tuple[int,int,int]=(1,1,1),
+               wait:bool=False, timeout:int|None=None) -&gt; float|None:
+    hdr = 12 if self.lvp else 0
+    kernargs = ctypes.create_string_buffer(hdr + len(args) * 8)
+    if self.lvp: struct.pack_into('&lt;3I', kernargs, 0, *data64_le(ctypes.addressof(kernargs) + hdr), len(args) * 2)
+    self.packer.pack_into(kernargs, hdr, *args)
+    if (remote:=self.dev.remote) is not None:
+      ret = (remote._rpc if wait else remote._post)(remote.sock, RemoteCmd.EXEC_PROG, self.fxn, len(kernargs), int(wait), payload=bytes(kernargs))
+      return ret[0] / 1e9 if ret is not None else None
+    with cpu_profile(self.name, self.dev.device, profile_key=self.profile_key) as prof: self.fxn(kernargs)
+    return float(unwrap(prof.en) - prof.st) * 1e-6 if wait else None</code></pre>
+  <p>Step by step, for a local CPU:</p>
+  <ol>
+    <li><b>Allocate executable memory</b> with the device's own allocator (<code>nolru</code> — code must not be recycled as data).</li>
+    <li><b>Link it ourselves.</b> <a class="src" data-path="tinygrad/runtime/support/elf.py" data-line="54">jit_loader</a> parses the ELF sections,
+      lays out <code>.text</code>/<code>.rodata</code> into one image, and applies every relocation (x86-64 <code>PC32</code>/<code>PLT32</code>, AArch64
+      <code>ADR_PREL_PG_HI21</code>, <code>CALL26</code>…), creating trampolines for out-of-range calls into libm/libgcc. No <code>dlopen</code>, no temp files.</li>
+    <li><b>W^X.</b> Write the image, then <code>mprotect</code> it to read+execute (Apple Silicon refuses RWX pages) and clear the instruction cache.</li>
+    <li><b>Wrap it</b> as <code>ctypes.CFUNCTYPE(None, c_void_p)</code>: every kernel takes <em>one</em> pointer — to a struct of its args. That is why the
+      rendered C starts with <code>struct E_2_4_args { float* arg0; float* arg1; };</code>. <code>__call__</code> packs buffer addresses (as <code>u64</code>) and
+      integer variables into that struct with <code>struct.Struct</code> built from <code>TinyELF.iter_sig</code>.</li>
+  </ol>
+  <div class="codecap"><b>examples/17_compile_and_run.py</b> — run with <code>DEV=CPU python3 examples/17_compile_and_run.py</code></div>
+  <pre><code class="language-python" data-file="examples/17_compile_and_run.py"># Chapter 17 — from a scheduled CALL to machine code running on the CPU, by hand.
+# run: DEV=CPU python3 examples/17_compile_and_run.py
+import struct, time
+from tinygrad import Tensor, Device
+from tinygrad.uop.ops import Ops
+from tinygrad.device import Buffer
+from tinygrad.engine.realize import compile_linear, link_linear, get_runtime, run_linear
+from tinygrad.runtime.support.elf import elf_loader
+
+a = Tensor([0., 1, 2, 3, 4, 5, 6, 7]).realize()
+c = (a * 3 + 1).sqrt()
+
+# 1) the schedule: a LINEAR of CALLs. The body of the CALL is still a kernel AST (a SINK)
+lin = c.schedule_linear()
+call = lin.src[0]
+print("1 scheduled :", lin.op, "with", len(lin.src), "CALL; body =", call.body.op, call.body.arg.name,
+      "| args:", [(s.op.name, s.device) for s in call.src[1:]])
+
+# 2) compile_linear = lower_and_compile (+ hcq_compile, a no-op for CPU): every SINK body becomes a PROGRAM
+cl = compile_linear(lin)
+prg = cl.src[0].body
+print("2 compiled  :", cl.src[0].body.op, "srcs =", [s.op.name for s in prg.src])
+print("  ProgramInfo: global", prg.arg.global_size, "local", prg.arg.local_size, "globals", prg.arg.globals,
+      "outs", prg.arg.outs, "ins", prg.arg.ins, "target", prg.arg.target)
+print("  SOURCE:\n" + prg.src[2].arg)
+lib = prg.src[3].arg
+print("  BINARY:", len(lib), "bytes, magic", lib[:4])
+
+# 3) the ELF object is not a shared library: tinygrad links it itself (runtime/support/elf.py)
+image, sections, relocs = elf_loader(lib)
+print("3 elf       : sections", [s.name for s in sections if s.name], "| image", len(image), "bytes |", len(relocs), "relocations")
+
+# 4) to_elf() packages (lib, name, target, signature); Device.runtime() builds the Program (CPUProgram)
+elf = prg.to_elf()
+print("4 TinyELF   :", elf.name, "signature", [(n, a.name, str(d)) for n, a, d, _ in elf.signature])
+rt = get_runtime("CPU", prg)
+print("  runtime   :", type(rt).__name__, "| code mapped at", hex(rt.buf.buf), "| ctypes fn", rt.fxn)
+
+# 5) call it ourselves with two raw Buffers: args are buffer addresses, packed into a struct (CPUProgram.__call__)
+out, inp = Buffer("CPU", 32).allocate(), Buffer("CPU", 32).allocate()
+inp.copy_from(Buffer("PYTHON", 32, initial_value=struct.pack("8f", *[float(i) for i in range(8)])))
+et = rt(out._buf, inp._buf, global_size=(1, 1, 1), local_size=(1, 1, 1), wait=True)
+print("5 manual run:", struct.unpack("8f", out.as_memoryview()), f"| took {et*1e6:.1f} us")
+
+# 6) the normal path does exactly this: link_linear(compile_linear(...)) then pm_exec dispatches each CALL
+run_linear(lin)
+print("6 run_linear:", c.tolist())
+
+# 7) compile_cached: the clang output is stored in the sqlite disk cache under the compiler's cachekey
+comp = Device["CPU"].compiler
+st = time.perf_counter(); comp.compile(prg.src[2].arg); t_raw = time.perf_counter() - st
+st = time.perf_counter(); lib2 = comp.compile_cached(prg.src[2].arg); t_cached = time.perf_counter() - st
+print(f"7 clang -c  : {t_raw*1e3:.1f} ms | compile_cached (disk hit): {t_cached*1e3:.2f} ms | same bytes: {lib2 == lib}")</code></pre>
+  <pre class="output"><code data-out="17_compile_and_run">1 scheduled : Ops.LINEAR with 1 CALL; body = Ops.SINK test | args: [('BUFFER', 'CPU'), ('BUFFER', 'CPU')]
+2 compiled  : Ops.PROGRAM srcs = ['SINK', 'LINEAR', 'SOURCE', 'BINARY']
+  ProgramInfo: global (1, 1, 1) local (1, 1, 1) globals (0, 1) outs (0,) ins (1,) target CPU::x86_64,native
+  SOURCE:
+typedef float float4 __attribute__((aligned(4),ext_vector_type(4)));
+struct E_2_4_args { float* arg0; float* arg1; };
+void E_2_4(const struct E_2_4_args* args) {
+  float* data0_8 = args-&gt;arg0;
+  float* data1_8 = args-&gt;arg1;
+  for (int Lidx0 = 0; Lidx0 &lt; 2; Lidx0++) {
+    int alu0 = (Lidx0&lt;&lt;2);
+    float4 val0 = (*((float4*)((data1_8+alu0))));
+    *((float4*)((data0_8+alu0))) = (float4){__builtin_sqrtf(((val0[0]*3.0f)+1.0f)),__builtin_sqrtf(((val0[1]*3.0f)+1.0f)),__builtin_sqrtf(((val0[2]*3.0f)+1.0f)),__builtin_sqrtf(((val0[3]*3.0f)+1.0f))};
+  }
+}
+
+  BINARY: 920 bytes, magic b'\x7fELF'
+3 elf       : sections ['.strtab', '.text', '.rela.text', '.rodata.cst4', '.note.GNU-stack', '.llvm_addrsig', '.symtab'] | image 72 bytes | 2 relocations
+4 TinyELF   : E_2_4 signature [(None, 'GLOBAL', 'dtypes.f32'), (None, 'GLOBAL', 'dtypes.f32')]
+  runtime   : CPUProgram | code mapped at 0x7f4518d69000 | ctypes fn &lt;CFunctionType object at 0x7f4517cf2f70&gt;
+5 manual run: (1.0, 2.0, 2.6457512378692627, 3.1622776985168457, 3.605551242828369, 4.0, 4.358899116516113, 4.690415859222412) | took 9.0 us
+6 run_linear: [1.0, 2.0, 2.6457512378692627, 3.1622776985168457, 3.605551242828369, 4.0, 4.358899116516113, 4.690415859222412]
+7 clang -c  : 30.7 ms | compile_cached (disk hit): 0.10 ms | same bytes: True</code></pre>
+  <p>Read the output against the steps: 2 relocations are the two float constants <code>3.0f</code> and <code>1.0f</code> clang put in
+  <code>.rodata.cst4</code>; the kernel ran in microseconds; and the second compile of identical source came from the disk cache ~400× faster.
+  The kernel has <code>global_size=(1,1,1)</code>: on the CPU, the clang renderer emits the loops itself and there is no grid — one call, one thread.</p>
+
+  <div class="quiz" data-answer="0">
+    <div class="q">Why does every CPU kernel take a single <code>const struct X_args*</code> instead of one C parameter per buffer?</div>
+    <button class="opt">So <code>CPUProgram</code> can use one fixed ctypes signature <code>CFUNCTYPE(None, c_void_p)</code> and pack any number/type of args into a byte buffer.</button>
+    <button class="opt">Because C doesn't allow more than 4 pointer parameters.</button>
+    <button class="opt">To make the kernel thread-safe.</button>
+    <div class="explain">The packer (<code>struct.Struct</code> from <code>TinyELF.iter_sig</code>) writes buffer addresses as <code>u64</code> and ints at
+    their aligned offsets; the same layout code (<code>layout_args</code> in hcq2) is reused to build GPU kernarg buffers.</div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="realize"><span class="sec">17.8</span><code>run_linear</code>: compile, link, dispatch</h2>
+  <p>Everything above is plumbing. The conductor is a dozen lines:</p>
+  <div class="codecap"><b>tinygrad/engine/realize.py</b> — <a class="src" data-path="tinygrad/engine/realize.py" data-line="275">compile_linear / link_linear / run_linear</a></div>
+  <pre><code class="language-python" data-src="tinygrad/engine/realize.py:275-290">def compile_linear(linear:UOp, beam:int|None=None, validate=False, input_uops:list[UOp]|None=None, profile:bool|None=None, cache=False) -&gt; UOp:
+  if validate: linear = graph_rewrite(linear, pm_validate, name="validate", walk=True)
+  if (beam_val:=BEAM.value if beam is None else beam) &gt;= 1: linear = graph_rewrite(linear, pm_beam, ctx=beam_val, walk=True)
+  linear = lower_and_compile(linear)
+  linear = hcq_compile(linear, input_uops, bool(PROFILE or DEBUG &gt;= 2) if profile is None else profile, cache=cache)
+  return linear
+
+def link_linear(linear:UOp, input_uops:list[UOp]|None=None) -&gt; UOp: return hcq_link(linear, input_uops=input_uops)
+
+def run_linear(linear:UOp, var_vals:dict[str, int]|None=None, input_uops:Sequence[UOp]=(), update_stats=True, jit=False, wait=False):
+  assert linear.op is Ops.LINEAR, f"run_linear calls on {linear.op}"
+  if len(linear.src) == 0: return
+  inputs = list(input_uops)
+  if not jit: linear = link_linear(compile_linear(linear, validate=VALIDATE_WITH_CPU, input_uops=inputs, cache=True), input_uops=inputs)
+  ctx = ExecContext(var_vals or {}, tuple(inputs), update_stats, jit, wait or DEBUG&gt;=2)
+  for call in linear.src: track_stats(ctx, call.without_after, perf_counter_us(), pm_exec.rewrite(call.without_after, ctx))</code></pre>
+  <p>So <code>Tensor.realize()</code> → <code>linear_with_vars</code> (Part III) → <code>run_linear(linear, var_vals)</code>, which (unless called from the JIT) does
+  <b>compile → link → execute</b>. Each of those is a rewrite of the <code>LINEAR</code> UOp itself:</p>
+
+  <div class="demo" id="demo-pipe">
+    <div class="demo-title">What each stage of run_linear takes and produces</div>
+    <div class="demo-desc">Click a stage. Input → transformation → output, with the function that does it. Real UOp ops in <code>monospace</code>.</div>
+    <div id="pipe"></div>
+    <div class="ch17-pipe-out" id="pipe-out"></div>
+  </div>
+
+  <h3>lower_and_compile: the parallel compile pool</h3>
+  <div class="codecap"><b>tinygrad/engine/realize.py</b> — <a class="src" data-path="tinygrad/engine/realize.py" data-line="227">_compile_kernel / lower_and_compile</a></div>
+  <pre><code class="language-python" data-src="tinygrad/engine/realize.py:227-264">def _compile_kernel(x:tuple[int, tuple[UOp, Renderer], dict]) -&gt; tuple[int, UOp]:
+  with Context(**x[2]): return x[0], to_program(*x[1])
+
+def _get_call_to_compile(c:UOp) -&gt; tuple[UOp, Renderer]|None:
+  ast = c.body
+  # a PROGRAM with a ProgramInfo and a BINARY is already compiled
+  if (ast.op is Ops.SINK and isinstance(ast.arg, KernelInfo)) or \
+     (ast.op is Ops.PROGRAM and not (isinstance(ast.arg, ProgramInfo) and ast.src[-1].op is Ops.BINARY)):
+    return ast, Device[to_tuple(c.device)[0]]._select_renderer(HCQ_RUNTIME_DEV if isinstance(c.arg.aux, HCQInfo) else DEV)
+  return None
+
+def lower_and_compile(linear:UOp, verbose=True) -&gt; UOp:
+  # collect the kernels to lower and compile, deduped by their compile cache key
+  if not len(ar:={c: a for c in linear.toposort() if c.op is Ops.CALL and (a:=_get_call_to_compile(c)) is not None}): return linear
+
+  # lower and compile what's not cached, in parallel if there's a worker pool
+  keys = {c: to_program_key(*a) for c, a in ar.items()}
+  todo = list({keys[c]: a for c, a in ar.items() if keys[c] not in to_program_cache}.items())
+  if len(todo):
+    # kernels that beam search must compile in the parent, beam needs device access to time candidates
+
+    pool = None if len(todo) == 1 or any(getattr(c.body.arg, "beam", 0) for c in ar) else get_worker_pool()
+    ctx = {v.key: v.value for v in to_program_context}
+    if CAPTURE_PROCESS_REPLAY: ctx["PROCESS_REPLAY_LOC"] = get_process_replay_loc()
+    tasks = ((i, ast_ren, ctx) for i, (_, ast_ren) in enumerate(todo))
+    try:
+      with tqdm(total=len(todo), desc="compiling", disable=DEBUG&lt;1 or not verbose) as pbar:
+        for i, prg in (map if pool is None else pool.imap_unordered)(_compile_kernel, tasks):
+          pbar.set_description(f"compiling {ansipad(prg.src[0].arg.name, 40)}")
+          to_program_cache[todo[i][0]] = prg
+          pbar.update(1)
+    except KeyboardInterrupt:
+      if pool is not None: terminate_worker_pool()
+      raise
+
+  # swap the compiled PROGRAMs into the calls
+  return linear.substitute({c: c.replace(src=(to_program_cache[keys[c]], *c.src[1:])) for c in ar},
+                           name="precompile kernels")</code></pre>
+  <ul>
+    <li><b>Dedup first.</b> All CALLs whose body is still a kernel <code>SINK</code> (or an uncompiled <code>PROGRAM</code>) are collected and keyed by
+      <code>to_program_key</code>; identical kernels — very common, e.g. the same layer applied twice — compile once.</li>
+    <li><b>Parallel.</b> If more than one kernel is new, they go to <code>get_worker_pool()</code>: a <em>spawn</em> multiprocessing pool of
+      <code>PARALLEL</code> workers (default = CPU count; 0 when <code>VIZ</code> is on) from <a class="src" data-path="tinygrad/engine/worker.py" data-line="39">engine/worker.py</a>.
+      Each worker runs the full codegen (<code>to_program</code>: optimize → lower → linearize → render → compile) with the parent's
+      <code>Context</code> values (<code>to_program_context</code>) copied in, and with <code>ALLOW_DEVICE_USAGE=0</code> — workers may compile but never open a
+      device. BEAM search is the exception: it must time candidates on the real device, so BEAM kernels compile in the parent.</li>
+    <li><b>Swap in.</b> Finally every CALL's body is substituted with its PROGRAM. The "compiling r_256_256_64_4 : 100%" bar you see at
+      <code>DEBUG≥1</code> is this loop.</li>
+  </ul>
+
+  <h3>hcq_compile and link_linear</h3>
+  <p>On CPU/PYTHON these are almost no-ops: <code>hcq_compile</code> only batches calls whose device is in <code>HCQ_DEVS</code>, and
+  <code>hcq_link</code> resolves the HCQ placeholders (<code>ALLOC</code>s → real Buffers, <code>GETADDR</code> → constant addresses). §17.10 shows what they do on
+  an HCQ device.</p>
+
+  <h3>pm_exec: how a CALL becomes a "runnable"</h3>
+  <p>There is no runner class hierarchy any more. Execution is a <code>PatternMatcher</code> over the CALL's body, used as a dispatcher
+  (<code>pm_exec.rewrite(call, ctx)</code> returns the list of per-launch times):</p>
+  <div class="codecap"><b>tinygrad/engine/realize.py</b> — <a class="src" data-path="tinygrad/engine/realize.py" data-line="268">pm_exec</a></div>
+  <pre><code class="language-python" data-src="tinygrad/engine/realize.py:268-273">pm_exec = PatternMatcher([
+  (UPat(Ops.CALL, src=(UPat(Ops.STORE, name="ast"),), name="call", allow_any_len=True), exec_copy),
+  (UPat(Ops.CALL, src=(UPat(Ops.PROGRAM, name="ast"),), name="call", allow_any_len=True),
+   lambda ctx, call, ast: exec_hcq(ctx, call, ast) if isinstance(call.arg.aux, HCQInfo) else exec_kernel(ctx, call, ast)),
+  (UPat(Ops.CALL, src=(UPat.custom_function("validate", name="ast"),), name="call", allow_any_len=True), exec_validate),
+])</code></pre>
+  <table>
+    <tr><th>CALL body</th><th>handler</th><th>what it does</th></tr>
+    <tr><td><code>STORE</code> (a copy)</td><td><code>exec_copy</code></td><td>memcpy between host views, or <code>_copyout</code>/<code>_copyin</code> of the allocator when one side isn't host-visible</td></tr>
+    <tr><td><code>PROGRAM</code></td><td><code>exec_kernel</code></td><td>resolve args → buffers, <code>ensure_allocated</code>, <code>get_runtime</code>, launch (once per device lane for multi-device)</td></tr>
+    <tr><td><code>PROGRAM</code> with <code>HCQInfo</code> aux</td><td><code>exec_hcq</code></td><td>run the batched host submit program (§17.10)</td></tr>
+    <tr><td><code>CUSTOM_FUNCTION("validate")</code></td><td><code>exec_validate</code></td><td><code>VALIDATE_WITH_CPU=1</code>: rerun on CPU and <code>assert_allclose</code></td></tr>
+  </table>
+  <div class="codecap"><b>tinygrad/engine/realize.py</b> — <a class="src" data-path="tinygrad/engine/realize.py" data-line="147">exec_copy / exec_kernel</a></div>
+  <pre><code class="language-python" data-src="tinygrad/engine/realize.py:147-170">def exec_copy(ctx:ExecContext, call:UOp, ast:UOp) -&gt; list[float|None]:
+  for bufs, device_vars in unwrap_multi(call, resolve_params(call, ctx.input_uops)):
+    dest, src = bufs[0].ensure_allocated(), bufs[1].ensure_allocated()
+    if dest.get_storage().host is not None and src.get_storage().host is not None:
+      for b in (dest, src): b.allocator.dev.synchronize()
+      with cpu_profile(f"{src.device} -&gt; {dest.device}", f"{src.device}:COPY"): dest.host[:] = src.host[:]
+    elif dest._host_mv() is not None: src.allocator._copyout(dest.as_memoryview(allow_zero_copy=True), src._buf)
+    else: dest.allocator._copyin(dest._buf, src.as_memoryview(allow_zero_copy=True))
+  return []
+
+def exec_kernel(ctx:ExecContext, call:UOp, ast:UOp, devices=None) -&gt; list[float|None]:
+  ets:list[float|None] = []
+  resolved = [_resolve(call.src[1+i], ctx.input_uops) for i in ast.arg.globals]
+  for device, (bufs, device_vars) in zip(devices or to_tuple(get_call_arg_uops(call)[0].device), unwrap_multi(call, resolved)):
+    if devices is None and device.split(":")[0] in HOST_DEVS: Device[device].synchronize(ctx.timeout)
+    var_vals = {**ctx.var_vals, **device_vars, **{s.expr: s.arg.val for s in call.src[1:] if s.is_bound_var}}
+    prg_bufs = {i:b.ensure_allocated() for i,b in zip(ast.arg.globals, bufs)}
+    rt = get_runtime(device, ast, cache=ctx.cache)
+    global_sz, local_sz = ast.arg.launch_dims(var_vals)
+    try: args = [(var_vals[p.expr] if p.is_variable else _resolve(call.src[1+p.arg.slot], ctx.input_uops).val) if p.addrspace is AddrSpace.ALU else
+                 prg_bufs[p.arg.slot].get_buf(device) for p in ast.kernel_params]
+    except KeyError as e: raise RuntimeError(f"unbound Variable {e}") from None
+    ets.append(rt(*args, global_size=global_sz, local_size=local_sz, wait=ctx.wait, timeout=ctx.timeout))
+  return ets</code></pre>
+  <p><code>exec_kernel</code> is worth reading line by line: <code>_resolve</code> maps <code>PARAM</code>s to the caller's input UOps (the JIT uses this),
+  <code>unwrap_multi</code> yields one lane per device for multi-device buffers (and binds <code>_device_num</code>), <code>launch_dims</code> evaluates symbolic
+  global/local sizes with <code>var_vals</code>, and a missing variable becomes <code>RuntimeError("unbound Variable …")</code>. Finally
+  <code>rt(*args, global_size, local_size, wait)</code> — and <code>wait</code> is true when <code>DEBUG≥2</code>, which is how the timing column of the
+  DEBUG line gets real numbers.</p>
+  <div class="codecap"><b>tinygrad/engine/realize.py</b> — <a class="src" data-path="tinygrad/engine/realize.py" data-line="106">get_runtime</a></div>
+  <pre><code class="language-python" data-src="tinygrad/engine/realize.py:105-112">runtime_cache: dict[tuple[bytes, str], Any] = {}
+def get_runtime(device:str, ast:UOp, cache=True):
+  if (runtime:=runtime_cache.get(key:=(ast.key, device))) is None:
+    links = {call.body.src[0].arg.function_name:get_runtime(device, call.body, cache)
+             for call in ast.src[1].src if call.op is Ops.CALL and call.body.op is Ops.PROGRAM}
+    runtime = Device[device].runtime(ast.to_elf(), links=links)
+    if cache: runtime_cache[key] = runtime
+  return runtime</code></pre>
+  <p>(<code>links</code>: a PROGRAM may CALL other PROGRAMs — e.g. the HCQ host program calling <code>fence_null</code> — and these are loaded first
+  and their symbols handed to the ELF linker as <code>link_syms</code>.)</p>
+
+  <!-- ============================================================ -->
+  <h2 id="python"><span class="sec">17.9</span>The PYTHON device: executing UOps one at a time</h2>
+  <p><a class="src" data-path="tinygrad/runtime/ops_python.py" data-line="1">ops_python.py</a> calls itself "the (living) definition of uops". Its
+  renderer doesn't render text: <code>PythonRenderer.render(uops)</code> returns <code>base64(pickle(uops))</code>, the "compiler" decodes the base64, and
+  <code>PythonProgram</code> unpickles the list of linearized UOps and <em>interprets</em> it. Every backend's semantics must match this interpreter, which
+  is why it is the best way to understand what a linearized kernel means.</p>
+  <div class="codecap"><b>tinygrad/runtime/ops_python.py</b> — <a class="src" data-path="tinygrad/runtime/ops_python.py" data-line="47">PythonProgram</a> (the main loop, abridged by line range)</div>
+  <pre><code class="language-python" data-src="tinygrad/runtime/ops_python.py:47-72">class PythonProgram(Program['PythonDevice']):
+  def __init__(self, dev:'PythonDevice', obj:TinyELF, links:dict[str,'PythonProgram']):
+    self.uops: list[UOp] = pickle.loads(obj.lib)
+    self.tensor_cores, self.links = PythonRenderer(obj.target).tensor_cores, links
+    self.uop_to_index: dict[UOp, int] = {u:i for i,u in enumerate(self.uops)}
+    self.loop_ends: dict[UOp, int] = {u.src[1]:i for i, u in enumerate(self.uops) if u.op in {Ops.END, Ops.BACKEDGE}}
+  def __call__(self, *args, global_size:tuple[int,int,int]=(1,1,1), local_size:tuple[int,int,int]=(1,1,1), wait=False, **kw):
+    st = time.perf_counter()
+    warp = list(itertools.product(*[range(x) for x in local_size[::-1]]))
+    warp_size = len(warp)
+    for idxs in itertools.product(*[range(x) for x in global_size[::-1]]):
+      values: dict[UOp, Any] = dict(env:=kw.get("env", ())) # a function runs with its params bound to the caller's args
+      pargs: list[int] = list(args) # the PARAMs are first in the uops, in the args' order
+      exec_masks = [[True] * warp_size]
+      i = 0
+      while i &lt; len(self.uops):
+        u = self.uops[i]
+        src_values = [values[v] for v in u.src_without_body if v.dtype is not dtypes.void]
+        src_dtypes = [v.dtype for v in u.src_without_body if v.dtype is not dtypes.void]
+        if getenv("TRACE"): print(i, u.op, u.dtype, u.arg, src_values, src_dtypes)
+        if u.op is Ops.BACKEDGE:
+          i = self.uop_to_index[u.src[1]] if values[u.src[2]][0] else i+1
+          continue
+        if u.op is Ops.END:
+          i = self.uop_to_index[u.src[1]]
+          continue</code></pre>
+  <pre><code class="language-python" data-src="tinygrad/runtime/ops_python.py:86-95">        if u.op is Ops.STORE:
+          assert len(src_values) == 2, f"STORE must be lowered to 2 srcs, got {len(src_values)}"
+          store_gate = exec_masks[-1]
+          for j,val in enumerate(src_values[1] if u.max_numel() &gt; 1 else [src_values[1]]):
+            for (m,o),v,g in zip(src_values[0], val, store_gate):
+              if g: _store(m, o+j*_step(m, src_dtypes[1]), v, src_dtypes[1])
+          i += 1
+          continue
+        if u.op is Ops.AFTER or (u.op is Ops.BITCAST and u.addrspace in (AddrSpace.GLOBAL, AddrSpace.LOCAL)): values[u] = src_values[0]
+        elif u.op is Ops.PARAM and u.addrspace is AddrSpace.ALU: values[u] = [pargs.pop(0)] * warp_size</code></pre>
+  <pre><code class="language-python" data-src="tinygrad/runtime/ops_python.py:124-133">        elif u.op is Ops.RANGE:
+          if u not in values: values[u] = [0] * warp_size
+          else:
+            for j in range(len(values[u])):
+              values[u][j] += 1
+          if values[u][0] == src_values[0][0]:
+            del values[u]
+            i = self.loop_ends[u] + 1
+            continue
+        elif u.op is Ops.STACK: values[u] = src_values</code></pre>
+  <p>The model of execution:</p>
+  <ul>
+    <li><b>Grid.</b> For every global index <code>idxs</code> (outer <code>itertools.product</code>), the whole program runs once for a <em>warp</em> of all
+      local threads in lock-step: every value is a <b>list with one entry per lane</b>. That's why the trace below shows <code>[1.0]</code> rather than
+      <code>1.0</code>.</li>
+    <li><b>A program counter</b> <code>i</code> walks the list. <code>RANGE</code> initialises or increments its counter and, when it hits the bound, jumps
+      past its <code>END</code>; <code>END</code> jumps back to its <code>RANGE</code>. <code>IF</code>/<code>ENDIF</code> push/pop an execution mask that gates
+      stores.</li>
+    <li><b>Memory.</b> A <code>PARAM</code> pops the next pointer from the args and views it as a typed <code>memoryview</code>; an <code>INDEX</code> produces
+      <code>(memoryview, offset)</code> pairs; <code>LOAD</code>/<code>STORE</code> read/write them; a <code>REG</code> <code>BUFFER</code> is a fresh per-thread
+      memoryview (an accumulator).</li>
+    <li><b>ALU.</b> Everything in <code>GroupOp.ALU</code> is <code>exec_alu(op, dtype, operands)</code> — the same function the symbolic engine uses for
+      constant folding (<a href="06-symbolic.html">Chapter 6</a>).</li>
+  </ul>
+  <div class="codecap"><b>examples/17_python_emulator.py</b> — run with <code>DEV=PYTHON NOOPT=1 python3 examples/17_python_emulator.py</code></div>
+  <pre><code class="language-python" data-file="examples/17_python_emulator.py"># Chapter 17 — the PYTHON device: a pure-Python interpreter that executes the linearized UOps one by one.
+# run: DEV=PYTHON NOOPT=1 python3 examples/17_python_emulator.py
+# (also works with DEV=CPU: the script forces the PYTHON device itself)
+# It captures the real execution trace (TRACE=1 hook of runtime/ops_python.py) into data/ch17_python_trace.json
+import os, sys, json, pickle, pathlib
+os.environ["TRACE"] = "1"   # PythonProgram.__call__ checks getenv("TRACE") and prints every executed UOp
+from tinygrad import Tensor, Context
+from tinygrad.engine.realize import compile_linear, run_linear
+import tinygrad.runtime.ops_python as ops_python
+
+with Context(DEV="PYTHON", NOOPT=1):
+  a = Tensor([1., 2, 3], device="PYTHON").realize()
+  b = Tensor([10., 20, 30], device="PYTHON").realize()
+  c = (a * b).sum()
+  lin = c.schedule_linear()
+  prg = compile_linear(lin).src[-1].body          # the CALL's body is now a PROGRAM
+  uops = pickle.loads(prg.src[3].arg)             # PYTHON "binary" = the pickled UOp list (PythonRenderer.render)
+  idx = {u: i for i, u in enumerate(uops)}
+
+  print(f"kernel {prg.src[0].arg.name}: {len(uops)} uops, global_size={prg.arg.global_size}")
+  for i, u in enumerate(uops):
+    print(f"  {i:2d} {u.op.name:8s} {str(u.dtype):16s} src={[idx[s] for s in u.src if s in idx]} arg={u.arg}")
+
+  # hook the emulator's print to record the trace instead of printing it
+  names, trace = {}, []
+  def name_of(m):
+    return names.setdefault(id(m), f"mem{len(names)}")
+  def fmt(v):
+    if isinstance(v, memoryview): return name_of(v)
+    if isinstance(v, tuple) and len(v) == 2 and isinstance(v[0], memoryview): return f"&amp;{name_of(v[0])}[{v[1]}]"
+    if isinstance(v, list): return [fmt(x) for x in v]
+    if isinstance(v, float): return round(v, 4)
+    return v if isinstance(v, (int, str)) else str(v)
+  mems = {}
+  def hook(i, op, dtype, arg, src_values, src_dtypes):
+    for sv in src_values:
+      for lane in sv if isinstance(sv, list) else []:
+        m = lane[0] if isinstance(lane, tuple) else lane
+        if isinstance(m, memoryview): mems[name_of(m)] = m
+    trace.append({"pc": i, "op": op.name, "src": [fmt(sv[0]) if isinstance(sv, list) and len(sv) == 1 else fmt(sv) for sv in src_values],
+                  "mem": {k: [round(x, 4) for x in m.tolist()] for k, m in mems.items()}})
+  ops_python.print = hook
+  run_linear(lin)
+  del ops_python.print
+  result = c.item()
+
+print(f"\nexecuted {len(trace)} UOp steps (the RANGE loop body ran 3 times); result = {result}")
+for t in trace[:16]: print(f"  pc={t['pc']:2d} {t['op']:8s} src={t['src']}")
+print("  ...")
+for t in trace[-6:]: print(f"  pc={t['pc']:2d} {t['op']:8s} src={t['src']}")
+print("final memory:", trace[-1]["mem"])
+
+out = {"kernel": prg.src[0].arg.name, "result": result,
+       "uops": [{"i": i, "op": u.op.name, "dtype": str(u.dtype), "arg": str(u.arg)[:60], "src": [idx[s] for s in u.src if s in idx]} for i, u in enumerate(uops)],
+       "trace": trace}
+path = pathlib.Path(__file__).resolve().parent.parent / "data" / "ch17_python_trace.json"
+path.write_text(json.dumps(out))
+print("wrote", path.name, f"({path.stat().st_size} bytes)")</code></pre>
+  <pre class="output"><code data-out="17_python_emulator">kernel r_3: 30 uops, global_size=(1, 1, 1)
+   0 CONST    dtypes.weakint   src=[] arg=1
+   1 PARAM    dtypes.f32       src=[0] arg=ParamArg(0, dtypes.f32, device='PYTHON')
+   2 CONST    dtypes.weakint   src=[] arg=3
+   3 PARAM    dtypes.f32       src=[2] arg=ParamArg(1, dtypes.f32, device='PYTHON')
+   4 PARAM    dtypes.f32       src=[2] arg=ParamArg(2, dtypes.f32, device='PYTHON')
+   5 BUFFER   dtypes.f32       src=[0] arg=ParamArg(0, dtypes.f32, addrspace=AddrSpace.REG)
+   6 CONST    dtypes.weakint   src=[] arg=0
+   7 CAST     dtypes.i32       src=[6] arg=dtypes.i32
+   8 INDEX    dtypes.f32       src=[5, 7] arg=None
+   9 CONST    dtypes.weakfloat src=[] arg=0.0
+  10 CAST     dtypes.f32       src=[9] arg=dtypes.f32
+  11 CAST     dtypes.i32       src=[2] arg=dtypes.i32
+  12 STORE    dtypes.void      src=[8, 10] arg=None
+  13 RANGE    dtypes.i32       src=[11] arg=(AxisType.WEAK, 0)
+  14 INDEX    dtypes.f32       src=[3, 13] arg=None
+  15 LOAD     dtypes.f32       src=[14] arg=None
+  16 INDEX    dtypes.f32       src=[4, 13] arg=None
+  17 LOAD     dtypes.f32       src=[16] arg=None
+  18 AFTER    dtypes.f32       src=[5, 12, 13] arg=None
+  19 INDEX    dtypes.f32       src=[18, 7] arg=None
+  20 LOAD     dtypes.f32       src=[19] arg=None
+  21 MULACC   dtypes.f32       src=[15, 17, 20] arg=None
+  22 STORE    dtypes.void      src=[19, 21] arg=None
+  23 END      dtypes.void      src=[22, 13] arg=None
+  24 AFTER    dtypes.f32       src=[5, 23] arg=None
+  25 INDEX    dtypes.f32       src=[24, 7] arg=None
+  26 LOAD     dtypes.f32       src=[25] arg=None
+  27 INDEX    dtypes.f32       src=[1, 7] arg=None
+  28 STORE    dtypes.void      src=[27, 26] arg=None
+  29 SINK     dtypes.void      src=[28] arg=KernelInfo(name='r_3', applied_opts=(), opts_to_apply=None, estimates=None, beam=0, optimized=True)
+
+executed 53 UOp steps (the RANGE loop body ran 3 times); result = 140.0
+  pc= 0 CONST    src=[]
+  pc= 1 PARAM    src=[1]
+  pc= 2 CONST    src=[]
+  pc= 3 PARAM    src=[3]
+  pc= 4 PARAM    src=[3]
+  pc= 5 BUFFER   src=[1]
+  pc= 6 CONST    src=[]
+  pc= 7 CAST     src=[0]
+  pc= 8 INDEX    src=['mem0', 0]
+  pc= 9 CONST    src=[]
+  pc=10 CAST     src=[0.0]
+  pc=11 CAST     src=[3]
+  pc=12 STORE    src=['&amp;mem0[0]', 0.0]
+  pc=13 RANGE    src=[3]
+  pc=14 INDEX    src=['mem1', 0]
+  pc=15 LOAD     src=['&amp;mem1[0]']
+  ...
+  pc=24 AFTER    src=['mem0']
+  pc=25 INDEX    src=['mem0', 0]
+  pc=26 LOAD     src=['&amp;mem0[0]']
+  pc=27 INDEX    src=['mem3', 0]
+  pc=28 STORE    src=['&amp;mem3[0]', 140.0]
+  pc=29 SINK     src=[]
+final memory: {'mem0': [140.0], 'mem1': [1.0, 2.0, 3.0], 'mem2': [10.0, 20.0, 30.0], 'mem3': [140.0]}
+wrote ch17_python_trace.json (8268 bytes)</code></pre>
+
+  <div class="demo" id="demo-emu">
+    <div class="demo-title">PYTHON device: step through a real execution trace</div>
+    <div class="demo-desc">The kernel is <code>(a*b).sum()</code> with <code>a=[1,2,3]</code>, <code>b=[10,20,30]</code>, compiled with <code>NOOPT=1</code> so the
+    reduction stays a loop. The left column is the real pickled UOp list; the yellow line is the program counter, blue lines are the current
+    UOp's sources. Watch the PC jump from <code>END</code> back to <code>RANGE</code> three times and the accumulator (a <code>REG</code> buffer) grow
+    0 → 10 → 50 → 140. Data: <code>data/ch17_python_trace.json</code>, captured with the emulator's own <code>TRACE=1</code> hook.</div>
+    <div id="emu-stepper"></div>
+    <div class="ch17-emu">
+      <div class="ch17-uops" id="emu-uops"></div>
+      <div>
+        <div class="ch17-vals" id="emu-vals"></div>
+        <div class="ch17-memgrid" id="emu-mem"></div>
+        <div style="margin-top:10px;font-size:13px;color:var(--dim)" id="emu-loop"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="quiz" data-answer="2">
+    <div class="q">In the trace, uop 21 is <code>MULACC</code> with sources <code>[15, 17, 20]</code>. Which values does it see on the second loop iteration?</div>
+    <button class="opt"><code>[1.0], [10.0], [0.0]</code></button>
+    <button class="opt"><code>[2.0], [20.0], [0.0]</code></button>
+    <button class="opt"><code>[2.0], [20.0], [10.0]</code></button>
+    <div class="explain">15 and 17 are the loads of <code>a[1]</code>, <code>b[1]</code>; 20 is the load of the accumulator, which already holds
+    <code>1*10 = 10</code> from iteration 1. MULACC computes <code>2*20+10 = 50</code> and STORE 22 writes it back. Step the demo to pc=21 a second time
+    to confirm.</div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="hcq"><span class="sec">17.10</span>HCQ: hardware command queues, as UOps</h2>
+  <p>On a GPU the expensive part of launching a kernel isn't the kernel — it's the driver. Classic stacks go
+  <em>Python → runtime library (libcuda/HIP) → kernel driver ioctl → GPU</em> for every launch. tinygrad's AMD, NV and QCOM backends instead talk to
+  the GPU from <b>user space</b>: they map the GPU's command ring and doorbell into the process (via the kernel driver's KFD/nvidia ioctls, or even
+  directly over PCI — see <code>KFDIface</code>/<code>PCIIface</code> in <code>ops_amd.py</code>, <code>NVKIface</code>/<code>PCIIface</code> in
+  <code>ops_nv.py</code>), write packets themselves (AMD PM4/AQL, NVIDIA QMD/GPFIFO), and ring the doorbell. Synchronization is by
+  <b>signals</b>: 64-bit memory words the GPU writes and the CPU (or another queue) waits on.</p>
+  <p>In this version that machinery is expressed <b>in UOps</b> (<a class="src" data-path="tinygrad/runtime/support/hcq2.py" data-line="540">hcq_compile</a>):</p>
+  <ol>
+    <li><b>prep</b> — <code>pm_unwrap_multi</code> splits multi-device CALLs into one per device with <code>_device_num</code> bound;
+      <code>pm_insert_copy_staging</code> inserts host staging buffers for copies that can't go peer-to-peer.</li>
+    <li><b>batch</b> — <a class="src" data-path="tinygrad/runtime/support/hcq2.py" data-line="318">sched_batches</a> groups consecutive HCQ calls and
+      assigns each a queue (<code>COMPUTE:0</code> for kernels, <code>COPY:n</code> for copies). A <code>DepsTracker</code> computes read/write overlaps between
+      buffer byte ranges so a call waits only for the calls it truly depends on: <code>wait</code>/<code>store</code> (signal) instructions are inserted
+      between queues, <code>exec_barrier</code> within a queue.</li>
+    <li><b>encode</b> — each backend's <code>HWQueue</code> subclass (<code>AMDComputeQueue</code>, <code>NVComputeQueue</code>, <code>NullQueue</code>…) turns
+      every instruction into bytes of a command buffer (<code>HWQueue.q</code> appends words; values not known until run time become <em>patches</em>),
+      and <code>submit</code> writes the ring/doorbell. The CUDA, CL and Metal backends "encode" into <em>calls of their driver API</em> instead
+      (<code>ccall(cuda.cuLaunchKernel, …)</code>).</li>
+    <li><b>lower + compile</b> — the result is one kernel-like <code>SINK</code> named <code>hcq_submit</code> that is compiled for <code>HCQ_RUNTIME_DEV</code>
+      (default <code>CPU:LLVM</code>) like any other kernel.</li>
+    <li><b>link</b> — <code>hcq_link</code> turns <code>ALLOC</code>s into real Buffers and <code>GETADDR</code>s into constant addresses, pre-writing everything
+      that is known at link time into the command buffers so the per-run work is minimal.</li>
+  </ol>
+  <p>The CPU then runs <code>hcq_submit</code>: wait for the previous run (fence on the timeline), patch the few run-time words (input addresses,
+  variables), ring doorbells, bump the timeline. No Python per kernel. You can see this without a GPU on the <b>NULL</b> device, whose queue writes
+  command words and whose "program" only emulates 1 µs timestamps:</p>
+  <div class="codecap"><b>examples/17_hcq_null.py</b> — run with <code>DEV=NULL python3 examples/17_hcq_null.py</code></div>
+  <pre><code class="language-python" data-file="examples/17_hcq_null.py"># Chapter 17 — HCQ ("hardware command queue") lowering, observed on the NULL device (no GPU needed).
+# run: DEV=NULL python3 examples/17_hcq_null.py
+# On HCQ devices (AMD, NV, QCOM, CUDA, HIP, NULL, METAL, CL) a run of CALLs is batched into ONE host program,
+# "hcq_submit", that fences, writes command buffers, rings the doorbell and bumps the timeline. That host program
+# is itself a UOp kernel, compiled for HCQ_RUNTIME_DEV (default CPU:LLVM) and called like any other kernel.
+from tinygrad import Tensor, Context
+from tinygrad.uop.ops import Ops
+from tinygrad.device import HCQ_DEVS
+from tinygrad.engine.realize import compile_linear
+
+print("HCQ_DEVS =", sorted(HCQ_DEVS))
+with Context(DEV="NULL"):
+  a, b = Tensor.empty(16), Tensor.empty(16)
+  lin = ((a + b) * 2).sum().schedule_linear()
+  print("scheduled:", [(c.body.op.name, c.body.arg.name) for c in lin.src])
+
+  cl = compile_linear(lin)          # lower_and_compile, then hcq_compile batches the calls
+  for x in cl.src:
+    call = x.without_after
+    info = call.arg.aux
+    print("compiled entry:", call.body.op.name, call.body.src[0].arg.name, "| aux =", type(info).__name__)
+    print("  queues on devices:", info.device)
+    for dev, name, est, stamps, key, bufs, io in info.kernels: print(f"  enqueues kernel {name!r} on {dev}  (outs,ins)={io}")
+    print("  host program target:", call.body.arg.target)
+    print("  host program source (LLVM IR, first 30 lines):")
+    print("\n".join("    " + l for l in call.body.src[2].arg.splitlines()[:30]))</code></pre>
+  <pre class="output"><code data-out="17_hcq_null">HCQ_DEVS = ['AMD', 'CL', 'CUDA', 'HIP', 'METAL', 'NULL', 'NV', 'QCOM']
+scheduled: [('SINK', 'test')]
+compiled entry: PROGRAM hcq_submit | aux = HCQInfo
+  queues on devices: ('NULL',)
+  enqueues kernel 'r_16' on NULL  (outs,ins)=((0,), (1, 2))
+  host program target: CPU:LLVM:x86_64,native
+  host program source (LLVM IR, first 30 lines):
+    define void @hcq_submit(ptr %args) #0
+    {
+      %args_t = load { i8*, i64*, i64*, i8* }, ptr %args
+      %data0 = extractvalue { i8*, i64*, i64*, i8* } %args_t, 0
+      %data1 = extractvalue { i8*, i64*, i64*, i8* } %args_t, 1
+      %data2 = extractvalue { i8*, i64*, i64*, i8* } %args_t, 2
+      %data4 = extractvalue { i8*, i64*, i64*, i8* } %args_t, 3
+      %v2 = alloca { i64*, i64* }
+      %v11 = alloca { i8*, i8* }
+      %v0 = getelementptr inbounds i64, i64* %data2, i32 1
+      %v1 = load i64, i64* %v0, align 8
+      %v2_0 = getelementptr inbounds { i64*, i64* }, ptr %v2, i32 0, i32 0
+      store i64* %data1, ptr %v2_0
+      %v2_1 = getelementptr inbounds { i64*, i64* }, ptr %v2, i32 0, i32 1
+      store i64* %data2, ptr %v2_1
+      call void @fence_null(ptr %v2)
+      %v3 = getelementptr inbounds i64, i64* %data1, i32 0
+      store i64 0, i64* %v3, align 8
+      fence seq_cst
+      %v6 = getelementptr inbounds i64, i64* %data0, i32 10
+      %v7 = getelementptr inbounds i64, i64* %data0, i32 2
+      %v8 = add i64 %v1, 1
+      store i64 %v8, i64* %v6, align 8
+      store i64 %v1, i64* %v7, align 8
+      %v11_0 = getelementptr inbounds { i8*, i8* }, ptr %v11, i32 0, i32 0
+      store i8* %data0, ptr %v11_0
+      %v11_1 = getelementptr inbounds { i8*, i8* }, ptr %v11, i32 0, i32 1
+      store i8* %data4, ptr %v11_1
+      call void @null_submit(ptr %v11)
+      %v12 = getelementptr inbounds i64, i64* %data1, i32 2</code></pre>
+  <p>Read the IR: <code>call void @fence_null(...)</code> waits for the previous submission, the <code>store</code>s into <code>%data0</code> are patches of the
+  command buffer, <code>call void @null_submit(...)</code> writes the doorbell, and the final stores bump the timeline/slots. With
+  <code>DEBUG=3</code> the DEBUG line for <code>hcq_submit</code> itself is printed in addition to the per-kernel lines.</p>
+
+  <div class="demo ch17-hcq" id="demo-hcq">
+    <div class="demo-title">Queues, signals and the timeline</div>
+    <div class="demo-desc">A conceptual animation of one batch on an HCQ device: two kernels on the compute queue and a copy on a copy queue that
+    the second kernel depends on. Press play: the host program writes command buffers, rings doorbells, the queues execute, signals fire,
+    the dependent kernel waits, and the timeline advances so <code>synchronize()</code> can return.</div>
+    <div id="hcq-stepper"></div>
+    <div id="hcq-svg"></div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="tour"><span class="sec">17.11</span>A tour of the runtimes</h2>
+  <table>
+    <tr><th>backend</th><th>allocator</th><th>renderers (→ compiler)</th><th>runtime</th><th>how a launch happens</th></tr>
+    <tr><td><a class="src" data-path="tinygrad/runtime/ops_cpu.py" data-line="59">CPU</a></td><td><code>HostAllocator</code> (mmap)</td><td>Clang (clang -c), CPULLVM, LVP (Mesa llvmpipe NIR), X86 (direct asm)</td><td><code>CPUProgram</code></td><td>ctypes call into ELF loaded by <code>jit_loader</code>; also a <em>remote</em> CPU over a socket (<code>CPU:host:port</code>)</td></tr>
+    <tr><td><a class="src" data-path="tinygrad/runtime/ops_python.py" data-line="187">PYTHON</a></td><td><code>HostAllocator</code></td><td><code>PythonRenderer</code> (pickle)</td><td><code>PythonProgram</code></td><td>interprets UOps; can emulate tensor cores of METAL/AMD/CUDA via <code>DEV=PYTHON::sm_80</code> etc.</td></tr>
+    <tr><td><a class="src" data-path="tinygrad/runtime/ops_null.py" data-line="64">NULL</a></td><td><code>NullAllocator</code> (fake addresses)</td><td>every renderer</td><td><code>NullProgram</code></td><td>HCQ path, does no compute — for measuring scheduler/codegen overhead and testing HCQ lowering</td></tr>
+    <tr><td><a class="src" data-path="tinygrad/runtime/ops_amd.py" data-line="815">AMD</a></td><td><code>AMDAllocator</code></td><td>HIP-clang / LLVM / AMD asm</td><td>HCQ</td><td>PM4 or AQL packets into a user-mapped ring + doorbell (KFD ioctl or PCI/USB "AM" driver)</td></tr>
+    <tr><td><a class="src" data-path="tinygrad/runtime/ops_nv.py" data-line="560">NV</a></td><td><code>NVAllocator</code></td><td>CUDA C (NVRTC) / PTX</td><td>HCQ</td><td>QMDs + GPFIFO entries, doorbell token (nvidia ioctl or PCI)</td></tr>
+    <tr><td><a class="src" data-path="tinygrad/runtime/ops_cuda.py" data-line="89">CUDA</a></td><td><code>CUDAAllocator</code> (cuMemAlloc)</td><td>CUDA/PTX/NVCC</td><td>HCQ</td><td>the host program <code>ccall</code>s <code>cuLaunchKernel</code>, <code>cuMemcpyAsync</code>, <code>cuStreamWaitValue64</code></td></tr>
+    <tr><td><a class="src" data-path="tinygrad/runtime/ops_metal.py" data-line="197">METAL</a></td><td><code>MetalAllocator</code></td><td>Metal</td><td>HCQ</td><td>indirect command buffers built and committed via objc messages from the host program</td></tr>
+    <tr><td><a class="src" data-path="tinygrad/runtime/ops_cl.py" data-line="95">CL</a></td><td><code>CLAllocator</code></td><td>OpenCL C</td><td>HCQ</td><td><code>clSetKernelArg</code>/<code>clEnqueueNDRangeKernel</code> calls</td></tr>
+    <tr><td><a class="src" data-path="tinygrad/runtime/ops_webgpu.py" data-line="166">WEBGPU</a></td><td><code>WebGpuAllocator</code></td><td>WGSL</td><td><code>WebGPUProgram</code></td><td>classic Program via Dawn</td></tr>
+    <tr><td><a class="src" data-path="tinygrad/runtime/ops_disk.py" data-line="13">DISK</a></td><td><code>DiskAllocator</code> (mmap of a file)</td><td>none</td><td>none</td><td>only copies in/out (safetensors loading); can batch reads with io_uring</td></tr>
+  </table>
+  <p>Note <code>HCQ_DEVS = {AMD, NV, QCOM, CUDA, HIP, NULL, METAL, CL}</code> and <code>HOST_DEVS = {CPU, PYTHON}</code> at the top of
+  <a class="src" data-path="tinygrad/device.py" data-line="18">device.py</a>. CPU kernels are launched directly by <code>exec_kernel</code>; HCQ device
+  kernels are launched by the batched host program.</p>
+
+  <!-- ============================================================ -->
+  <h2 id="debug2"><span class="sec">17.12</span>GlobalCounters and the DEBUG=2 line</h2>
+  <p>After every call, <a class="src" data-path="tinygrad/engine/realize.py" data-line="61">track_stats</a> updates
+  <a class="src" data-path="tinygrad/helpers.py" data-line="296">GlobalCounters</a> (<code>kernel_count</code>, <code>global_ops</code>, <code>global_mem</code>,
+  <code>time_sum_s</code>; <code>mem_used</code> is maintained by Buffer and never reset) and, at <code>DEBUG≥2</code>, prints one line per kernel:</p>
+  <pre><code class="language-python" data-src="tinygrad/engine/realize.py:89-101">    estimates = estimate_uop(kcall) if stats is None else stats[1]
+    op_est, mem_est, lds_est = (sym_infer(x, ctx.var_vals) for x in (estimates.ops, estimates.mem, estimates.lds))
+    key = kcall.body.key if stats is None else stats[2]
+    header_color = 'magenta' if ctx.jit else ('green' if key not in first_run_cache else None)
+    ptm = colored(time_to_str(et, w=9), "yellow" if et &gt; 0.01 else None) if et is not None else ""
+    flops, membw, ldsbw = op_est/(et or 1e-20), mem_est/(et or 1e-20), lds_est/(et or 1e-20)
+    flops_str = f"{flops*1e-9:7.0f} GFLOPS" if flops &lt; 1e14 else colored(f"{flops*1e-12:7.0f} TFLOPS", 'green')
+    mem_str = f"{membw*1e-9:4.0f}|{ldsbw*1e-9:&lt;6.0f} GB/s" if membw &lt; 1e13 and ldsbw &lt; 1e15 else \
+      colored(f"{membw*1e-12:4.0f}|{ldsbw*1e-12:&lt;6.0f} TB/s", 'green')
+    print(f"{colored(f'*** {device[:7]:7s} {GlobalCounters.kernel_count:4d}', header_color)}"+
+      f" {ansipad(display_name, 46)} arg {len(bufs):2d} mem {GlobalCounters.mem_used/1e9:6.2f} GB"+
+      ("" if et is None else f" tm {ptm}/{GlobalCounters.time_sum_s*1e3:9.2f}ms ({flops_str} {mem_str})"))
+    first_run_cache.add(key)</code></pre>
+  <div class="codecap"><b>examples/17_debug2.py</b> — run with <code>DEV=CPU DEBUG=2 python3 examples/17_debug2.py</code></div>
+  <pre><code class="language-python" data-file="examples/17_debug2.py"># Chapter 17 — reading the DEBUG=2 per-kernel line, and the GlobalCounters behind it.
+# run: DEV=CPU DEBUG=2 python3 examples/17_debug2.py
+from tinygrad import Tensor
+from tinygrad.helpers import GlobalCounters
+
+a = Tensor.rand(256, 256).realize()
+b = Tensor.rand(256, 256).realize()
+
+GlobalCounters.reset()            # kernel_count / global_ops / global_mem / time_sum_s back to 0 (mem_used is never reset)
+c = (a @ b).relu().sum(axis=1)    # one fused matmul+relu+sum kernel
+c.realize()
+print(f"GlobalCounters: kernel_count={GlobalCounters.kernel_count} global_ops={GlobalCounters.global_ops:,} "
+      f"global_mem={GlobalCounters.global_mem:,} B  time_sum_s={GlobalCounters.time_sum_s*1e3:.3f} ms  mem_used={GlobalCounters.mem_used:,} B")
+print(f"=&gt; {GlobalCounters.global_ops/GlobalCounters.time_sum_s*1e-9:.1f} GFLOPS, 256*256*256*2 = {256*256*256*2:,} FLOPs for the matmul alone")
+
+c2 = (a @ b).relu().sum(axis=1)   # same graph again: schedule cache hit, compile cache hit, the line is no longer green
+c2.realize()</code></pre>
+  <pre class="output"><code data-out="17_debug2">opened device PYTHON from pid:18459
+opened device CPU from pid:18459
+scheduled     4 kernels in   110.06 ms | CACHE MISS 973799fe |     439 uops in cache | /home/user/workspace/tinygrad-guide/examples/17_debug2.py:6
+compiling E_32768_2                               : 100%|█| 2/2 [00:00&lt;00:00,  4.00it/s]
+compiling E                                       : 100%|█| 1/1 [00:00&lt;00:00, 12.74it/s]
+compiling r_256_256_64_4                          : 100%|█| 1/1 [00:00&lt;00:00,  7.35it/s]
+*** PYTHON     1 copy        8 B,     CPU &lt;- PYTHON             arg  2 mem   0.00 GB tm   1590.41us/     1.59ms (      0 GFLOPS    0|0      GB/s)
+*** PYTHON     2 copy        8 B,     CPU &lt;- PYTHON             arg  2 mem   0.00 GB tm   7762.39us/     9.35ms (      0 GFLOPS    0|0      GB/s)
+*** CPU        3 E                                              arg  2 mem   0.00 GB tm     20.51us/     9.37ms (      0 GFLOPS    0|0      GB/s)
+*** CPU        4 E_32768_2                                      arg  3 mem   0.00 GB tm    186.85us/     9.56ms (     22 GFLOPS    1|1      GB/s)
+scheduled     3 kernels in    49.65 ms | CACHE MISS c988bc68 |     733 uops in cache | /home/user/workspace/tinygrad-guide/examples/17_debug2.py:7
+*** CPU        5 E                                              arg  1 mem   0.00 GB tm      5.74us/     9.57ms (      0 GFLOPS    0|0      GB/s)
+*** PYTHON     6 copy        8 B,     CPU &lt;- PYTHON             arg  2 mem   0.00 GB tm    736.88us/    10.30ms (      0 GFLOPS    0|0      GB/s)
+*** CPU        7 E_32768_2                                      arg  3 mem   0.00 GB tm    950.91us/    11.25ms (      4 GFLOPS    0|0      GB/s)
+*** CPU        1 r_256_256_64_4                                 arg  3 mem   0.00 GB tm   5481.90us/     5.48ms (      6 GFLOPS    0|15     GB/s)
+GlobalCounters: kernel_count=1 global_ops=33,751,040 global_mem=525,312 B  time_sum_s=5.482 ms  mem_used=525,376 B
+=&gt; 6.2 GFLOPS, 256*256*256*2 = 33,554,432 FLOPs for the matmul alone
+*** CPU        2 r_256_256_64_4                                 arg  3 mem   0.00 GB tm   5667.65us/    11.15ms (      6 GFLOPS    0|15     GB/s)</code></pre>
+  <div class="demo" id="demo-dbg">
+    <div class="demo-title">DEBUG=2 line decoder</div>
+    <div class="demo-desc">Pick a real line from the output above, then hover (or tap) any column. The decoder parses the line with the exact
+    format string of <code>track_stats</code>.</div>
+    <div class="controls" id="dbg-pick"></div>
+    <div class="ch17-dbg" id="dbg-line"></div>
+    <div class="ch17-explain" id="dbg-explain">hover a column…</div>
+  </div>
+  <p>Some things the decoder makes obvious: the device column for a copy is the call's device (here the <em>source</em>, PYTHON — the random
+  seed lives there), the counter is cumulative since the last <code>GlobalCounters.reset()</code> (the example reset it, so the matmul is kernel 1),
+  6 GFLOPS is the clang-compiled kernel with the default hand-coded optimizations, and "0|15 GB/s" says the kernel moved 0.5 MB of unique memory
+  (≈0.1 GB/s, rounds to 0) but issued 15 GB/s worth of loads — the reuse that makes matmul compute-bound.</p>
+
+  <div class="quiz" data-answer="3">
+    <div class="q">A line reads <code>*** CUDA  12 r_64_32_4  arg 3 mem 1.20 GB tm 50.00us/ 3.10ms ( 4000 GFLOPS 100|900 GB/s)</code>. Which statement is FALSE?</div>
+    <button class="opt">It is the 12th kernel since the last <code>GlobalCounters.reset()</code>.</button>
+    <button class="opt">The process holds about 1.2 GB of live (non-cached) device buffers.</button>
+    <button class="opt">The estimated FLOP count of this kernel is about 4000·10⁹ × 50·10⁻⁶ = 200 MFLOP.</button>
+    <button class="opt">3.10 ms is the time of this kernel.</button>
+    <div class="explain">The number after the slash is <code>GlobalCounters.time_sum_s</code>: the running total of all timed kernels since reset. The
+    kernel itself took 50 µs.</div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="again"><span class="sec">17.13</span>Hammer it again: edge cases and what breaks</h2>
+  <ul>
+    <li><b>Unbound variables.</b> A kernel with a symbolic size launched without a value for its Variable fails in <code>exec_kernel</code> with
+      <code>RuntimeError: unbound Variable 'n'</code> — values come from <code>var_vals</code>, bound per call (<a href="18-jit.html">Chapter 18</a>).</li>
+    <li><b>NULL can't read back.</b> <code>NullAllocator._copyout</code> panics with "no copyout on NULL" unless <code>NULL_ALLOW_COPYOUT=1</code>: the NULL
+      device never computes, so there is nothing true to read.</li>
+    <li><b>Workers can't open devices.</b> Codegen runs with <code>ALLOW_DEVICE_USAGE=0</code> (<code>do_to_program</code> is decorated with it, and so are
+      pool workers): <code>Device["CUDA"]</code> inside a compile asserts. Only DISK, NPY and PYTHON are always allowed.</li>
+    <li><b>Asynchrony is invisible on CPU, not on GPU.</b> <code>exec_kernel</code> synchronizes host devices before launching (<code>HOST_DEVS</code>),
+      <code>as_memoryview</code> synchronizes before copying out, and the allocator's <code>freed_at</code> check prevents reuse of in-flight buffers. On a GPU
+      without <code>DEBUG=2</code>, a kernel's time is <em>not</em> measured because <code>wait=False</code>.</li>
+    <li><b>Same kernel, two devices.</b> <code>runtime_cache</code> is keyed by <code>(program key, device)</code>: <code>CPU</code> and <code>CPU:1</code> each load
+      their own copy of the code, but compile it only once (<code>to_program_cache</code> doesn't care about the device index).</li>
+  </ul>
+  <div class="quiz" data-answer="1">
+    <div class="q">You run the same model twice in two separate Python processes on CPU. In the second process, which caches can save work?</div>
+    <button class="opt">All four: schedule cache, to_program cache, disk compile cache and runtime cache.</button>
+    <button class="opt">Only the disk compile cache (and the schedule cache if <code>SCACHE≥2</code>); the others are in-memory dicts.</button>
+    <button class="opt">None — caches are per-process.</button>
+    <div class="explain"><code>to_program_cache</code> and <code>runtime_cache</code> are module-level dicts. <code>compile_cached</code> uses sqlite at
+    <code>CACHEDB</code>, so clang is skipped, but the Python-side codegen (optimize, lower, linearize, render) still runs.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">On an AMD GPU, how many Python-level function calls does it take to launch a batch of 50 kernels in this version?</div>
+    <button class="opt">About one: <code>exec_hcq</code> calls the compiled <code>hcq_submit</code> host program, which writes all 50 launches' command words and rings the doorbell.</button>
+    <button class="opt">50 calls to <code>AMDProgram.__call__</code>.</button>
+    <button class="opt">50 ioctls.</button>
+    <div class="explain">The batch was encoded into command buffers at compile/link time; only run-time patches (input addresses, variables) and the
+    doorbell write happen per run, inside native code.</div>
+  </div>
+
+  <div class="summary-box"><h3>Chapter summary</h3><ul>
+    <li><code>Device[...]</code> lazily imports <code>runtime/ops_x.py</code> and caches one <code>XDevice</code> per canonical name (<code>"CPU:0" ≡ "CPU"</code>). <code>DEV</code> is a <code>Target</code>: device, renderer, arch, interface.</li>
+    <li>A device is <code>Compiled(device, Allocator, [Renderer…], Program)</code>; the compiler belongs to the renderer.</li>
+    <li><code>Buffer</code> = lazy handle; storage appears at <code>ensure_allocated()</code>; views are base+offset; data moves via <code>copy_from</code> (a 1-call STORE schedule) and <code>as_memoryview</code>.</li>
+    <li><code>Allocator.free</code> caches storage per <code>(size, spec)</code>; <code>alloc</code> reuses it only after the device timeline passed <code>freed_at</code>; OOM flushes the cache and retries.</li>
+    <li><code>run_linear</code> = <code>compile_linear</code> (dedup + parallel <code>to_program</code> in a spawn pool, then <code>hcq_compile</code>) → <code>link_linear</code> → <code>pm_exec</code> dispatch (<code>exec_copy</code> / <code>exec_kernel</code> / <code>exec_hcq</code> / <code>exec_validate</code>).</li>
+    <li>CPU code is a clang ELF object linked in-process by <code>jit_loader</code>, made executable with <code>mprotect</code>, called through one struct-of-args pointer.</li>
+    <li>The PYTHON device interprets linearized UOps with a program counter, per-lane value lists and memoryviews — the reference semantics.</li>
+    <li>HCQ devices batch calls into a compiled host program (<code>hcq_submit</code>) that writes command buffers, waits/signals and rings doorbells.</li>
+    <li>The DEBUG=2 line: device, cumulative kernel #, name, #args, live memory, kernel time / running total, GFLOPS, unique|load-store GB/s.</li>
+  </ul></div>
+</main>
+</div>
+<script>
+const G = Guide, el = G.el;
+
+// ---------------- demo 1: architecture explorer ----------------
+(function () {
+  const S = (p, l) => `<a class="src" href="${G.src(p, l)}" target="_blank">${p}:${l}</a>`;
+  const BK = {
+    CPU: { dev: ["CPUDevice", "tinygrad/runtime/ops_cpu.py", 59], alloc: ["HostAllocator", "tinygrad/device.py", 300], ren: ["ClangRenderer", "tinygrad/renderer/cstyle.py", 294],
+      comp: ["ClangCompiler", "tinygrad/runtime/support/compiler_cpu.py", 5], prog: ["CPUProgram", "tinygrad/runtime/ops_cpu.py", 15],
+      note: "Host device: exec_kernel calls CPUProgram directly. Other renderers: CPULLVMRenderer, LVPRenderer, X86Renderer (DEV=CPU:LLVM, …)." },
+    PYTHON: { dev: ["PythonDevice", "tinygrad/runtime/ops_python.py", 187], alloc: ["HostAllocator", "tinygrad/device.py", 300], ren: ["PythonRenderer", "tinygrad/runtime/ops_python.py", 165],
+      comp: ["PythonCompiler", "tinygrad/runtime/ops_python.py", 162], prog: ["PythonProgram", "tinygrad/runtime/ops_python.py", 47],
+      note: "render() = base64(pickle(uops)); compile() = b64decode; the Program unpickles and interprets the UOps." },
+    NULL: { dev: ["NullDevice", "tinygrad/runtime/ops_null.py", 64], alloc: ["NullAllocator", "tinygrad/runtime/ops_null.py", 52], ren: ["NullRenderer", "tinygrad/runtime/ops_null.py", 11],
+      comp: ["Compiler (identity)", "tinygrad/device.py", 330], prog: ["NullProgram", "tinygrad/runtime/ops_null.py", 41],
+      note: "In HCQ_DEVS: kernels are enqueued by NullQueue in a batched hcq_submit host program. Nothing computes; timestamps are emulated." },
+    CUDA: { dev: ["CUDADevice", "tinygrad/runtime/ops_cuda.py", 89], alloc: ["CUDAAllocator", "tinygrad/runtime/ops_cuda.py", 64], ren: ["CUDARenderer", "tinygrad/renderer/cstyle.py", 424],
+      comp: ["NVRTCCompiler", "tinygrad/runtime/support/compiler_cuda.py", 46], prog: ["None (HCQ)", "tinygrad/runtime/ops_cuda.py", 100],
+      note: "runtime=None: launches are ccalls of cuLaunchKernel inside the hcq_submit host program (cuda_submit / pm_cuda)." },
+    AMD: { dev: ["AMDDevice", "tinygrad/runtime/ops_amd.py", 815], alloc: ["AMDAllocator", "tinygrad/runtime/ops_amd.py", 538], ren: ["HIPRenderer / AMD asm", "tinygrad/renderer/cstyle.py", 509],
+      comp: ["HIPCompiler", "tinygrad/runtime/support/compiler_amd.py", 79], prog: ["None (HCQ)", "tinygrad/runtime/ops_amd.py", 87],
+      note: "User-space driver: AMDComputeQueue encodes PM4 packets (or AQL), amd_push writes the ring + doorbell. Interfaces: KFD, PCI, USB." },
+  };
+  const boxes = [
+    { id: "reg", x: 14, y: 20, w: 236, h: 54, c: "#9A72AC", t: () => "Device  (_Device)", s: () => "registry · canonicalize · DEFAULT" },
+    { id: "dev", x: 340, y: 20, w: 340, h: 54, c: "#58C4DD", t: (b) => BK[b].dev[0] + "(Compiled)", s: () => "device · arch · timeline · synchronize()" },
+    { id: "alloc", x: 20, y: 150, w: 200, h: 62, c: "#F0AC5F", t: (b) => BK[b].alloc[0], s: () => "alloc · free · LRU cache" },
+    { id: "ren", x: 260, y: 150, w: 200, h: 62, c: "#5CD0B3", t: (b) => BK[b].ren[0], s: () => "render(uops) → source" },
+    { id: "comp", x: 260, y: 262, w: 200, h: 62, c: "#83C167", t: (b) => BK[b].comp[0], s: () => "compile_cached(src) → bytes" },
+    { id: "prog", x: 490, y: 150, w: 200, h: 62, c: "#FC6255", t: (b) => BK[b].prog[0], s: () => "__call__(*bufs, global, local)" },
+    { id: "buf", x: 20, y: 390, w: 200, h: 62, c: "#F0AC5F", t: () => "Buffer", s: () => "lazy · views · copy_from" },
+    { id: "run", x: 490, y: 390, w: 200, h: 62, c: "#9A72AC", t: () => "run_linear", s: () => "compile → link → pm_exec" },
+  ];
+  const arrows = [["reg", "dev", "Device[x]"], ["dev", "alloc", ""], ["dev", "ren", ""], ["ren", "comp", ".compiler"], ["dev", "prog", "runtime()"], ["buf", "alloc", "alloc()"], ["run", "prog", "launch"], ["run", "comp", "lower_and_compile"], ["run", "buf", "ensure_allocated"]];
+  const INFO = {
+    reg: (b) => `<h4>_Device (singleton <code>Device</code>)</h4>${S("tinygrad/device.py", 23)}<ul>
+      <li><span class="meth">_devices</span> — names from runtime/ops_*.py (no imports)</li>
+      <li><span class="meth">canonicalize(d)</span> — "cpu:0" → "CPU"</li>
+      <li><span class="meth">__getitem__(ix)</span> → <span class="meth">get_class</span> imports ops_x, finds XDevice, instantiates once</li>
+      <li><span class="meth">DEFAULT</span> — DEV.device or first of ALL_DEVICES that opens</li>
+      <li><span class="meth">_opened_devices</span> — finalized at exit (atexit)</li></ul>`,
+    dev: (b) => `<h4>${BK[b].dev[0]}</h4>${S(BK[b].dev[1], BK[b].dev[2])} · base ${S("tinygrad/device.py", 369)}<ul>
+      <li><span class="meth">__init__(device, allocator, renderers, runtime, arch)</span></li>
+      <li><span class="meth">renderer</span> — <span class="meth">_select_renderer()</span> by DEV's renderer field</li>
+      <li><span class="meth">compiler</span> = renderer.compiler</li>
+      <li><span class="meth">runtime(elf, links)</span> → runtime_t(self, elf, links)</li>
+      <li><span class="meth">timeline</span> (16B host buffer) · <span class="meth">synchronize()</span> waits timeline[0] ≥ timeline[1]</li>
+      <li><span class="meth">pm_encode / pm_lower / pm_link</span> — HCQ hooks (class-level PatternMatchers)</li></ul><p>${BK[b].note}</p>`,
+    alloc: (b) => `<h4>${BK[b].alloc[0]}</h4>${S(BK[b].alloc[1], BK[b].alloc[2])} · base ${S("tinygrad/device.py", 249)}<ul>
+      <li><span class="meth">alloc(size, options)</span> — pop from <span class="meth">cache[(size, options)]</span> if timeline passed freed_at, else <span class="meth">_alloc</span>; on OOM <span class="meth">free_cache()</span> + retry</li>
+      <li><span class="meth">free(storage, size, options)</span> — append to cache (LRU=1) or <span class="meth">do_free</span></li>
+      <li>backend: <span class="meth">_alloc _free _copyin _copyout _map _unmap _offset</span></li></ul>`,
+    ren: (b) => `<h4>${BK[b].ren[0]}</h4>${S(BK[b].ren[1], BK[b].ren[2])} · base ${S("tinygrad/renderer/__init__.py", 63)}<ul>
+      <li><span class="meth">render(uops) → str</span> (or <span class="meth">asm()</span> for ISA renderers)</li>
+      <li><span class="meth">target</span> — Target(device, renderer, arch)</li>
+      <li><span class="meth">compiler</span> — owns the Compiler</li>
+      <li>codegen hooks: <span class="meth">code_for_op</span>, tensor_cores, supported_dtypes …</li></ul><p>Chapter 16 covers rendering.</p>`,
+    comp: (b) => `<h4>${BK[b].comp[0]}</h4>${S(BK[b].comp[1], BK[b].comp[2])} · base ${S("tinygrad/device.py", 330)}<ul>
+      <li><span class="meth">compile(src) → bytes</span></li>
+      <li><span class="meth">compile_cached(src)</span> — sqlite disk cache under <span class="meth">cachekey</span> (CCACHE=1)</li>
+      <li><span class="meth">disassemble(lib)</span> — DEBUG≥7</li>
+      <li><span class="meth">server(...)/compile_server</span> — out-of-process compile servers</li></ul>`,
+    prog: (b) => `<h4>${BK[b].prog[0]}</h4>${S(BK[b].prog[1], BK[b].prog[2])} · base ${S("tinygrad/device.py", 365)}<ul>
+      <li><span class="meth">__init__(dev, TinyELF, links)</span> — load the binary</li>
+      <li><span class="meth">__call__(*args, global_size, local_size, wait) → seconds|None</span></li></ul><p>Programs are created by <span class="meth">get_runtime</span> and cached in <span class="meth">runtime_cache[(prg.key, device)]</span>.</p><p>${BK[b].note}</p>`,
+    buf: () => `<h4>Buffer</h4>${S("tinygrad/device.py", 111)}<ul>
+      <li>fields: device, nbytes, options (BufferSpec), offset, _base, _storage</li>
+      <li><span class="meth">allocate() / ensure_allocated() / deallocate()</span></li>
+      <li><span class="meth">view(nbytes, offset)</span> — shares the base's storage</li>
+      <li><span class="meth">copy_from(src)</span> — runs a 1-call STORE LINEAR</li>
+      <li><span class="meth">as_memoryview()</span> — synchronize + copy out</li></ul><p>MultiBuffer (${S("tinygrad/device.py", 98)}) = one Buffer per device.</p>`,
+    run: () => `<h4>run_linear</h4>${S("tinygrad/engine/realize.py", 284)}<ul>
+      <li><span class="meth">compile_linear</span> → <span class="meth">lower_and_compile</span> (parallel to_program) + <span class="meth">hcq_compile</span></li>
+      <li><span class="meth">link_linear</span> → <span class="meth">hcq_link</span></li>
+      <li>for each CALL: <span class="meth">pm_exec.rewrite(call, ExecContext)</span> → exec_copy / exec_kernel / exec_hcq / exec_validate</li>
+      <li><span class="meth">track_stats</span> → GlobalCounters, DEBUG=2 line</li></ul>`,
+  };
+  let backend = "CPU", sel = "dev";
+  const bar = G.$("#arch-backends");
+  Object.keys(BK).forEach((b) => bar.append(el("button", { onclick: () => { backend = b; draw(); }, "data-b": b }, b)));
+  function center(b) { return [b.x + b.w / 2, b.y + b.h / 2]; }
+  function draw() {
+    G.$$("button", bar).forEach((x) => x.classList.toggle("active", x.dataset.b === backend));
+    const svg = el("svg", { viewBox: "0 0 700 470" });
+    svg.append(el("defs", {}, el("marker", { id: "a17", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: "auto-start-reverse" }, el("path", { d: "M0,0 L10,5 L0,10 z", fill: "#7b8590" }))));
+    svg.append(el("rect", { x: 8, y: 128, width: 692, height: 212, rx: 10, fill: "none", stroke: "#58C4DD", "stroke-dasharray": "5 4", opacity: .5 }));
+    svg.append(el("text", { x: 20, y: 332, "text-anchor": "start", fill: "#58C4DD", "font-size": 11, "font-family": "monospace" }, "plugged into Compiled"));
+    const byId = Object.fromEntries(boxes.map((b) => [b.id, b]));
+    for (const [a, b, lab] of arrows) {
+      const A = byId[a], B = byId[b];
+      let [x1, y1] = center(A), [x2, y2] = center(B);
+      // clip to box edges
+      const clip = (bx, x, y, tx, ty) => { const dx = tx - x, dy = ty - y; const sx = dx ? (bx.w / 2) / Math.abs(dx) : 1e9, sy = dy ? (bx.h / 2) / Math.abs(dy) : 1e9; const s = Math.min(sx, sy); return [x + dx * s, y + dy * s]; };
+      [x1, y1] = clip(A, x1, y1, x2, y2); [x2, y2] = clip(B, x2, y2, x1, y1);
+      svg.append(el("line", { x1, y1, x2, y2, stroke: "#7b8590", "stroke-width": 1.4, "marker-end": "url(#a17)" }));
+      if (lab) svg.append(el("text", { x: (x1 + x2) / 2 + (Math.abs(y1 - y2) < 2 ? -14 : 4), y: (y1 + y2) / 2 - 5, "text-anchor": Math.abs(y1 - y2) < 2 ? "middle" : "start", fill: "#9aa3ad", "font-size": 10.5, "font-family": "monospace" }, lab));
+    }
+    for (const b of boxes) {
+      const g = el("g", { class: "box" + (b.id === sel ? " sel" : ""), onclick: () => { sel = b.id; draw(); } });
+      g.append(el("rect", { x: b.x, y: b.y, width: b.w, height: b.h, rx: 8, fill: b.c + "22", stroke: b.c, "stroke-width": 1.6 }));
+      g.append(el("text", { x: b.x + b.w / 2, y: b.y + 24, "text-anchor": "middle", fill: b.c, "font-size": 13.5, "font-weight": 700, "font-family": "monospace" }, b.t(backend)));
+      g.append(el("text", { x: b.x + b.w / 2, y: b.y + 43, "text-anchor": "middle", fill: "#c9d1d9", "font-size": 10.5, "font-family": "monospace" }, b.s(backend)));
+      svg.append(g);
+    }
+    const host = G.$("#arch-svg"); host.innerHTML = ""; host.append(svg);
+    G.$("#arch-panel").innerHTML = INFO[sel](backend);
+  }
+  draw();
+})();
+
+// ---------------- demo 2: life of a buffer ----------------
+(function () {
+  const out = G.$("[data-out='17_buffer_lifecycle']").textContent;
+  const addr = (out.match(/addr (0x[0-9a-f]+)/) || [, "0x7f…000"])[1];
+  const addr4 = "0x" + (BigInt(addr) + 4n).toString(16);
+  const steps = [
+    { caption: "<b>create</b> — <code>Buffer('CPU', 16)</code> stores device/nbytes/options. <code>_storage is None</code>: no memory exists yet.", code: 'b = Buffer("CPU", 16)', buf: { real: false }, mem: "none", cache: [], used: 0 },
+    { caption: "<b>allocate</b> — <code>allocator.alloc(16, BufferSpec())</code>: cache miss → <code>HostAllocator._alloc</code> mmaps 16 bytes. <code>mem_used += 16</code>.", code: "b.allocate()  # or ensure_allocated() right before a kernel uses it", buf: { real: true, addr }, mem: "alloc", cache: [], used: 16 },
+    { caption: "<b>copy in</b> — <code>b.copy_from(src)</code> builds <code>LINEAR(CALL(STORE(PARAM0, PARAM1), b, src))</code> and runs it; <code>exec_copy</code> sees two host views and does <code>dest.host[:] = src.host[:]</code>.", code: 'src = Buffer("PYTHON", 16, initial_value=struct.pack("4f", 1,2,3,4))\nb.copy_from(src)', buf: { real: true, addr }, mem: "data", vals: [1, 2, 3, 4], cache: [], used: 16 },
+    { caption: "<b>view</b> — <code>b.view(8, 4)</code> is a new Buffer with <code>_base=b, offset=4</code>. It shares storage: its address is <code>base+4</code> (allocator._offset). It never counts toward mem_used.", code: "v = b.view(8, 4); v.ensure_allocated()   # -> floats [1] and [2] = (2.0, 3.0)", buf: { real: true, addr, view: true }, mem: "data", vals: [1, 2, 3, 4], view: [1, 2], cache: [], used: 16 },
+    { caption: "<b>a kernel writes</b> — exec_kernel resolves the CALL args to Buffers, calls <code>ensure_allocated()</code> and passes <code>b._buf</code> (the address) in the args struct. The kernel writes in place (here: ×2).", code: "rt(b._buf, ..., global_size=(1,1,1), local_size=(1,1,1))", buf: { real: true, addr }, mem: "data", vals: [2, 4, 6, 8], cache: [], used: 16, hot: true },
+    { caption: "<b>copy out</b> — <code>as_memoryview()</code> synchronizes the device, then copies the host view into a fresh bytearray (or returns it directly with <code>allow_zero_copy=True</code>). This is what <code>.tolist()</code>/<code>.item()</code> end in.", code: 'struct.unpack("4f", b.as_memoryview())', buf: { real: true, addr }, mem: "data", vals: [2, 4, 6, 8], cache: [], used: 16, read: true },
+    { caption: "<b>free</b> — <code>deallocate()</code>: <code>mem_used -= 16</code> and <code>allocator.free(storage)</code> appends <code>(storage, freed_at)</code> to <code>cache[(16, BufferSpec())]</code>. The mmap is still alive.", code: "b.deallocate()   # also happens in Buffer.__del__", buf: { real: false }, mem: "cached", vals: [2, 4, 6, 8], cache: [[16, addr]], used: 0 },
+    { caption: "<b>re-allocate</b> — a new <code>Buffer('CPU', 16).allocate()</code> pops the cached storage: <b>same address</b>, no syscall. (Old bytes are still there — tinygrad never zeroes memory implicitly.)", code: 'c = Buffer("CPU", 16).allocate()   # c._buf == old address  -> True', buf: { real: true, addr, name: "c" }, mem: "data", vals: [2, 4, 6, 8], cache: [], used: 16 },
+    { caption: "<b>different size</b> — <code>Buffer('CPU', 32)</code> misses the cache (key is <code>(size, options)</code>) and really allocates. On OOM the allocator would <code>free_cache()</code> and retry once.", code: 'd = Buffer("CPU", 32).allocate()   # new address', buf: { real: true, addr, name: "c" }, mem: "data", vals: [2, 4, 6, 8], cache: [], used: 48, other: true },
+  ];
+  const mem = G.$("#life-mem");
+  for (let i = 0; i < 16; i++) mem.append(el("div", { class: "b" }, ""));
+  G.stepper("#life-stepper", steps, (i, s) => {
+    const b = s.buf;
+    G.$("#life-buf").innerHTML = `<div class="t">${b.name || "b"}: Buffer</div>device = 'CPU'<br>nbytes = 16<br>options = BufferSpec()<br>_storage = ${b.real ? `<span class="on">BufferStorage(buf=${b.addr})</span>` : '<span class="off">None</span>'}<br>is_allocated() = ${b.real ? '<span class="on">True</span>' : '<span class="off">False</span>'}` +
+      (b.view ? `<br><br><div class="t">v: Buffer (view)</div>_base = b, offset = 4, nbytes = 8<br>_buf = ${addr4}` : "") +
+      `<br><br>GlobalCounters.mem_used: +${s.used}${s.other ? " (16 + 32)" : ""}`;
+    G.$$(".b", mem).forEach((c, k) => {
+      c.className = "b" + (s.mem === "alloc" ? " alloc" : s.mem === "data" ? " data" : s.mem === "cached" ? " cached" : "") + (s.view && k >= 4 && k < 12 ? " view" : "");
+      c.textContent = s.vals && k % 4 === 0 ? s.vals[k / 4] : "";
+      c.style.transform = (s.hot || s.read) && s.vals ? "scale(1.08)" : "";
+    });
+    G.$("#life-memnote").innerHTML = s.mem === "none" ? "no storage yet" : s.mem === "cached" ? "owned by allocator.cache, not by any Buffer" : `at ${b.addr}` + (s.view ? " · yellow = the view's 8 bytes" : "");
+    G.$("#life-cache").innerHTML = `<div class="t">Device['CPU'].allocator.cache</div>` + (s.cache.length ? s.cache.map(([sz, a]) => `(${sz}, BufferSpec()) → [(storage@${a}, freed_at)]`).join("<br>") : "<span style='color:var(--dim)'>{ } empty</span>") + `<br><br><span style="color:var(--dim)">key = (size, options) · reused only if timeline.host[0] ≥ freed_at</span>`;
+    G.$("#life-code").textContent = s.code;
+  }, { autoplayMs: 2600 });
+})();
+
+// ---------------- demo 3: run_linear pipeline ----------------
+(function () {
+  const stages = [
+    { name: "LINEAR", sub: "from the scheduler", i: "Tensor.linear_with_vars()", t: "Part III: graph → kernels → ordered CALLs, memory planned", o: "LINEAR(CALL(SINK kernel AST, BUFFER…), CALL(STORE, dst, src) …)", f: ["tinygrad/tensor.py", 166] },
+    { name: "lower_and_compile", sub: "parallel to_program", i: "CALLs whose body is SINK(KernelInfo)", t: "dedup by to_program_key; compile new ones in the spawn pool (PARALLEL workers); optimize → lower → linearize → render → Compiler.compile_cached", o: "CALL(PROGRAM(SINK, LINEAR, SOURCE, BINARY), …)", f: ["tinygrad/engine/realize.py", 238] },
+    { name: "hcq_compile", sub: "batch HCQ calls", i: "LINEAR with PROGRAM/STORE calls", t: "only for HCQ_DEVS: replace input buffers by PARAMs (cacheable template), unwrap multi, stage copies, batch into queues, encode command buffers, compile the host program", o: "CALL(PROGRAM hcq_submit, slots…, aux=HCQInfo) — or unchanged on CPU", f: ["tinygrad/runtime/support/hcq2.py", 541] },
+    { name: "link_linear", sub: "hcq_link", i: "compiled LINEAR", t: "pm_resolve_link: ALLOC → real Buffer, lt_input PARAM → caller input, GETADDR → const address, fold link-time writes into the command buffers", o: "LINEAR ready to execute", f: ["tinygrad/runtime/support/hcq2.py", 555] },
+    { name: "pm_exec", sub: "dispatch each CALL", i: "each CALL (without_after)", t: "STORE → exec_copy · PROGRAM → exec_kernel (or exec_hcq) · validate → exec_validate; returns per-launch times", o: "side effects in device memory + [et, …]", f: ["tinygrad/engine/realize.py", 268] },
+    { name: "track_stats", sub: "GlobalCounters", i: "the call + its times", t: "kernel_count, global_ops, global_mem, time_sum_s; DEBUG≥2 prints one line per kernel; PROFILE records events", o: "*** CPU 4 E_32768_2 arg 3 mem …", f: ["tinygrad/engine/realize.py", 61] },
+  ];
+  const outEl = G.$("#pipe-out");
+  const p = G.pipeline("#pipe", stages, (i, s) => {
+    outEl.innerHTML = `<div class="io"><div>function</div><div><a class="src" href="${G.src(s.f[0], s.f[1])}" target="_blank">${s.f[0]}:${s.f[1]}</a></div><div>input</div><div><code>${G.escape(s.i)}</code></div><div>does</div><div>${G.escape(s.t)}</div><div>output</div><div><code>${G.escape(s.o)}</code></div></div>`;
+  });
+  p.select(1);
+})();
+
+// ---------------- demo 4: PYTHON emulator stepper ----------------
+(async function () {
+  const data = await G.loadJSON("../data/ch17_python_trace.json");
+  const box = G.$("#emu-uops");
+  const rows = data.uops.map((u) => { const d = el("div", {}, `${String(u.i).padStart(2)} ${u.op.padEnd(7)} ${u.dtype.replace("dtypes.", "").padEnd(9)} [${u.src.join(",")}]  ${u.arg === "None" ? "" : u.arg.replace("ParamArg", "P").slice(0, 34)}`); box.append(d); return d; });
+  const MEMNAME = { mem0: "acc (REG BUFFER, uop 5)", mem1: "a = data1 (PARAM 1)", mem2: "b = data2 (PARAM 2)", mem3: "out = data0 (PARAM 0)" };
+  const memEl = G.$("#emu-mem");
+  const memRows = {};
+  ["mem3", "mem1", "mem2", "mem0"].forEach((k) => { const c = el("div", { class: "cells" }); memEl.append(el("div", {}, MEMNAME[k]), c); memRows[k] = c; });
+  const T = data.trace;
+  // loop iteration counter derived from RANGE visits
+  let it = 0; const iters = T.map((t) => (t.op === "RANGE" ? ++it : it));
+  const steps = T.map((t, k) => ({ caption: `<b>pc=${t.pc}</b> executes <code>${t.op}</code>` + (t.op === "RANGE" ? (iters[k] <= 3 ? ` — loop counter = ${iters[k] - 1}, bound = 3 → enter body` : " — counter reached 3 → jump past END (pc 24)") : t.op === "END" ? " — jump back to its RANGE (pc 13)" : t.op === "STORE" ? " — write through the (memoryview, offset) pair" : t.op === "MULACC" ? " — a*b+acc via exec_alu" : t.op === "SINK" ? " — done; the kernel returns" : ""), k }));
+  G.stepper("#emu-stepper", steps, (i) => {
+    const t = T[i], u = data.uops[t.pc];
+    rows.forEach((r, j) => { r.classList.toggle("cur", j === t.pc); r.classList.toggle("src", u.src.includes(j)); });
+    rows[t.pc].scrollIntoView({ block: "nearest" });
+    G.$("#emu-vals").textContent = `uop ${t.pc} ${u.op}  srcs ${JSON.stringify(u.src)}\nsrc_values (one entry per lane, warp of 1):\n  ` + (t.src.length ? t.src.map((v, j) => `[${u.src[j] ?? "?"}] → ${JSON.stringify(v)}`).join("\n  ") : "(none)");
+    const after = (T[i + 1] || t).mem; // state after this step
+    for (const k of Object.keys(memRows)) {
+      const vals = after[k] || null, c = memRows[k]; c.innerHTML = "";
+      if (!vals) { c.append(el("span", {}, "—")); continue; }
+      vals.forEach((v, j) => {
+        const s = el("span", {}, String(v));
+        const touched = t.src.some((x) => typeof x === "string" && x === `&${k}[${j}]`);
+        if (touched) s.classList.add(t.op === "STORE" ? "hit" : "rd");
+        c.append(s);
+      });
+    }
+    G.$("#emu-loop").textContent = `loop iteration: ${Math.min(iters[i], 3)} of 3 · step ${i + 1}/${T.length} · result after SINK: ${data.result}`;
+  }, { autoplayMs: 650 });
+})();
+
+// ---------------- demo 5: HCQ conceptual animation ----------------
+(function () {
+  const host = G.$("#hcq-svg");
+  const W = 760, H = 300;
+  const lanes = [{ y: 40, n: "host (hcq_submit on CPU)", c: "#9A72AC" }, { y: 120, n: "COMPUTE:0 queue", c: "#58C4DD" }, { y: 200, n: "COPY:0 queue", c: "#F0AC5F" }];
+  const steps = [
+    { caption: "<b>fence</b> — the host program first waits until the previous run of this batch finished (<code>hcq_fence</code> polls the timeline).", on: ["fence"], tl: 0 },
+    { caption: "<b>patch</b> — write the few words only known at run time into the pre-built command buffers: input buffer addresses, Variable values.", on: ["fence", "patch"], tl: 0 },
+    { caption: "<b>doorbells</b> — <code>submit</code>: append an indirect-buffer packet to each queue's ring, write the write-pointer and ring the doorbell. The host is done; the GPU takes over.", on: ["fence", "patch", "db1", "db2"], tl: 0 },
+    { caption: "<b>queues run in parallel</b> — kernel A executes on COMPUTE:0 while the copy runs on COPY:0.", on: ["fence", "patch", "db1", "db2", "kA", "cp"], tl: 0 },
+    { caption: "<b>signal</b> — the copy queue writes its signal (<code>store</code> instruction) when the copy is done.", on: ["fence", "patch", "db1", "db2", "kA", "cp", "sig"], tl: 0 },
+    { caption: "<b>wait</b> — kernel B reads the copied data, so DepsTracker inserted <code>wait(copy signal ≥ tag+1)</code> before it on COMPUTE:0.", on: ["fence", "patch", "db1", "db2", "kA", "cp", "sig", "wait", "kB"], tl: 0 },
+    { caption: "<b>timeline</b> — the closer of each device stores <code>timeline+1</code>. <code>Device.synchronize()</code> spins until <code>timeline[0] ≥ timeline[1]</code>; the allocator's <code>freed_at</code> check uses the same values.", on: ["fence", "patch", "db1", "db2", "kA", "cp", "sig", "wait", "kB", "tl"], tl: 1 },
+  ];
+  const items = {
+    fence: { lane: 0, x: 120, w: 70, t: "fence" }, patch: { lane: 0, x: 200, w: 80, t: "patch args" }, db1: { lane: 0, x: 290, w: 70, t: "doorbell" }, db2: { lane: 0, x: 370, w: 70, t: "doorbell" },
+    kA: { lane: 1, x: 262, w: 120, t: "kernel A" }, cp: { lane: 2, x: 380, w: 140, t: "copy x → y" }, sig: { lane: 2, x: 530, w: 50, t: "signal" },
+    wait: { lane: 1, x: 430, w: 120, t: "wait(signal)" }, kB: { lane: 1, x: 590, w: 100, t: "kernel B (y)" }, tl: { lane: 1, x: 700, w: 50, t: "tl+1" },
+  };
+  G.stepper("#hcq-stepper", steps, (i, s) => {
+    const svg = el("svg", { viewBox: `0 0 ${W} ${H}` });
+    lanes.forEach((l) => { svg.append(el("line", { x1: 110, y1: l.y + 18, x2: W - 6, y2: l.y + 18, stroke: "#2f343c" })); svg.append(el("text", { x: 6, y: l.y + 22, fill: l.c, "font-size": 11, "font-family": "monospace" }, l.n.split(" ")[0])); svg.append(el("text", { x: 6, y: l.y + 36, fill: "#7b8590", "font-size": 9.5, "font-family": "monospace" }, l.n.split(" ").slice(1).join(" "))); });
+    for (const [k, it] of Object.entries(items)) {
+      const on = s.on.includes(k), l = lanes[it.lane];
+      const g = el("g", { opacity: on ? 1 : 0.12 });
+      g.append(el("rect", { x: it.x, y: l.y, width: it.w, height: 36, rx: 6, fill: l.c + "33", stroke: l.c }));
+      g.append(el("text", { x: it.x + it.w / 2, y: l.y + 22, "text-anchor": "middle", fill: "#e6e6e6", "font-size": 11, "font-family": "monospace" }, it.t));
+      svg.append(g);
+    }
+    if (s.on.includes("db1")) { svg.append(el("path", { d: "M325,76 C325,95 322,105 322,118", stroke: "#9A72AC", fill: "none", "stroke-dasharray": "4 3" })); svg.append(el("path", { d: "M405,76 L405,198", stroke: "#9A72AC", fill: "none", "stroke-dasharray": "4 3" })); }
+    if (s.on.includes("wait")) svg.append(el("path", { d: "M555,200 C540,170 520,165 500,158", stroke: "#F4D345", fill: "none", "stroke-width": 2 }));
+    svg.append(el("text", { x: 120, y: 285, fill: "#9aa3ad", "font-size": 12, "font-family": "monospace" }, `timeline = [signal=${s.tl}, last submitted=1]   synchronize(): ${s.tl >= 1 ? "returns" : "spinning…"}`));
+    host.innerHTML = ""; host.append(svg);
+  }, { autoplayMs: 2200 });
+})();
+
+// ---------------- demo 6: DEBUG=2 decoder ----------------
+(function () {
+  const txt = G.$("[data-out='17_debug2']").textContent.split("\n").filter((l) => l.startsWith("***"));
+  const re = /^(\*\*\*) (.{7}) (.{4}) (.{46}) (arg +\d+) (mem +[\d.]+ GB) (tm +[\d.]+\w+)\/( *[\d.]+ms) (\( *[\d.]+ [GT]FLOPS) ( *[\d.]+\|[\d.]+ +[GT]B\/s\))$/;
+  const EXP = [
+    ["***", "Line marker. Colored at a terminal: <b>green</b> = first time this kernel (by PROGRAM key) ran in this process (<code>first_run_cache</code>), <b>magenta</b> = executed by the JIT replay, plain = seen before."],
+    ["device", "<code>device[:7]</code> — the device the call ran on (for a copy: the call's device; multi-device lanes print one line each)."],
+    ["kernel #", "<code>GlobalCounters.kernel_count</code> after this call — cumulative since the last <code>GlobalCounters.reset()</code> (copies count too)."],
+    ["name", "The kernel's display name, padded to 46 columns (<code>ansipad</code>). <code>E_</code> = elementwise, <code>r_</code> = has a reduce, numbers = the loop/grid dims after optimization (colored by axis type at a terminal). Copies print <code>copy &lt;size&gt;, dst &lt;- src</code>."],
+    ["arg N", "Number of buffers the call touches (<code>len(bufs)</code>): outputs + inputs. Scalars/Variables are not counted."],
+    ["mem X GB", "<code>GlobalCounters.mem_used</code> — bytes of live base buffers on all devices <i>right now</i> (cached free storage not counted)."],
+    ["tm", "This launch's time. Measured because DEBUG≥2 forces <code>wait=True</code> (or by synchronizing). Yellow at a terminal if &gt; 10 ms."],
+    ["/total", "<code>GlobalCounters.time_sum_s</code> — running total of kernel time since reset, in ms."],
+    ["GFLOPS", "<code>estimates.ops / time</code>: FLOPs counted from the UOps (<code>Estimates.from_uops</code>, indexing math excluded) divided by measured time. Switches to TFLOPS (green) above 100 TFLOPS."],
+    ["GB/s", "<code>mem|lds</code>: <b>mem</b> = unique bytes of the buffers (each read/written once) per second; <b>lds</b> = total bytes moved by every LOAD/STORE per second. lds ≫ mem means lots of reuse (cache/registers)."],
+  ];
+  const pick = G.$("#dbg-pick"), lineEl = G.$("#dbg-line"), ex = G.$("#dbg-explain");
+  const choices = [0, 3, txt.length - 2].filter((i, k, a) => i >= 0 && i < txt.length && a.indexOf(i) === k);
+  const labels = ["a copy", "a small kernel", "the matmul"];
+  choices.forEach((ci, k) => pick.append(el("button", { onclick: () => show(ci, k) }, labels[k] || "line " + ci)));
+  function show(ci, k) {
+    G.$$("button", pick).forEach((b, j) => b.classList.toggle("active", j === k));
+    const m = txt[ci].match(re); lineEl.innerHTML = "";
+    if (!m) { lineEl.textContent = txt[ci]; return; }
+    m.slice(1).forEach((part, j) => {
+      const sp = el("span", { class: "col" }, part);
+      const showE = () => { G.$$(".col", lineEl).forEach((x) => x.classList.remove("on")); sp.classList.add("on"); ex.innerHTML = `<b>${EXP[j][0]}</b> = <code>${G.escape(part.trim())}</code><br>${EXP[j][1]}`; };
+      sp.addEventListener("mouseenter", showE); sp.addEventListener("click", showE);
+      lineEl.append(sp, j < 9 ? (j === 6 ? "/" : " ") : "");
+    });
+  }
+  show(choices[choices.length - 1], choices.length - 1);
+})();
+</script>
+</body>
+</html>

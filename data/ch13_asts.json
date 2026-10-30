@@ -1,0 +1,6221 @@
+{
+ "add": {
+  "code": "A + B                 # (3,4) + (3,4)",
+  "name_ansi": [
+   "E_12",
+   "E_3_4"
+  ],
+  "uir": "%0 = param 12 : dtype=f32 slot=0 device=CPU\n%1 = range 3 : WEAK 0\n%2 = mul %1, 4\n%3 = range 4 : WEAK 1\n%4 = add %2, %3\n%5 = index %0, %4\n%6 = param 12 : dtype=f32 slot=1 device=CPU\n%7 = index %6, %4\n%8 = param 12 : dtype=f32 slot=2 device=CPU\n%9 = index %8, %4\n%10 = add %7, %9\n%11 = store %5, %10\n%12 = end %11, %1, %3\n%13 = sink %12 : test",
+  "repr": "UOp(Ops.SINK, arg=KernelInfo(name='test', applied_opts=(), opts_to_apply=None, estimates=None, beam=0, optimized=False), src=(\n  UOp(Ops.END, arg=None, src=(\n    UOp(Ops.STORE, arg=None, src=(\n      UOp(Ops.INDEX, arg=None, src=(\n        UOp(Ops.PARAM, arg=ParamArg(0, dtypes.f32, device='CPU'), src=(\n          x4:=UOp(Ops.CONST, arg=12, src=()),)),\n        x5:=UOp(Ops.ADD, arg=None, src=(\n          UOp(Ops.MUL, arg=None, src=(\n            x7:=UOp(Ops.RANGE, arg=(AxisType.WEAK, 0), src=(\n              UOp(Ops.CONST, arg=3, src=()),)),\n            x9:=UOp(Ops.CONST, arg=4, src=()),)),\n          x10:=UOp(Ops.RANGE, arg=(AxisType.WEAK, 1), src=(\n            x9,)),)),)),\n      UOp(Ops.ADD, arg=None, src=(\n        UOp(Ops.INDEX, arg=None, src=(\n          UOp(Ops.PARAM, arg=ParamArg(1, dtypes.f32, device='CPU'), src=(\n            x4,)),\n          x5,)),\n        UOp(Ops.INDEX, arg=None, src=(\n          UOp(Ops.PARAM, arg=ParamArg(2, dtypes.f32, device='CPU'), src=(\n            x4,)),\n          x5,)),)),)),\n    x7,\n    x10,)),))",
+  "census": {
+   "CONST": 3,
+   "PARAM": 3,
+   "RANGE": 2,
+   "MUL": 1,
+   "ADD": 2,
+   "INDEX": 3,
+   "STORE": 1,
+   "END": 1,
+   "SINK": 1
+  },
+  "graph": {
+   "nodes": [
+    {
+     "id": "n0",
+     "op": "CONST",
+     "dtype": "dtypes.weakint",
+     "arg": "12",
+     "shape": "()"
+    },
+    {
+     "id": "n1",
+     "op": "PARAM",
+     "dtype": "dtypes.f32",
+     "arg": "ParamArg(0, dtypes.f32, device='CPU')",
+     "shape": "(12,)"
+    },
+    {
+     "id": "n2",
+     "op": "CONST",
+     "dtype": "dtypes.weakint",
+     "arg": "3",
+     "shape": "()"
+    },
+    {
+     "id": "n3",
+     "op": "RANGE",
+     "dtype": "dtypes.weakint",
+     "arg": "(AxisType.WEAK, 0)",
+     "shape": "()"
+    },
+    {
+     "id": "n4",
+     "op": "CONST",
+     "dtype": "dtypes.weakint",
+     "arg": "4",
+     "shape": "()"
+    },
+    {
+     "id": "n5",
+     "op": "MUL",
+     "dtype": "dtypes.weakint",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n6",
+     "op": "RANGE",
+     "dtype": "dtypes.weakint",
+     "arg": "(AxisType.WEAK, 1)",
+     "shape": "()"
+    },
+    {
+     "id": "n7",
+     "op": "ADD",
+     "dtype": "dtypes.weakint",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n8",
+     "op": "INDEX",
+     "dtype": "dtypes.f32",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n9",
+     "op": "PARAM",
+     "dtype": "dtypes.f32",
+     "arg": "ParamArg(1, dtypes.f32, device='CPU')",
+     "shape": "(12,)"
+    },
+    {
+     "id": "n10",
+     "op": "INDEX",
+     "dtype": "dtypes.f32",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n11",
+     "op": "PARAM",
+     "dtype": "dtypes.f32",
+     "arg": "ParamArg(2, dtypes.f32, device='CPU')",
+     "shape": "(12,)"
+    },
+    {
+     "id": "n12",
+     "op": "INDEX",
+     "dtype": "dtypes.f32",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n13",
+     "op": "ADD",
+     "dtype": "dtypes.f32",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n14",
+     "op": "STORE",
+     "dtype": "dtypes.void",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n15",
+     "op": "END",
+     "dtype": "dtypes.void",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n16",
+     "op": "SINK",
+     "dtype": "dtypes.void",
+     "arg": "KernelInfo(name='test', applied_opts=(), opts_to_apply=None\u2026",
+     "shape": ""
+    }
+   ],
+   "edges": [
+    [
+     "n0",
+     "n1",
+     0
+    ],
+    [
+     "n2",
+     "n3",
+     0
+    ],
+    [
+     "n3",
+     "n5",
+     0
+    ],
+    [
+     "n4",
+     "n5",
+     1
+    ],
+    [
+     "n4",
+     "n6",
+     0
+    ],
+    [
+     "n5",
+     "n7",
+     0
+    ],
+    [
+     "n6",
+     "n7",
+     1
+    ],
+    [
+     "n1",
+     "n8",
+     0
+    ],
+    [
+     "n7",
+     "n8",
+     1
+    ],
+    [
+     "n0",
+     "n9",
+     0
+    ],
+    [
+     "n9",
+     "n10",
+     0
+    ],
+    [
+     "n7",
+     "n10",
+     1
+    ],
+    [
+     "n0",
+     "n11",
+     0
+    ],
+    [
+     "n11",
+     "n12",
+     0
+    ],
+    [
+     "n7",
+     "n12",
+     1
+    ],
+    [
+     "n10",
+     "n13",
+     0
+    ],
+    [
+     "n12",
+     "n13",
+     1
+    ],
+    [
+     "n8",
+     "n14",
+     0
+    ],
+    [
+     "n13",
+     "n14",
+     1
+    ],
+    [
+     "n14",
+     "n15",
+     0
+    ],
+    [
+     "n3",
+     "n15",
+     1
+    ],
+    [
+     "n6",
+     "n15",
+     2
+    ],
+    [
+     "n15",
+     "n16",
+     0
+    ]
+   ]
+  },
+  "ir": [
+   {
+    "id": "n0",
+    "op": "CONST",
+    "src": [],
+    "dtype": "dtypes.weakint",
+    "val": 12
+   },
+   {
+    "id": "n1",
+    "op": "PARAM",
+    "src": [
+     "n0"
+    ],
+    "dtype": "dtypes.f32",
+    "slot": 0,
+    "size": 12
+   },
+   {
+    "id": "n2",
+    "op": "CONST",
+    "src": [],
+    "dtype": "dtypes.weakint",
+    "val": 3
+   },
+   {
+    "id": "n3",
+    "op": "RANGE",
+    "src": [
+     "n2"
+    ],
+    "dtype": "dtypes.weakint",
+    "axis_type": "WEAK",
+    "axis_id": 0,
+    "size": 3
+   },
+   {
+    "id": "n4",
+    "op": "CONST",
+    "src": [],
+    "dtype": "dtypes.weakint",
+    "val": 4
+   },
+   {
+    "id": "n5",
+    "op": "MUL",
+    "src": [
+     "n3",
+     "n4"
+    ],
+    "dtype": "dtypes.weakint"
+   },
+   {
+    "id": "n6",
+    "op": "RANGE",
+    "src": [
+     "n4"
+    ],
+    "dtype": "dtypes.weakint",
+    "axis_type": "WEAK",
+    "axis_id": 1,
+    "size": 4
+   },
+   {
+    "id": "n7",
+    "op": "ADD",
+    "src": [
+     "n5",
+     "n6"
+    ],
+    "dtype": "dtypes.weakint"
+   },
+   {
+    "id": "n8",
+    "op": "INDEX",
+    "src": [
+     "n1",
+     "n7"
+    ],
+    "dtype": "dtypes.f32"
+   },
+   {
+    "id": "n9",
+    "op": "PARAM",
+    "src": [
+     "n0"
+    ],
+    "dtype": "dtypes.f32",
+    "slot": 1,
+    "size": 12
+   },
+   {
+    "id": "n10",
+    "op": "INDEX",
+    "src": [
+     "n9",
+     "n7"
+    ],
+    "dtype": "dtypes.f32"
+   },
+   {
+    "id": "n11",
+    "op": "PARAM",
+    "src": [
+     "n0"
+    ],
+    "dtype": "dtypes.f32",
+    "slot": 2,
+    "size": 12
+   },
+   {
+    "id": "n12",
+    "op": "INDEX",
+    "src": [
+     "n11",
+     "n7"
+    ],
+    "dtype": "dtypes.f32"
+   },
+   {
+    "id": "n13",
+    "op": "ADD",
+    "src": [
+     "n10",
+     "n12"
+    ],
+    "dtype": "dtypes.f32"
+   },
+   {
+    "id": "n14",
+    "op": "STORE",
+    "src": [
+     "n8",
+     "n13"
+    ],
+    "dtype": "dtypes.void"
+   },
+   {
+    "id": "n15",
+    "op": "END",
+    "src": [
+     "n14",
+     "n3",
+     "n6"
+    ],
+    "dtype": "dtypes.void"
+   },
+   {
+    "id": "n16",
+    "op": "SINK",
+    "src": [
+     "n15"
+    ],
+    "dtype": "dtypes.void"
+   }
+  ],
+  "result": [
+   [
+    2.0,
+    3.0,
+    4.0,
+    5.0
+   ],
+   [
+    7.0,
+    8.0,
+    9.0,
+    10.0
+   ],
+   [
+    12.0,
+    13.0,
+    14.0,
+    15.0
+   ]
+  ],
+  "slots": {
+   "0": "out",
+   "1": "A",
+   "2": "B"
+  },
+  "noopt": {
+   "rngs": [
+    [
+     12,
+     "WEAK"
+    ]
+   ],
+   "name": "E_12",
+   "fname": "E_12",
+   "opts": [],
+   "src": "struct E_12_args { float* arg0; float* arg1; float* arg2; };\nvoid E_12(const struct E_12_args* args) {\n  float* data0_12 = args->arg0;\n  float* data1_12 = args->arg1;\n  float* data2_12 = args->arg2;\n  for (int Lidx0 = 0; Lidx0 < 12; Lidx0++) {\n    float val0 = (*(data1_12+Lidx0));\n    float val1 = (*(data2_12+Lidx0));\n    *(data0_12+Lidx0) = (val0+val1);\n  }\n}",
+   "est": {
+    "ops": 12,
+    "lds": 144,
+    "mem": 144
+   }
+  },
+  "opt": {
+   "rngs": [
+    [
+     3,
+     "WEAK"
+    ],
+    [
+     4,
+     "UPCAST"
+    ]
+   ],
+   "name": "E_3_4",
+   "fname": "E_3_4",
+   "opts": [
+    "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))"
+   ],
+   "src": "typedef float float4 __attribute__((aligned(4),ext_vector_type(4)));\nstruct E_3_4_args { float* arg0; float* arg1; float* arg2; };\nvoid E_3_4(const struct E_3_4_args* args) {\n  float* data0_12 = args->arg0;\n  float* data1_12 = args->arg1;\n  float* data2_12 = args->arg2;\n  for (int Lidx0 = 0; Lidx0 < 3; Lidx0++) {\n    int alu0 = (Lidx0<<2);\n    float4 val0 = (*((float4*)((data1_12+alu0))));\n    float4 val1 = (*((float4*)((data2_12+alu0))));\n    *((float4*)((data0_12+alu0))) = (float4){(val0[0]+val1[0]),(val0[1]+val1[1]),(val0[2]+val1[2]),(val0[3]+val1[3])};\n  }\n}",
+   "est": {
+    "ops": 12,
+    "lds": 144,
+    "mem": 144
+   }
+  }
+ },
+ "sum": {
+  "code": "A.sum(axis=1)         # (3,4) -> (3,)",
+  "name_ansi": [
+   "r_3_4",
+   "r_3_4"
+  ],
+  "uir": "%0 = param 3 : dtype=f32 slot=0 device=CPU\n%1 = range 3 : WEAK 1\n%2 = index %0, %1\n%3 = param 12 : dtype=f32 slot=1 device=CPU\n%4 = mul %1, 4\n%5 = range 4 : WEAK 0\n%6 = add %4, %5\n%7 = index %3, %6\n%8 = reduce %7, %5 : op=add\n%9 = store %2, %8\n%10 = end %9, %1\n%11 = sink %10 : test",
+  "repr": null,
+  "census": {
+   "CONST": 3,
+   "PARAM": 2,
+   "RANGE": 2,
+   "INDEX": 2,
+   "MUL": 1,
+   "ADD": 1,
+   "REDUCE": 1,
+   "STORE": 1,
+   "END": 1,
+   "SINK": 1
+  },
+  "graph": {
+   "nodes": [
+    {
+     "id": "n0",
+     "op": "CONST",
+     "dtype": "dtypes.weakint",
+     "arg": "3",
+     "shape": "()"
+    },
+    {
+     "id": "n1",
+     "op": "PARAM",
+     "dtype": "dtypes.f32",
+     "arg": "ParamArg(0, dtypes.f32, device='CPU')",
+     "shape": "(3,)"
+    },
+    {
+     "id": "n2",
+     "op": "RANGE",
+     "dtype": "dtypes.weakint",
+     "arg": "(AxisType.WEAK, 1)",
+     "shape": "()"
+    },
+    {
+     "id": "n3",
+     "op": "INDEX",
+     "dtype": "dtypes.f32",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n4",
+     "op": "CONST",
+     "dtype": "dtypes.weakint",
+     "arg": "12",
+     "shape": "()"
+    },
+    {
+     "id": "n5",
+     "op": "PARAM",
+     "dtype": "dtypes.f32",
+     "arg": "ParamArg(1, dtypes.f32, device='CPU')",
+     "shape": "(12,)"
+    },
+    {
+     "id": "n6",
+     "op": "CONST",
+     "dtype": "dtypes.weakint",
+     "arg": "4",
+     "shape": "()"
+    },
+    {
+     "id": "n7",
+     "op": "MUL",
+     "dtype": "dtypes.weakint",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n8",
+     "op": "RANGE",
+     "dtype": "dtypes.weakint",
+     "arg": "(AxisType.WEAK, 0)",
+     "shape": "()"
+    },
+    {
+     "id": "n9",
+     "op": "ADD",
+     "dtype": "dtypes.weakint",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n10",
+     "op": "INDEX",
+     "dtype": "dtypes.f32",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n11",
+     "op": "REDUCE",
+     "dtype": "dtypes.f32",
+     "arg": "(Ops.ADD, 0)",
+     "shape": "()"
+    },
+    {
+     "id": "n12",
+     "op": "STORE",
+     "dtype": "dtypes.void",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n13",
+     "op": "END",
+     "dtype": "dtypes.void",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n14",
+     "op": "SINK",
+     "dtype": "dtypes.void",
+     "arg": "KernelInfo(name='test', applied_opts=(), opts_to_apply=None\u2026",
+     "shape": ""
+    }
+   ],
+   "edges": [
+    [
+     "n0",
+     "n1",
+     0
+    ],
+    [
+     "n0",
+     "n2",
+     0
+    ],
+    [
+     "n1",
+     "n3",
+     0
+    ],
+    [
+     "n2",
+     "n3",
+     1
+    ],
+    [
+     "n4",
+     "n5",
+     0
+    ],
+    [
+     "n2",
+     "n7",
+     0
+    ],
+    [
+     "n6",
+     "n7",
+     1
+    ],
+    [
+     "n6",
+     "n8",
+     0
+    ],
+    [
+     "n7",
+     "n9",
+     0
+    ],
+    [
+     "n8",
+     "n9",
+     1
+    ],
+    [
+     "n5",
+     "n10",
+     0
+    ],
+    [
+     "n9",
+     "n10",
+     1
+    ],
+    [
+     "n10",
+     "n11",
+     0
+    ],
+    [
+     "n8",
+     "n11",
+     1
+    ],
+    [
+     "n3",
+     "n12",
+     0
+    ],
+    [
+     "n11",
+     "n12",
+     1
+    ],
+    [
+     "n12",
+     "n13",
+     0
+    ],
+    [
+     "n2",
+     "n13",
+     1
+    ],
+    [
+     "n13",
+     "n14",
+     0
+    ]
+   ]
+  },
+  "ir": [
+   {
+    "id": "n0",
+    "op": "CONST",
+    "src": [],
+    "dtype": "dtypes.weakint",
+    "val": 3
+   },
+   {
+    "id": "n1",
+    "op": "PARAM",
+    "src": [
+     "n0"
+    ],
+    "dtype": "dtypes.f32",
+    "slot": 0,
+    "size": 3
+   },
+   {
+    "id": "n2",
+    "op": "RANGE",
+    "src": [
+     "n0"
+    ],
+    "dtype": "dtypes.weakint",
+    "axis_type": "WEAK",
+    "axis_id": 1,
+    "size": 3
+   },
+   {
+    "id": "n3",
+    "op": "INDEX",
+    "src": [
+     "n1",
+     "n2"
+    ],
+    "dtype": "dtypes.f32"
+   },
+   {
+    "id": "n4",
+    "op": "CONST",
+    "src": [],
+    "dtype": "dtypes.weakint",
+    "val": 12
+   },
+   {
+    "id": "n5",
+    "op": "PARAM",
+    "src": [
+     "n4"
+    ],
+    "dtype": "dtypes.f32",
+    "slot": 1,
+    "size": 12
+   },
+   {
+    "id": "n6",
+    "op": "CONST",
+    "src": [],
+    "dtype": "dtypes.weakint",
+    "val": 4
+   },
+   {
+    "id": "n7",
+    "op": "MUL",
+    "src": [
+     "n2",
+     "n6"
+    ],
+    "dtype": "dtypes.weakint"
+   },
+   {
+    "id": "n8",
+    "op": "RANGE",
+    "src": [
+     "n6"
+    ],
+    "dtype": "dtypes.weakint",
+    "axis_type": "WEAK",
+    "axis_id": 0,
+    "size": 4
+   },
+   {
+    "id": "n9",
+    "op": "ADD",
+    "src": [
+     "n7",
+     "n8"
+    ],
+    "dtype": "dtypes.weakint"
+   },
+   {
+    "id": "n10",
+    "op": "INDEX",
+    "src": [
+     "n5",
+     "n9"
+    ],
+    "dtype": "dtypes.f32"
+   },
+   {
+    "id": "n11",
+    "op": "REDUCE",
+    "src": [
+     "n10",
+     "n8"
+    ],
+    "dtype": "dtypes.f32",
+    "rop": "ADD"
+   },
+   {
+    "id": "n12",
+    "op": "STORE",
+    "src": [
+     "n3",
+     "n11"
+    ],
+    "dtype": "dtypes.void"
+   },
+   {
+    "id": "n13",
+    "op": "END",
+    "src": [
+     "n12",
+     "n2"
+    ],
+    "dtype": "dtypes.void"
+   },
+   {
+    "id": "n14",
+    "op": "SINK",
+    "src": [
+     "n13"
+    ],
+    "dtype": "dtypes.void"
+   }
+  ],
+  "result": [
+   10.0,
+   26.0,
+   42.0
+  ],
+  "slots": {
+   "0": "out",
+   "1": "A"
+  },
+  "noopt": {
+   "rngs": [
+    [
+     3,
+     "WEAK"
+    ],
+    [
+     4,
+     "WEAK"
+    ]
+   ],
+   "name": "r_3_4",
+   "fname": "r_3_4",
+   "opts": [],
+   "src": "struct r_3_4_args { float* arg0; float* arg1; };\nvoid r_3_4(const struct r_3_4_args* args) {\n  float* data0_3 = args->arg0;\n  float* data1_12 = args->arg1;\n  float buf0[1];\n  for (int Lidx1 = 0; Lidx1 < 3; Lidx1++) {\n    *(buf0+0) = 0.0f;\n    for (int Lidx0 = 0; Lidx0 < 4; Lidx0++) {\n      float val0 = (*(data1_12+((Lidx1<<2)+Lidx0)));\n      *(buf0+0) = ((*(buf0+0))+val0);\n    }\n    *(data0_3+Lidx1) = (*(buf0+0));\n  }\n}",
+   "est": {
+    "ops": 12,
+    "lds": 60,
+    "mem": 60
+   }
+  },
+  "opt": {
+   "rngs": [
+    [
+     3,
+     "WEAK"
+    ],
+    [
+     4,
+     "UPCAST"
+    ]
+   ],
+   "name": "r_3_4",
+   "fname": "r_3_4",
+   "opts": [
+    "Opt(op=OptOps.SPLIT, axis=1, arg=(0, AxisType.UPCAST))"
+   ],
+   "src": "typedef float float4 __attribute__((aligned(4),ext_vector_type(4)));\nstruct r_3_4_args { float* arg0; float* arg1; };\nvoid r_3_4(const struct r_3_4_args* args) {\n  float* data0_3 = args->arg0;\n  float* data1_12 = args->arg1;\n  for (int Lidx1 = 0; Lidx1 < 3; Lidx1++) {\n    float4 val0 = (*((float4*)((data1_12+(Lidx1<<2)))));\n    *(data0_3+Lidx1) = (val0[0]+val0[1]+val0[2]+val0[3]);\n  }\n}",
+   "est": {
+    "ops": 9,
+    "lds": 60,
+    "mem": 60
+   }
+  }
+ },
+ "matmul": {
+  "code": "M @ A                 # (2,3) @ (3,4) -> (2,4)",
+  "name_ansi": [
+   "r_2_4_3",
+   "r_2_4_3"
+  ],
+  "uir": "%0 = param 8 : dtype=f32 slot=0 device=CPU\n%1 = range 2 : WEAK 1\n%2 = mul %1, 4\n%3 = range 4 : WEAK 2\n%4 = add %2, %3\n%5 = index %0, %4\n%6 = param 6 : dtype=f32 slot=1 device=CPU\n%7 = mul %1, 3\n%8 = range 3 : WEAK 0\n%9 = add %7, %8\n%10 = index %6, %9\n%11 = param 12 : dtype=f32 slot=2 device=CPU\n%12 = mul %8, 4\n%13 = add %12, %3\n%14 = index %11, %13\n%15 = mul %10, %14\n%16 = reduce %15, %8 : op=add\n%17 = store %5, %16\n%18 = end %17, %1, %3\n%19 = sink %18 : test",
+  "repr": null,
+  "census": {
+   "CONST": 6,
+   "PARAM": 3,
+   "RANGE": 3,
+   "MUL": 4,
+   "ADD": 3,
+   "INDEX": 3,
+   "REDUCE": 1,
+   "STORE": 1,
+   "END": 1,
+   "SINK": 1
+  },
+  "graph": {
+   "nodes": [
+    {
+     "id": "n0",
+     "op": "CONST",
+     "dtype": "dtypes.weakint",
+     "arg": "8",
+     "shape": "()"
+    },
+    {
+     "id": "n1",
+     "op": "PARAM",
+     "dtype": "dtypes.f32",
+     "arg": "ParamArg(0, dtypes.f32, device='CPU')",
+     "shape": "(8,)"
+    },
+    {
+     "id": "n2",
+     "op": "CONST",
+     "dtype": "dtypes.weakint",
+     "arg": "2",
+     "shape": "()"
+    },
+    {
+     "id": "n3",
+     "op": "RANGE",
+     "dtype": "dtypes.weakint",
+     "arg": "(AxisType.WEAK, 1)",
+     "shape": "()"
+    },
+    {
+     "id": "n4",
+     "op": "CONST",
+     "dtype": "dtypes.weakint",
+     "arg": "4",
+     "shape": "()"
+    },
+    {
+     "id": "n5",
+     "op": "MUL",
+     "dtype": "dtypes.weakint",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n6",
+     "op": "RANGE",
+     "dtype": "dtypes.weakint",
+     "arg": "(AxisType.WEAK, 2)",
+     "shape": "()"
+    },
+    {
+     "id": "n7",
+     "op": "ADD",
+     "dtype": "dtypes.weakint",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n8",
+     "op": "INDEX",
+     "dtype": "dtypes.f32",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n9",
+     "op": "CONST",
+     "dtype": "dtypes.weakint",
+     "arg": "6",
+     "shape": "()"
+    },
+    {
+     "id": "n10",
+     "op": "PARAM",
+     "dtype": "dtypes.f32",
+     "arg": "ParamArg(1, dtypes.f32, device='CPU')",
+     "shape": "(6,)"
+    },
+    {
+     "id": "n11",
+     "op": "CONST",
+     "dtype": "dtypes.weakint",
+     "arg": "3",
+     "shape": "()"
+    },
+    {
+     "id": "n12",
+     "op": "MUL",
+     "dtype": "dtypes.weakint",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n13",
+     "op": "RANGE",
+     "dtype": "dtypes.weakint",
+     "arg": "(AxisType.WEAK, 0)",
+     "shape": "()"
+    },
+    {
+     "id": "n14",
+     "op": "ADD",
+     "dtype": "dtypes.weakint",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n15",
+     "op": "INDEX",
+     "dtype": "dtypes.f32",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n16",
+     "op": "CONST",
+     "dtype": "dtypes.weakint",
+     "arg": "12",
+     "shape": "()"
+    },
+    {
+     "id": "n17",
+     "op": "PARAM",
+     "dtype": "dtypes.f32",
+     "arg": "ParamArg(2, dtypes.f32, device='CPU')",
+     "shape": "(12,)"
+    },
+    {
+     "id": "n18",
+     "op": "MUL",
+     "dtype": "dtypes.weakint",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n19",
+     "op": "ADD",
+     "dtype": "dtypes.weakint",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n20",
+     "op": "INDEX",
+     "dtype": "dtypes.f32",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n21",
+     "op": "MUL",
+     "dtype": "dtypes.f32",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n22",
+     "op": "REDUCE",
+     "dtype": "dtypes.f32",
+     "arg": "(Ops.ADD, 0)",
+     "shape": "()"
+    },
+    {
+     "id": "n23",
+     "op": "STORE",
+     "dtype": "dtypes.void",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n24",
+     "op": "END",
+     "dtype": "dtypes.void",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n25",
+     "op": "SINK",
+     "dtype": "dtypes.void",
+     "arg": "KernelInfo(name='test', applied_opts=(), opts_to_apply=None\u2026",
+     "shape": ""
+    }
+   ],
+   "edges": [
+    [
+     "n0",
+     "n1",
+     0
+    ],
+    [
+     "n2",
+     "n3",
+     0
+    ],
+    [
+     "n3",
+     "n5",
+     0
+    ],
+    [
+     "n4",
+     "n5",
+     1
+    ],
+    [
+     "n4",
+     "n6",
+     0
+    ],
+    [
+     "n5",
+     "n7",
+     0
+    ],
+    [
+     "n6",
+     "n7",
+     1
+    ],
+    [
+     "n1",
+     "n8",
+     0
+    ],
+    [
+     "n7",
+     "n8",
+     1
+    ],
+    [
+     "n9",
+     "n10",
+     0
+    ],
+    [
+     "n3",
+     "n12",
+     0
+    ],
+    [
+     "n11",
+     "n12",
+     1
+    ],
+    [
+     "n11",
+     "n13",
+     0
+    ],
+    [
+     "n12",
+     "n14",
+     0
+    ],
+    [
+     "n13",
+     "n14",
+     1
+    ],
+    [
+     "n10",
+     "n15",
+     0
+    ],
+    [
+     "n14",
+     "n15",
+     1
+    ],
+    [
+     "n16",
+     "n17",
+     0
+    ],
+    [
+     "n13",
+     "n18",
+     0
+    ],
+    [
+     "n4",
+     "n18",
+     1
+    ],
+    [
+     "n18",
+     "n19",
+     0
+    ],
+    [
+     "n6",
+     "n19",
+     1
+    ],
+    [
+     "n17",
+     "n20",
+     0
+    ],
+    [
+     "n19",
+     "n20",
+     1
+    ],
+    [
+     "n15",
+     "n21",
+     0
+    ],
+    [
+     "n20",
+     "n21",
+     1
+    ],
+    [
+     "n21",
+     "n22",
+     0
+    ],
+    [
+     "n13",
+     "n22",
+     1
+    ],
+    [
+     "n8",
+     "n23",
+     0
+    ],
+    [
+     "n22",
+     "n23",
+     1
+    ],
+    [
+     "n23",
+     "n24",
+     0
+    ],
+    [
+     "n3",
+     "n24",
+     1
+    ],
+    [
+     "n6",
+     "n24",
+     2
+    ],
+    [
+     "n24",
+     "n25",
+     0
+    ]
+   ]
+  },
+  "ir": [
+   {
+    "id": "n0",
+    "op": "CONST",
+    "src": [],
+    "dtype": "dtypes.weakint",
+    "val": 8
+   },
+   {
+    "id": "n1",
+    "op": "PARAM",
+    "src": [
+     "n0"
+    ],
+    "dtype": "dtypes.f32",
+    "slot": 0,
+    "size": 8
+   },
+   {
+    "id": "n2",
+    "op": "CONST",
+    "src": [],
+    "dtype": "dtypes.weakint",
+    "val": 2
+   },
+   {
+    "id": "n3",
+    "op": "RANGE",
+    "src": [
+     "n2"
+    ],
+    "dtype": "dtypes.weakint",
+    "axis_type": "WEAK",
+    "axis_id": 1,
+    "size": 2
+   },
+   {
+    "id": "n4",
+    "op": "CONST",
+    "src": [],
+    "dtype": "dtypes.weakint",
+    "val": 4
+   },
+   {
+    "id": "n5",
+    "op": "MUL",
+    "src": [
+     "n3",
+     "n4"
+    ],
+    "dtype": "dtypes.weakint"
+   },
+   {
+    "id": "n6",
+    "op": "RANGE",
+    "src": [
+     "n4"
+    ],
+    "dtype": "dtypes.weakint",
+    "axis_type": "WEAK",
+    "axis_id": 2,
+    "size": 4
+   },
+   {
+    "id": "n7",
+    "op": "ADD",
+    "src": [
+     "n5",
+     "n6"
+    ],
+    "dtype": "dtypes.weakint"
+   },
+   {
+    "id": "n8",
+    "op": "INDEX",
+    "src": [
+     "n1",
+     "n7"
+    ],
+    "dtype": "dtypes.f32"
+   },
+   {
+    "id": "n9",
+    "op": "CONST",
+    "src": [],
+    "dtype": "dtypes.weakint",
+    "val": 6
+   },
+   {
+    "id": "n10",
+    "op": "PARAM",
+    "src": [
+     "n9"
+    ],
+    "dtype": "dtypes.f32",
+    "slot": 1,
+    "size": 6
+   },
+   {
+    "id": "n11",
+    "op": "CONST",
+    "src": [],
+    "dtype": "dtypes.weakint",
+    "val": 3
+   },
+   {
+    "id": "n12",
+    "op": "MUL",
+    "src": [
+     "n3",
+     "n11"
+    ],
+    "dtype": "dtypes.weakint"
+   },
+   {
+    "id": "n13",
+    "op": "RANGE",
+    "src": [
+     "n11"
+    ],
+    "dtype": "dtypes.weakint",
+    "axis_type": "WEAK",
+    "axis_id": 0,
+    "size": 3
+   },
+   {
+    "id": "n14",
+    "op": "ADD",
+    "src": [
+     "n12",
+     "n13"
+    ],
+    "dtype": "dtypes.weakint"
+   },
+   {
+    "id": "n15",
+    "op": "INDEX",
+    "src": [
+     "n10",
+     "n14"
+    ],
+    "dtype": "dtypes.f32"
+   },
+   {
+    "id": "n16",
+    "op": "CONST",
+    "src": [],
+    "dtype": "dtypes.weakint",
+    "val": 12
+   },
+   {
+    "id": "n17",
+    "op": "PARAM",
+    "src": [
+     "n16"
+    ],
+    "dtype": "dtypes.f32",
+    "slot": 2,
+    "size": 12
+   },
+   {
+    "id": "n18",
+    "op": "MUL",
+    "src": [
+     "n13",
+     "n4"
+    ],
+    "dtype": "dtypes.weakint"
+   },
+   {
+    "id": "n19",
+    "op": "ADD",
+    "src": [
+     "n18",
+     "n6"
+    ],
+    "dtype": "dtypes.weakint"
+   },
+   {
+    "id": "n20",
+    "op": "INDEX",
+    "src": [
+     "n17",
+     "n19"
+    ],
+    "dtype": "dtypes.f32"
+   },
+   {
+    "id": "n21",
+    "op": "MUL",
+    "src": [
+     "n15",
+     "n20"
+    ],
+    "dtype": "dtypes.f32"
+   },
+   {
+    "id": "n22",
+    "op": "REDUCE",
+    "src": [
+     "n21",
+     "n13"
+    ],
+    "dtype": "dtypes.f32",
+    "rop": "ADD"
+   },
+   {
+    "id": "n23",
+    "op": "STORE",
+    "src": [
+     "n8",
+     "n22"
+    ],
+    "dtype": "dtypes.void"
+   },
+   {
+    "id": "n24",
+    "op": "END",
+    "src": [
+     "n23",
+     "n3",
+     "n6"
+    ],
+    "dtype": "dtypes.void"
+   },
+   {
+    "id": "n25",
+    "op": "SINK",
+    "src": [
+     "n24"
+    ],
+    "dtype": "dtypes.void"
+   }
+  ],
+  "result": [
+   [
+    19.0,
+    22.0,
+    25.0,
+    28.0
+   ],
+   [
+    14.0,
+    16.0,
+    18.0,
+    20.0
+   ]
+  ],
+  "slots": {
+   "0": "out",
+   "1": "M",
+   "2": "A"
+  },
+  "noopt": {
+   "rngs": [
+    [
+     2,
+     "WEAK"
+    ],
+    [
+     4,
+     "WEAK"
+    ],
+    [
+     3,
+     "WEAK"
+    ]
+   ],
+   "name": "r_2_4_3",
+   "fname": "r_2_4_3",
+   "opts": [],
+   "src": "struct r_2_4_3_args { float* arg0; float* arg1; float* arg2; };\nvoid r_2_4_3(const struct r_2_4_3_args* args) {\n  float* data0_8 = args->arg0;\n  float* data1_6 = args->arg1;\n  float* data2_12 = args->arg2;\n  float buf0[1];\n  for (int Lidx1 = 0; Lidx1 < 2; Lidx1++) {\n    for (int Lidx2 = 0; Lidx2 < 4; Lidx2++) {\n      *(buf0+0) = 0.0f;\n      for (int Lidx0 = 0; Lidx0 < 3; Lidx0++) {\n        float val0 = (*(data1_6+((Lidx1*3)+Lidx0)));\n        float val1 = (*(data2_12+((Lidx0<<2)+Lidx2)));\n        *(buf0+0) = ((*(buf0+0))+(val0*val1));\n      }\n      *(data0_8+((Lidx1<<2)+Lidx2)) = (*(buf0+0));\n    }\n  }\n}",
+   "est": {
+    "ops": 48,
+    "lds": 224,
+    "mem": 104
+   }
+  },
+  "opt": {
+   "rngs": [
+    [
+     2,
+     "WEAK"
+    ],
+    [
+     4,
+     "WEAK"
+    ],
+    [
+     3,
+     "UPCAST"
+    ]
+   ],
+   "name": "r_2_4_3",
+   "fname": "r_2_4_3",
+   "opts": [
+    "Opt(op=OptOps.SPLIT, axis=2, arg=(0, AxisType.UPCAST))"
+   ],
+   "src": "struct r_2_4_3_args { float* arg0; float* arg1; float* arg2; };\nvoid r_2_4_3(const struct r_2_4_3_args* args) {\n  float* data0_8 = args->arg0;\n  float* data1_6 = args->arg1;\n  float* data2_12 = args->arg2;\n  for (int Lidx1 = 0; Lidx1 < 2; Lidx1++) {\n    int alu0 = (Lidx1*3);\n    float val0 = (*(data1_6+(alu0+1)));\n    float val1 = (*(data1_6+(alu0+2)));\n    float val2 = (*(data1_6+alu0));\n    for (int Lidx2 = 0; Lidx2 < 4; Lidx2++) {\n      float val3 = (*(data2_12+(Lidx2+4)));\n      float val4 = (*(data2_12+(Lidx2+8)));\n      float val5 = (*(data2_12+Lidx2));\n      *(data0_8+((Lidx1<<2)+Lidx2)) = ((val2*val5)+(val0*val3)+(val1*val4));\n    }\n  }\n}",
+   "est": {
+    "ops": 40,
+    "lds": 152,
+    "mem": 104
+   }
+  }
+ },
+ "pad": {
+  "code": "x.pad((1,1)) * 2      # (3,) -> (5,)",
+  "name_ansi": [
+   "E_5",
+   "E_5"
+  ],
+  "uir": "%0 = param 5 : dtype=f32 slot=0 device=CPU\n%1 = range 5 : WEAK 0\n%2 = index %0, %1\n%3 = cmplt %1, 1\n%4 = cmpeq %3, false\n%5 = cmplt %1, 4\n%6 = and %4, %5\n%7 = param 3 : dtype=f32 slot=1 device=CPU\n%8 = add %1, -1\n%9 = where %6, %8, invalid\n%10 = index %7, %9\n%11 = where %6, %10, 0.0\n%12 = mul %11, 2.0\n%13 = store %2, %12\n%14 = end %13, %1\n%15 = sink %14 : test",
+  "repr": null,
+  "census": {
+   "CONST": 9,
+   "PARAM": 2,
+   "RANGE": 1,
+   "INDEX": 2,
+   "CMPLT": 2,
+   "CMPEQ": 1,
+   "AND": 1,
+   "ADD": 1,
+   "WHERE": 2,
+   "MUL": 1,
+   "STORE": 1,
+   "END": 1,
+   "SINK": 1
+  },
+  "graph": {
+   "nodes": [
+    {
+     "id": "n0",
+     "op": "CONST",
+     "dtype": "dtypes.weakint",
+     "arg": "5",
+     "shape": "()"
+    },
+    {
+     "id": "n1",
+     "op": "PARAM",
+     "dtype": "dtypes.f32",
+     "arg": "ParamArg(0, dtypes.f32, device='CPU')",
+     "shape": "(5,)"
+    },
+    {
+     "id": "n2",
+     "op": "RANGE",
+     "dtype": "dtypes.weakint",
+     "arg": "(AxisType.WEAK, 0)",
+     "shape": "()"
+    },
+    {
+     "id": "n3",
+     "op": "INDEX",
+     "dtype": "dtypes.f32",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n4",
+     "op": "CONST",
+     "dtype": "dtypes.weakint",
+     "arg": "1",
+     "shape": "()"
+    },
+    {
+     "id": "n5",
+     "op": "CMPLT",
+     "dtype": "dtypes.bool",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n6",
+     "op": "CONST",
+     "dtype": "dtypes.bool",
+     "arg": "False",
+     "shape": "()"
+    },
+    {
+     "id": "n7",
+     "op": "CMPEQ",
+     "dtype": "dtypes.bool",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n8",
+     "op": "CONST",
+     "dtype": "dtypes.weakint",
+     "arg": "4",
+     "shape": "()"
+    },
+    {
+     "id": "n9",
+     "op": "CMPLT",
+     "dtype": "dtypes.bool",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n10",
+     "op": "AND",
+     "dtype": "dtypes.bool",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n11",
+     "op": "CONST",
+     "dtype": "dtypes.weakint",
+     "arg": "3",
+     "shape": "()"
+    },
+    {
+     "id": "n12",
+     "op": "PARAM",
+     "dtype": "dtypes.f32",
+     "arg": "ParamArg(1, dtypes.f32, device='CPU')",
+     "shape": "(3,)"
+    },
+    {
+     "id": "n13",
+     "op": "CONST",
+     "dtype": "dtypes.weakint",
+     "arg": "-1",
+     "shape": "()"
+    },
+    {
+     "id": "n14",
+     "op": "ADD",
+     "dtype": "dtypes.weakint",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n15",
+     "op": "CONST",
+     "dtype": "dtypes.bool",
+     "arg": "Invalid",
+     "shape": "()"
+    },
+    {
+     "id": "n16",
+     "op": "WHERE",
+     "dtype": "dtypes.weakint",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n17",
+     "op": "INDEX",
+     "dtype": "dtypes.f32",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n18",
+     "op": "CONST",
+     "dtype": "dtypes.weakfloat",
+     "arg": "0.0",
+     "shape": "()"
+    },
+    {
+     "id": "n19",
+     "op": "WHERE",
+     "dtype": "dtypes.f32",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n20",
+     "op": "CONST",
+     "dtype": "dtypes.weakfloat",
+     "arg": "2.0",
+     "shape": "()"
+    },
+    {
+     "id": "n21",
+     "op": "MUL",
+     "dtype": "dtypes.f32",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n22",
+     "op": "STORE",
+     "dtype": "dtypes.void",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n23",
+     "op": "END",
+     "dtype": "dtypes.void",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n24",
+     "op": "SINK",
+     "dtype": "dtypes.void",
+     "arg": "KernelInfo(name='test', applied_opts=(), opts_to_apply=None\u2026",
+     "shape": ""
+    }
+   ],
+   "edges": [
+    [
+     "n0",
+     "n1",
+     0
+    ],
+    [
+     "n0",
+     "n2",
+     0
+    ],
+    [
+     "n1",
+     "n3",
+     0
+    ],
+    [
+     "n2",
+     "n3",
+     1
+    ],
+    [
+     "n2",
+     "n5",
+     0
+    ],
+    [
+     "n4",
+     "n5",
+     1
+    ],
+    [
+     "n5",
+     "n7",
+     0
+    ],
+    [
+     "n6",
+     "n7",
+     1
+    ],
+    [
+     "n2",
+     "n9",
+     0
+    ],
+    [
+     "n8",
+     "n9",
+     1
+    ],
+    [
+     "n7",
+     "n10",
+     0
+    ],
+    [
+     "n9",
+     "n10",
+     1
+    ],
+    [
+     "n11",
+     "n12",
+     0
+    ],
+    [
+     "n2",
+     "n14",
+     0
+    ],
+    [
+     "n13",
+     "n14",
+     1
+    ],
+    [
+     "n10",
+     "n16",
+     0
+    ],
+    [
+     "n14",
+     "n16",
+     1
+    ],
+    [
+     "n15",
+     "n16",
+     2
+    ],
+    [
+     "n12",
+     "n17",
+     0
+    ],
+    [
+     "n16",
+     "n17",
+     1
+    ],
+    [
+     "n10",
+     "n19",
+     0
+    ],
+    [
+     "n17",
+     "n19",
+     1
+    ],
+    [
+     "n18",
+     "n19",
+     2
+    ],
+    [
+     "n19",
+     "n21",
+     0
+    ],
+    [
+     "n20",
+     "n21",
+     1
+    ],
+    [
+     "n3",
+     "n22",
+     0
+    ],
+    [
+     "n21",
+     "n22",
+     1
+    ],
+    [
+     "n22",
+     "n23",
+     0
+    ],
+    [
+     "n2",
+     "n23",
+     1
+    ],
+    [
+     "n23",
+     "n24",
+     0
+    ]
+   ]
+  },
+  "ir": [
+   {
+    "id": "n0",
+    "op": "CONST",
+    "src": [],
+    "dtype": "dtypes.weakint",
+    "val": 5
+   },
+   {
+    "id": "n1",
+    "op": "PARAM",
+    "src": [
+     "n0"
+    ],
+    "dtype": "dtypes.f32",
+    "slot": 0,
+    "size": 5
+   },
+   {
+    "id": "n2",
+    "op": "RANGE",
+    "src": [
+     "n0"
+    ],
+    "dtype": "dtypes.weakint",
+    "axis_type": "WEAK",
+    "axis_id": 0,
+    "size": 5
+   },
+   {
+    "id": "n3",
+    "op": "INDEX",
+    "src": [
+     "n1",
+     "n2"
+    ],
+    "dtype": "dtypes.f32"
+   },
+   {
+    "id": "n4",
+    "op": "CONST",
+    "src": [],
+    "dtype": "dtypes.weakint",
+    "val": 1
+   },
+   {
+    "id": "n5",
+    "op": "CMPLT",
+    "src": [
+     "n2",
+     "n4"
+    ],
+    "dtype": "dtypes.bool"
+   },
+   {
+    "id": "n6",
+    "op": "CONST",
+    "src": [],
+    "dtype": "dtypes.bool",
+    "val": false
+   },
+   {
+    "id": "n7",
+    "op": "CMPEQ",
+    "src": [
+     "n5",
+     "n6"
+    ],
+    "dtype": "dtypes.bool"
+   },
+   {
+    "id": "n8",
+    "op": "CONST",
+    "src": [],
+    "dtype": "dtypes.weakint",
+    "val": 4
+   },
+   {
+    "id": "n9",
+    "op": "CMPLT",
+    "src": [
+     "n2",
+     "n8"
+    ],
+    "dtype": "dtypes.bool"
+   },
+   {
+    "id": "n10",
+    "op": "AND",
+    "src": [
+     "n7",
+     "n9"
+    ],
+    "dtype": "dtypes.bool"
+   },
+   {
+    "id": "n11",
+    "op": "CONST",
+    "src": [],
+    "dtype": "dtypes.weakint",
+    "val": 3
+   },
+   {
+    "id": "n12",
+    "op": "PARAM",
+    "src": [
+     "n11"
+    ],
+    "dtype": "dtypes.f32",
+    "slot": 1,
+    "size": 3
+   },
+   {
+    "id": "n13",
+    "op": "CONST",
+    "src": [],
+    "dtype": "dtypes.weakint",
+    "val": -1
+   },
+   {
+    "id": "n14",
+    "op": "ADD",
+    "src": [
+     "n2",
+     "n13"
+    ],
+    "dtype": "dtypes.weakint"
+   },
+   {
+    "id": "n15",
+    "op": "CONST",
+    "src": [],
+    "dtype": "dtypes.bool",
+    "val": "Invalid"
+   },
+   {
+    "id": "n16",
+    "op": "WHERE",
+    "src": [
+     "n10",
+     "n14",
+     "n15"
+    ],
+    "dtype": "dtypes.weakint"
+   },
+   {
+    "id": "n17",
+    "op": "INDEX",
+    "src": [
+     "n12",
+     "n16"
+    ],
+    "dtype": "dtypes.f32"
+   },
+   {
+    "id": "n18",
+    "op": "CONST",
+    "src": [],
+    "dtype": "dtypes.weakfloat",
+    "val": 0.0
+   },
+   {
+    "id": "n19",
+    "op": "WHERE",
+    "src": [
+     "n10",
+     "n17",
+     "n18"
+    ],
+    "dtype": "dtypes.f32"
+   },
+   {
+    "id": "n20",
+    "op": "CONST",
+    "src": [],
+    "dtype": "dtypes.weakfloat",
+    "val": 2.0
+   },
+   {
+    "id": "n21",
+    "op": "MUL",
+    "src": [
+     "n19",
+     "n20"
+    ],
+    "dtype": "dtypes.f32"
+   },
+   {
+    "id": "n22",
+    "op": "STORE",
+    "src": [
+     "n3",
+     "n21"
+    ],
+    "dtype": "dtypes.void"
+   },
+   {
+    "id": "n23",
+    "op": "END",
+    "src": [
+     "n22",
+     "n2"
+    ],
+    "dtype": "dtypes.void"
+   },
+   {
+    "id": "n24",
+    "op": "SINK",
+    "src": [
+     "n23"
+    ],
+    "dtype": "dtypes.void"
+   }
+  ],
+  "result": [
+   0.0,
+   2.0,
+   4.0,
+   6.0,
+   0.0
+  ],
+  "slots": {
+   "0": "out",
+   "1": "x"
+  },
+  "noopt": {
+   "rngs": [
+    [
+     5,
+     "WEAK"
+    ]
+   ],
+   "name": "E_5",
+   "fname": "E_5",
+   "opts": [],
+   "src": "struct E_5_args { float* arg0; float* arg1; };\nvoid E_5(const struct E_5_args* args) {\n  float* data0_5 = args->arg0;\n  float* data1_3 = args->arg1;\n  for (int Lidx0 = 0; Lidx0 < 5; Lidx0++) {\n    float val0 = (((0<Lidx0)&(Lidx0<4))?*(data1_3+(Lidx0+-1)):0.0f);\n    *(data0_5+Lidx0) = (val0*2.0f);\n  }\n}",
+   "est": {
+    "ops": 20,
+    "lds": 40,
+    "mem": 32
+   }
+  },
+  "opt": {
+   "rngs": [
+    [
+     5,
+     "UPCAST"
+    ]
+   ],
+   "name": "E_5",
+   "fname": "E_5",
+   "opts": [
+    "Opt(op=OptOps.SPLIT, axis=0, arg=(0, AxisType.UPCAST))"
+   ],
+   "src": "typedef float float2 __attribute__((aligned(4),ext_vector_type(2)));\ntypedef float float4 __attribute__((aligned(4),ext_vector_type(4)));\nstruct E_5_args { float* arg0; float* arg1; };\nvoid E_5(const struct E_5_args* args) {\n  float* data0_5 = args->arg0;\n  float* data1_3 = args->arg1;\n  float val0 = (*(data1_3+2));\n  float2 val1 = (*((float2*)((data1_3+0))));\n  *(data0_5+4) = 0.0f;\n  *((float4*)((data0_5+0))) = (float4){0.0f,(val1[0]*2.0f),(val1[1]*2.0f),(val0*2.0f)};\n}",
+   "est": {
+    "ops": 3,
+    "lds": 32,
+    "mem": 32
+   }
+  }
+ },
+ "bcast": {
+  "code": "col + row             # (3,1) + (1,4) -> (3,4)",
+  "name_ansi": [
+   "E_3_4",
+   "E_3_4"
+  ],
+  "uir": "%0 = param 12 : dtype=f32 slot=0 device=CPU\n%1 = range 3 : WEAK 0\n%2 = mul %1, 4\n%3 = range 4 : WEAK 1\n%4 = add %2, %3\n%5 = index %0, %4\n%6 = param 3 : dtype=f32 slot=1 device=CPU\n%7 = index %6, %1\n%8 = param 4 : dtype=f32 slot=2 device=CPU\n%9 = index %8, %3\n%10 = add %7, %9\n%11 = store %5, %10\n%12 = end %11, %1, %3\n%13 = sink %12 : test",
+  "repr": null,
+  "census": {
+   "CONST": 3,
+   "PARAM": 3,
+   "RANGE": 2,
+   "MUL": 1,
+   "ADD": 2,
+   "INDEX": 3,
+   "STORE": 1,
+   "END": 1,
+   "SINK": 1
+  },
+  "graph": {
+   "nodes": [
+    {
+     "id": "n0",
+     "op": "CONST",
+     "dtype": "dtypes.weakint",
+     "arg": "12",
+     "shape": "()"
+    },
+    {
+     "id": "n1",
+     "op": "PARAM",
+     "dtype": "dtypes.f32",
+     "arg": "ParamArg(0, dtypes.f32, device='CPU')",
+     "shape": "(12,)"
+    },
+    {
+     "id": "n2",
+     "op": "CONST",
+     "dtype": "dtypes.weakint",
+     "arg": "3",
+     "shape": "()"
+    },
+    {
+     "id": "n3",
+     "op": "RANGE",
+     "dtype": "dtypes.weakint",
+     "arg": "(AxisType.WEAK, 0)",
+     "shape": "()"
+    },
+    {
+     "id": "n4",
+     "op": "CONST",
+     "dtype": "dtypes.weakint",
+     "arg": "4",
+     "shape": "()"
+    },
+    {
+     "id": "n5",
+     "op": "MUL",
+     "dtype": "dtypes.weakint",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n6",
+     "op": "RANGE",
+     "dtype": "dtypes.weakint",
+     "arg": "(AxisType.WEAK, 1)",
+     "shape": "()"
+    },
+    {
+     "id": "n7",
+     "op": "ADD",
+     "dtype": "dtypes.weakint",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n8",
+     "op": "INDEX",
+     "dtype": "dtypes.f32",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n9",
+     "op": "PARAM",
+     "dtype": "dtypes.f32",
+     "arg": "ParamArg(1, dtypes.f32, device='CPU')",
+     "shape": "(3,)"
+    },
+    {
+     "id": "n10",
+     "op": "INDEX",
+     "dtype": "dtypes.f32",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n11",
+     "op": "PARAM",
+     "dtype": "dtypes.f32",
+     "arg": "ParamArg(2, dtypes.f32, device='CPU')",
+     "shape": "(4,)"
+    },
+    {
+     "id": "n12",
+     "op": "INDEX",
+     "dtype": "dtypes.f32",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n13",
+     "op": "ADD",
+     "dtype": "dtypes.f32",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n14",
+     "op": "STORE",
+     "dtype": "dtypes.void",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n15",
+     "op": "END",
+     "dtype": "dtypes.void",
+     "arg": "None",
+     "shape": "()"
+    },
+    {
+     "id": "n16",
+     "op": "SINK",
+     "dtype": "dtypes.void",
+     "arg": "KernelInfo(name='test', applied_opts=(), opts_to_apply=None\u2026",
+     "shape": ""
+    }
+   ],
+   "edges": [
+    [
+     "n0",
+     "n1",
+     0
+    ],
+    [
+     "n2",
+     "n3",
+     0
+    ],
+    [
+     "n3",
+     "n5",
+     0
+    ],
+    [
+     "n4",
+     "n5",
+     1
+    ],
+    [
+     "n4",
+     "n6",
+     0
+    ],
+    [
+     "n5",
+     "n7",
+     0
+    ],
+    [
+     "n6",
+     "n7",
+     1
+    ],
+    [
+     "n1",
+     "n8",
+     0
+    ],
+    [
+     "n7",
+     "n8",
+     1
+    ],
+    [
+     "n2",
+     "n9",
+     0
+    ],
+    [
+     "n9",
+     "n10",
+     0
+    ],
+    [
+     "n3",
+     "n10",
+     1
+    ],
+    [
+     "n4",
+     "n11",
+     0
+    ],
+    [
+     "n11",
+     "n12",
+     0
+    ],
+    [
+     "n6",
+     "n12",
+     1
+    ],
+    [
+     "n10",
+     "n13",
+     0
+    ],
+    [
+     "n12",
+     "n13",
+     1
+    ],
+    [
+     "n8",
+     "n14",
+     0
+    ],
+    [
+     "n13",
+     "n14",
+     1
+    ],
+    [
+     "n14",
+     "n15",
+     0
+    ],
+    [
+     "n3",
+     "n15",
+     1
+    ],
+    [
+     "n6",
+     "n15",
+     2
+    ],
+    [
+     "n15",
+     "n16",
+     0
+    ]
+   ]
+  },
+  "ir": [
+   {
+    "id": "n0",
+    "op": "CONST",
+    "src": [],
+    "dtype": "dtypes.weakint",
+    "val": 12
+   },
+   {
+    "id": "n1",
+    "op": "PARAM",
+    "src": [
+     "n0"
+    ],
+    "dtype": "dtypes.f32",
+    "slot": 0,
+    "size": 12
+   },
+   {
+    "id": "n2",
+    "op": "CONST",
+    "src": [],
+    "dtype": "dtypes.weakint",
+    "val": 3
+   },
+   {
+    "id": "n3",
+    "op": "RANGE",
+    "src": [
+     "n2"
+    ],
+    "dtype": "dtypes.weakint",
+    "axis_type": "WEAK",
+    "axis_id": 0,
+    "size": 3
+   },
+   {
+    "id": "n4",
+    "op": "CONST",
+    "src": [],
+    "dtype": "dtypes.weakint",
+    "val": 4
+   },
+   {
+    "id": "n5",
+    "op": "MUL",
+    "src": [
+     "n3",
+     "n4"
+    ],
+    "dtype": "dtypes.weakint"
+   },
+   {
+    "id": "n6",
+    "op": "RANGE",
+    "src": [
+     "n4"
+    ],
+    "dtype": "dtypes.weakint",
+    "axis_type": "WEAK",
+    "axis_id": 1,
+    "size": 4
+   },
+   {
+    "id": "n7",
+    "op": "ADD",
+    "src": [
+     "n5",
+     "n6"
+    ],
+    "dtype": "dtypes.weakint"
+   },
+   {
+    "id": "n8",
+    "op": "INDEX",
+    "src": [
+     "n1",
+     "n7"
+    ],
+    "dtype": "dtypes.f32"
+   },
+   {
+    "id": "n9",
+    "op": "PARAM",
+    "src": [
+     "n2"
+    ],
+    "dtype": "dtypes.f32",
+    "slot": 1,
+    "size": 3
+   },
+   {
+    "id": "n10",
+    "op": "INDEX",
+    "src": [
+     "n9",
+     "n3"
+    ],
+    "dtype": "dtypes.f32"
+   },
+   {
+    "id": "n11",
+    "op": "PARAM",
+    "src": [
+     "n4"
+    ],
+    "dtype": "dtypes.f32",
+    "slot": 2,
+    "size": 4
+   },
+   {
+    "id": "n12",
+    "op": "INDEX",
+    "src": [
+     "n11",
+     "n6"
+    ],
+    "dtype": "dtypes.f32"
+   },
+   {
+    "id": "n13",
+    "op": "ADD",
+    "src": [
+     "n10",
+     "n12"
+    ],
+    "dtype": "dtypes.f32"
+   },
+   {
+    "id": "n14",
+    "op": "STORE",
+    "src": [
+     "n8",
+     "n13"
+    ],
+    "dtype": "dtypes.void"
+   },
+   {
+    "id": "n15",
+    "op": "END",
+    "src": [
+     "n14",
+     "n3",
+     "n6"
+    ],
+    "dtype": "dtypes.void"
+   },
+   {
+    "id": "n16",
+    "op": "SINK",
+    "src": [
+     "n15"
+    ],
+    "dtype": "dtypes.void"
+   }
+  ],
+  "result": [
+   [
+    11.0,
+    21.0,
+    31.0,
+    41.0
+   ],
+   [
+    12.0,
+    22.0,
+    32.0,
+    42.0
+   ],
+   [
+    13.0,
+    23.0,
+    33.0,
+    43.0
+   ]
+  ],
+  "slots": {
+   "0": "out",
+   "1": "col",
+   "2": "row"
+  },
+  "noopt": {
+   "rngs": [
+    [
+     3,
+     "WEAK"
+    ],
+    [
+     4,
+     "WEAK"
+    ]
+   ],
+   "name": "E_3_4",
+   "fname": "E_3_4",
+   "opts": [],
+   "src": "struct E_3_4_args { float* arg0; float* arg1; float* arg2; };\nvoid E_3_4(const struct E_3_4_args* args) {\n  float* data0_12 = args->arg0;\n  float* data1_3 = args->arg1;\n  float* data2_4 = args->arg2;\n  for (int Lidx0 = 0; Lidx0 < 3; Lidx0++) {\n    float val0 = (*(data1_3+Lidx0));\n    for (int Lidx1 = 0; Lidx1 < 4; Lidx1++) {\n      float val1 = (*(data2_4+Lidx1));\n      *(data0_12+((Lidx0<<2)+Lidx1)) = (val0+val1);\n    }\n  }\n}",
+   "est": {
+    "ops": 12,
+    "lds": 108,
+    "mem": 76
+   }
+  },
+  "opt": {
+   "rngs": [
+    [
+     3,
+     "WEAK"
+    ],
+    [
+     4,
+     "UPCAST"
+    ]
+   ],
+   "name": "E_3_4",
+   "fname": "E_3_4",
+   "opts": [
+    "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))"
+   ],
+   "src": "typedef float float4 __attribute__((aligned(4),ext_vector_type(4)));\nstruct E_3_4_args { float* arg0; float* arg1; float* arg2; };\nvoid E_3_4(const struct E_3_4_args* args) {\n  float* data0_12 = args->arg0;\n  float* data1_3 = args->arg1;\n  float* data2_4 = args->arg2;\n  float4 val0 = (*((float4*)((data2_4+0))));\n  for (int Lidx0 = 0; Lidx0 < 3; Lidx0++) {\n    float val1 = (*(data1_3+Lidx0));\n    *((float4*)((data0_12+(Lidx0<<2)))) = (float4){(val1+val0[0]),(val1+val0[1]),(val1+val0[2]),(val1+val0[3])};\n  }\n}",
+   "est": {
+    "ops": 12,
+    "lds": 76,
+    "mem": 76
+   }
+  }
+ },
+ "_inputs": {
+  "A": [
+   [
+    1.0,
+    2.0,
+    3.0,
+    4.0
+   ],
+   [
+    5.0,
+    6.0,
+    7.0,
+    8.0
+   ],
+   [
+    9.0,
+    10.0,
+    11.0,
+    12.0
+   ]
+  ],
+  "B": [
+   [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   [
+    2.0,
+    2.0,
+    2.0,
+    2.0
+   ],
+   [
+    3.0,
+    3.0,
+    3.0,
+    3.0
+   ]
+  ],
+  "M": [
+   [
+    1.0,
+    0.0,
+    2.0
+   ],
+   [
+    0.0,
+    1.0,
+    1.0
+   ]
+  ],
+  "x": [
+   1.0,
+   2.0,
+   3.0
+  ],
+  "col": [
+   [
+    1.0
+   ],
+   [
+    2.0
+   ],
+   [
+    3.0
+   ]
+  ],
+  "row": [
+   [
+    10.0,
+    20.0,
+    30.0,
+    40.0
+   ]
+  ]
+ },
+ "_zoo": {
+  "softmax (3 kernels)": [
+   {
+    "uir": "%0 = param 2 : dtype=f32 slot=0 device=CPU\n%1 = range 2 : WEAK 1\n%2 = index %0, %1\n%3 = param 16 : dtype=f32 slot=1 device=CPU\n%4 = mul %1, 8\n%5 = range 8 : WEAK 0\n%6 = add %4, %5\n%7 = index %3, %6\n%8 = reduce %7, %5 : op=max\n%9 = store %2, %8\n%10 = end %9, %1\n%11 = sink %10 : test",
+    "graph": {
+     "nodes": [
+      {
+       "id": "n0",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "2",
+       "shape": "()"
+      },
+      {
+       "id": "n1",
+       "op": "PARAM",
+       "dtype": "dtypes.f32",
+       "arg": "ParamArg(0, dtypes.f32, device='CPU')",
+       "shape": "(2,)"
+      },
+      {
+       "id": "n2",
+       "op": "RANGE",
+       "dtype": "dtypes.weakint",
+       "arg": "(AxisType.WEAK, 1)",
+       "shape": "()"
+      },
+      {
+       "id": "n3",
+       "op": "INDEX",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n4",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "16",
+       "shape": "()"
+      },
+      {
+       "id": "n5",
+       "op": "PARAM",
+       "dtype": "dtypes.f32",
+       "arg": "ParamArg(1, dtypes.f32, device='CPU')",
+       "shape": "(16,)"
+      },
+      {
+       "id": "n6",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "8",
+       "shape": "()"
+      },
+      {
+       "id": "n7",
+       "op": "MUL",
+       "dtype": "dtypes.weakint",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n8",
+       "op": "RANGE",
+       "dtype": "dtypes.weakint",
+       "arg": "(AxisType.WEAK, 0)",
+       "shape": "()"
+      },
+      {
+       "id": "n9",
+       "op": "ADD",
+       "dtype": "dtypes.weakint",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n10",
+       "op": "INDEX",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n11",
+       "op": "REDUCE",
+       "dtype": "dtypes.f32",
+       "arg": "(Ops.MAX, 0)",
+       "shape": "()"
+      },
+      {
+       "id": "n12",
+       "op": "STORE",
+       "dtype": "dtypes.void",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n13",
+       "op": "END",
+       "dtype": "dtypes.void",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n14",
+       "op": "SINK",
+       "dtype": "dtypes.void",
+       "arg": "KernelInfo(name='test', applied_opts=(), opts_to_apply=None\u2026",
+       "shape": ""
+      }
+     ],
+     "edges": [
+      [
+       "n0",
+       "n1",
+       0
+      ],
+      [
+       "n0",
+       "n2",
+       0
+      ],
+      [
+       "n1",
+       "n3",
+       0
+      ],
+      [
+       "n2",
+       "n3",
+       1
+      ],
+      [
+       "n4",
+       "n5",
+       0
+      ],
+      [
+       "n2",
+       "n7",
+       0
+      ],
+      [
+       "n6",
+       "n7",
+       1
+      ],
+      [
+       "n6",
+       "n8",
+       0
+      ],
+      [
+       "n7",
+       "n9",
+       0
+      ],
+      [
+       "n8",
+       "n9",
+       1
+      ],
+      [
+       "n5",
+       "n10",
+       0
+      ],
+      [
+       "n9",
+       "n10",
+       1
+      ],
+      [
+       "n10",
+       "n11",
+       0
+      ],
+      [
+       "n8",
+       "n11",
+       1
+      ],
+      [
+       "n3",
+       "n12",
+       0
+      ],
+      [
+       "n11",
+       "n12",
+       1
+      ],
+      [
+       "n12",
+       "n13",
+       0
+      ],
+      [
+       "n2",
+       "n13",
+       1
+      ],
+      [
+       "n13",
+       "n14",
+       0
+      ]
+     ]
+    },
+    "name": "r_2_8",
+    "fname": "r_2_8",
+    "src": "struct r_2_8_args { float* arg0; float* arg1; };\nvoid r_2_8(const struct r_2_8_args* args) {\n  float* data0_2 = args->arg0;\n  float* data1_16 = args->arg1;\n  float buf0[1];\n  for (int Lidx1 = 0; Lidx1 < 2; Lidx1++) {\n    *(buf0+0) = ((float)(-__builtin_inff()));\n    for (int Lidx0 = 0; Lidx0 < 8; Lidx0++) {\n      float val0 = (*(data1_16+((Lidx1<<3)+Lidx0)));\n      float val1 = (*(buf0+0));\n      float alu1 = ((val1<val0)?val0:val1);\n      *(buf0+0) = alu1;\n    }\n    *(data0_2+Lidx1) = (*(buf0+0));\n  }\n}",
+    "census": {
+     "CONST": 3,
+     "PARAM": 2,
+     "RANGE": 2,
+     "INDEX": 2,
+     "MUL": 1,
+     "ADD": 1,
+     "REDUCE": 1,
+     "STORE": 1,
+     "END": 1,
+     "SINK": 1
+    }
+   },
+   {
+    "uir": "%0 = param 2 : dtype=f32 slot=0 device=CPU\n%1 = range 2 : WEAK 1\n%2 = index %0, %1\n%3 = param 16 : dtype=f32 slot=1 device=CPU\n%4 = mul %1, 8\n%5 = range 8 : WEAK 0\n%6 = add %4, %5\n%7 = index %3, %6\n%8 = param 2 : dtype=f32 slot=2 device=CPU\n%9 = index %8, %1\n%10 = mul %9, -1.0\n%11 = add %7, %10\n%12 = mul %11, 1.4426950408889634\n%13 = exp2 %12\n%14 = reduce %13, %5 : op=add\n%15 = store %2, %14\n%16 = end %15, %1\n%17 = sink %16 : test",
+    "graph": {
+     "nodes": [
+      {
+       "id": "n0",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "2",
+       "shape": "()"
+      },
+      {
+       "id": "n1",
+       "op": "PARAM",
+       "dtype": "dtypes.f32",
+       "arg": "ParamArg(0, dtypes.f32, device='CPU')",
+       "shape": "(2,)"
+      },
+      {
+       "id": "n2",
+       "op": "RANGE",
+       "dtype": "dtypes.weakint",
+       "arg": "(AxisType.WEAK, 1)",
+       "shape": "()"
+      },
+      {
+       "id": "n3",
+       "op": "INDEX",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n4",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "16",
+       "shape": "()"
+      },
+      {
+       "id": "n5",
+       "op": "PARAM",
+       "dtype": "dtypes.f32",
+       "arg": "ParamArg(1, dtypes.f32, device='CPU')",
+       "shape": "(16,)"
+      },
+      {
+       "id": "n6",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "8",
+       "shape": "()"
+      },
+      {
+       "id": "n7",
+       "op": "MUL",
+       "dtype": "dtypes.weakint",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n8",
+       "op": "RANGE",
+       "dtype": "dtypes.weakint",
+       "arg": "(AxisType.WEAK, 0)",
+       "shape": "()"
+      },
+      {
+       "id": "n9",
+       "op": "ADD",
+       "dtype": "dtypes.weakint",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n10",
+       "op": "INDEX",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n11",
+       "op": "PARAM",
+       "dtype": "dtypes.f32",
+       "arg": "ParamArg(2, dtypes.f32, device='CPU')",
+       "shape": "(2,)"
+      },
+      {
+       "id": "n12",
+       "op": "INDEX",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n13",
+       "op": "CONST",
+       "dtype": "dtypes.weakfloat",
+       "arg": "-1.0",
+       "shape": "()"
+      },
+      {
+       "id": "n14",
+       "op": "MUL",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n15",
+       "op": "ADD",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n16",
+       "op": "CONST",
+       "dtype": "dtypes.weakfloat",
+       "arg": "1.4426950408889634",
+       "shape": "()"
+      },
+      {
+       "id": "n17",
+       "op": "MUL",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n18",
+       "op": "EXP2",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n19",
+       "op": "REDUCE",
+       "dtype": "dtypes.f32",
+       "arg": "(Ops.ADD, 0)",
+       "shape": "()"
+      },
+      {
+       "id": "n20",
+       "op": "STORE",
+       "dtype": "dtypes.void",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n21",
+       "op": "END",
+       "dtype": "dtypes.void",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n22",
+       "op": "SINK",
+       "dtype": "dtypes.void",
+       "arg": "KernelInfo(name='test', applied_opts=(), opts_to_apply=None\u2026",
+       "shape": ""
+      }
+     ],
+     "edges": [
+      [
+       "n0",
+       "n1",
+       0
+      ],
+      [
+       "n0",
+       "n2",
+       0
+      ],
+      [
+       "n1",
+       "n3",
+       0
+      ],
+      [
+       "n2",
+       "n3",
+       1
+      ],
+      [
+       "n4",
+       "n5",
+       0
+      ],
+      [
+       "n2",
+       "n7",
+       0
+      ],
+      [
+       "n6",
+       "n7",
+       1
+      ],
+      [
+       "n6",
+       "n8",
+       0
+      ],
+      [
+       "n7",
+       "n9",
+       0
+      ],
+      [
+       "n8",
+       "n9",
+       1
+      ],
+      [
+       "n5",
+       "n10",
+       0
+      ],
+      [
+       "n9",
+       "n10",
+       1
+      ],
+      [
+       "n0",
+       "n11",
+       0
+      ],
+      [
+       "n11",
+       "n12",
+       0
+      ],
+      [
+       "n2",
+       "n12",
+       1
+      ],
+      [
+       "n12",
+       "n14",
+       0
+      ],
+      [
+       "n13",
+       "n14",
+       1
+      ],
+      [
+       "n10",
+       "n15",
+       0
+      ],
+      [
+       "n14",
+       "n15",
+       1
+      ],
+      [
+       "n15",
+       "n17",
+       0
+      ],
+      [
+       "n16",
+       "n17",
+       1
+      ],
+      [
+       "n17",
+       "n18",
+       0
+      ],
+      [
+       "n18",
+       "n19",
+       0
+      ],
+      [
+       "n8",
+       "n19",
+       1
+      ],
+      [
+       "n3",
+       "n20",
+       0
+      ],
+      [
+       "n19",
+       "n20",
+       1
+      ],
+      [
+       "n20",
+       "n21",
+       0
+      ],
+      [
+       "n2",
+       "n21",
+       1
+      ],
+      [
+       "n21",
+       "n22",
+       0
+      ]
+     ]
+    },
+    "name": "r_2_8",
+    "fname": "r_2_8",
+    "src": "struct r_2_8_args { float* arg0; float* arg1; float* arg2; };\nvoid r_2_8(const struct r_2_8_args* args) {\n  float* data0_2 = args->arg0;\n  float* data1_16 = args->arg1;\n  float* data2_2 = args->arg2;\n  float buf0[1];\n  for (int Lidx1 = 0; Lidx1 < 2; Lidx1++) {\n    float val0 = (*(data2_2+Lidx1));\n    *(buf0+0) = 0.0f;\n    for (int Lidx0 = 0; Lidx0 < 8; Lidx0++) {\n      float val1 = (*(data1_16+((Lidx1<<3)+Lidx0)));\n      float alu1 = ((val1-val0)*1.4426950216293335f);\n      _Bool alu2 = (alu1!=alu1);\n      float alu3 = ((alu1!=((float)(-__builtin_inff())))?alu1:0.0f);\n      float alu4 = (alu2?0.0f:alu3);\n      float alu5 = ((alu1!=((float)(__builtin_inff())))?alu4:0.0f);\n      float alu6 = ((alu5<0.0f)?-0.5f:0.5f);\n      int cast0 = ((int)((alu5+alu6)));\n      int alu7 = (cast0>>1);\n      float alu8 = (alu5-((float)(cast0)));\n      float alu9 = (((alu1<128.0f)==0)?((float)(__builtin_inff())):(((((((((((((0.00015359208919107914f*alu8)+0.0013392627006396651f)*alu8)+0.009618384763598442f)*alu8)+0.055503472685813904f)*alu8)+0.24022644758224487f)*alu8)+0.6931471824645996f)*alu8)+1.0f)*__builtin_bit_cast(float, (int)(((alu7+127)<<23)))*__builtin_bit_cast(float, (int)((((cast0-alu7)+127)<<23)))));\n      float alu10 = ((alu1<-150.0f)?0.0f:alu9);\n      float alu11 = (alu2?((float)(__builtin_nanf(\"\"))):alu10);\n      *(buf0+0) = ((*(buf0+0))+alu11);\n    }\n    *(data0_2+Lidx1) = (*(buf0+0));\n  }\n}",
+    "census": {
+     "CONST": 5,
+     "PARAM": 3,
+     "RANGE": 2,
+     "INDEX": 3,
+     "MUL": 3,
+     "ADD": 2,
+     "EXP2": 1,
+     "REDUCE": 1,
+     "STORE": 1,
+     "END": 1,
+     "SINK": 1
+    }
+   },
+   {
+    "uir": "%0 = param 16 : dtype=f32 slot=0 device=CPU\n%1 = range 2 : WEAK 0\n%2 = mul %1, 8\n%3 = range 8 : WEAK 1\n%4 = add %2, %3\n%5 = index %0, %4\n%6 = param 16 : dtype=f32 slot=1 device=CPU\n%7 = index %6, %4\n%8 = param 2 : dtype=f32 slot=2 device=CPU\n%9 = index %8, %1\n%10 = mul %9, -1.0\n%11 = add %7, %10\n%12 = mul %11, 1.4426950408889634\n%13 = exp2 %12\n%14 = param 2 : dtype=f32 slot=3 device=CPU\n%15 = index %14, %1\n%16 = recip %15\n%17 = mul %13, %16\n%18 = store %5, %17\n%19 = end %18, %1, %3\n%20 = sink %19 : test",
+    "graph": {
+     "nodes": [
+      {
+       "id": "n0",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "16",
+       "shape": "()"
+      },
+      {
+       "id": "n1",
+       "op": "PARAM",
+       "dtype": "dtypes.f32",
+       "arg": "ParamArg(0, dtypes.f32, device='CPU')",
+       "shape": "(16,)"
+      },
+      {
+       "id": "n2",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "2",
+       "shape": "()"
+      },
+      {
+       "id": "n3",
+       "op": "RANGE",
+       "dtype": "dtypes.weakint",
+       "arg": "(AxisType.WEAK, 0)",
+       "shape": "()"
+      },
+      {
+       "id": "n4",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "8",
+       "shape": "()"
+      },
+      {
+       "id": "n5",
+       "op": "MUL",
+       "dtype": "dtypes.weakint",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n6",
+       "op": "RANGE",
+       "dtype": "dtypes.weakint",
+       "arg": "(AxisType.WEAK, 1)",
+       "shape": "()"
+      },
+      {
+       "id": "n7",
+       "op": "ADD",
+       "dtype": "dtypes.weakint",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n8",
+       "op": "INDEX",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n9",
+       "op": "PARAM",
+       "dtype": "dtypes.f32",
+       "arg": "ParamArg(1, dtypes.f32, device='CPU')",
+       "shape": "(16,)"
+      },
+      {
+       "id": "n10",
+       "op": "INDEX",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n11",
+       "op": "PARAM",
+       "dtype": "dtypes.f32",
+       "arg": "ParamArg(2, dtypes.f32, device='CPU')",
+       "shape": "(2,)"
+      },
+      {
+       "id": "n12",
+       "op": "INDEX",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n13",
+       "op": "CONST",
+       "dtype": "dtypes.weakfloat",
+       "arg": "-1.0",
+       "shape": "()"
+      },
+      {
+       "id": "n14",
+       "op": "MUL",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n15",
+       "op": "ADD",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n16",
+       "op": "CONST",
+       "dtype": "dtypes.weakfloat",
+       "arg": "1.4426950408889634",
+       "shape": "()"
+      },
+      {
+       "id": "n17",
+       "op": "MUL",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n18",
+       "op": "EXP2",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n19",
+       "op": "PARAM",
+       "dtype": "dtypes.f32",
+       "arg": "ParamArg(3, dtypes.f32, device='CPU')",
+       "shape": "(2,)"
+      },
+      {
+       "id": "n20",
+       "op": "INDEX",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n21",
+       "op": "RECIP",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n22",
+       "op": "MUL",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n23",
+       "op": "STORE",
+       "dtype": "dtypes.void",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n24",
+       "op": "END",
+       "dtype": "dtypes.void",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n25",
+       "op": "SINK",
+       "dtype": "dtypes.void",
+       "arg": "KernelInfo(name='test', applied_opts=(), opts_to_apply=None\u2026",
+       "shape": ""
+      }
+     ],
+     "edges": [
+      [
+       "n0",
+       "n1",
+       0
+      ],
+      [
+       "n2",
+       "n3",
+       0
+      ],
+      [
+       "n3",
+       "n5",
+       0
+      ],
+      [
+       "n4",
+       "n5",
+       1
+      ],
+      [
+       "n4",
+       "n6",
+       0
+      ],
+      [
+       "n5",
+       "n7",
+       0
+      ],
+      [
+       "n6",
+       "n7",
+       1
+      ],
+      [
+       "n1",
+       "n8",
+       0
+      ],
+      [
+       "n7",
+       "n8",
+       1
+      ],
+      [
+       "n0",
+       "n9",
+       0
+      ],
+      [
+       "n9",
+       "n10",
+       0
+      ],
+      [
+       "n7",
+       "n10",
+       1
+      ],
+      [
+       "n2",
+       "n11",
+       0
+      ],
+      [
+       "n11",
+       "n12",
+       0
+      ],
+      [
+       "n3",
+       "n12",
+       1
+      ],
+      [
+       "n12",
+       "n14",
+       0
+      ],
+      [
+       "n13",
+       "n14",
+       1
+      ],
+      [
+       "n10",
+       "n15",
+       0
+      ],
+      [
+       "n14",
+       "n15",
+       1
+      ],
+      [
+       "n15",
+       "n17",
+       0
+      ],
+      [
+       "n16",
+       "n17",
+       1
+      ],
+      [
+       "n17",
+       "n18",
+       0
+      ],
+      [
+       "n2",
+       "n19",
+       0
+      ],
+      [
+       "n19",
+       "n20",
+       0
+      ],
+      [
+       "n3",
+       "n20",
+       1
+      ],
+      [
+       "n20",
+       "n21",
+       0
+      ],
+      [
+       "n18",
+       "n22",
+       0
+      ],
+      [
+       "n21",
+       "n22",
+       1
+      ],
+      [
+       "n8",
+       "n23",
+       0
+      ],
+      [
+       "n22",
+       "n23",
+       1
+      ],
+      [
+       "n23",
+       "n24",
+       0
+      ],
+      [
+       "n3",
+       "n24",
+       1
+      ],
+      [
+       "n6",
+       "n24",
+       2
+      ],
+      [
+       "n24",
+       "n25",
+       0
+      ]
+     ]
+    },
+    "name": "E_2_8",
+    "fname": "E_2_8",
+    "src": "struct E_2_8_args { float* arg0; float* arg1; float* arg2; float* arg3; };\nvoid E_2_8(const struct E_2_8_args* args) {\n  float* data0_16 = args->arg0;\n  float* data1_16 = args->arg1;\n  float* data2_2 = args->arg2;\n  float* data3_2 = args->arg3;\n  for (int Lidx0 = 0; Lidx0 < 2; Lidx0++) {\n    float val0 = (*(data2_2+Lidx0));\n    float val1 = (*(data3_2+Lidx0));\n    for (int Lidx1 = 0; Lidx1 < 8; Lidx1++) {\n      int alu0 = ((Lidx0<<3)+Lidx1);\n      float val2 = (*(data1_16+alu0));\n      float alu1 = ((val2-val0)*1.4426950216293335f);\n      _Bool alu2 = (alu1!=alu1);\n      float alu3 = ((alu1!=((float)(-__builtin_inff())))?alu1:0.0f);\n      float alu4 = (alu2?0.0f:alu3);\n      float alu5 = ((alu1!=((float)(__builtin_inff())))?alu4:0.0f);\n      float alu6 = ((alu5<0.0f)?-0.5f:0.5f);\n      int cast0 = ((int)((alu5+alu6)));\n      int alu7 = (cast0>>1);\n      float alu8 = (alu5-((float)(cast0)));\n      float alu9 = (((alu1<128.0f)==0)?((float)(__builtin_inff())):(((((((((((((0.00015359208919107914f*alu8)+0.0013392627006396651f)*alu8)+0.009618384763598442f)*alu8)+0.055503472685813904f)*alu8)+0.24022644758224487f)*alu8)+0.6931471824645996f)*alu8)+1.0f)*__builtin_bit_cast(float, (int)(((alu7+127)<<23)))*__builtin_bit_cast(float, (int)((((cast0-alu7)+127)<<23)))));\n      float alu10 = ((alu1<-150.0f)?0.0f:alu9);\n      float alu11 = (alu2?((float)(__builtin_nanf(\"\"))):alu10);\n      *(data0_16+alu0) = (alu11/val1);\n    }\n  }\n}",
+    "census": {
+     "CONST": 5,
+     "PARAM": 4,
+     "RANGE": 2,
+     "MUL": 4,
+     "ADD": 2,
+     "INDEX": 4,
+     "EXP2": 1,
+     "RECIP": 1,
+     "STORE": 1,
+     "END": 1,
+     "SINK": 1
+    }
+   }
+  ],
+  "cumsum": [
+   {
+    "uir": "%0 = param 5 : dtype=f32 slot=0 device=CPU\n%1 = range 5 : WEAK 1\n%2 = index %0, %1\n%3 = range 5 : WEAK 0\n%4 = add %1, %3\n%5 = cmplt %4, 4\n%6 = param 5 : dtype=f32 slot=1 device=CPU\n%7 = cmpeq %5, false\n%8 = add %4, -4\n%9 = where %7, %8, invalid\n%10 = index %6, %9\n%11 = where %5, 0.0, %10\n%12 = reduce %11, %3 : op=add\n%13 = store %2, %12\n%14 = end %13, %1\n%15 = sink %14 : test",
+    "graph": {
+     "nodes": [
+      {
+       "id": "n0",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "5",
+       "shape": "()"
+      },
+      {
+       "id": "n1",
+       "op": "PARAM",
+       "dtype": "dtypes.f32",
+       "arg": "ParamArg(0, dtypes.f32, device='CPU')",
+       "shape": "(5,)"
+      },
+      {
+       "id": "n2",
+       "op": "RANGE",
+       "dtype": "dtypes.weakint",
+       "arg": "(AxisType.WEAK, 1)",
+       "shape": "()"
+      },
+      {
+       "id": "n3",
+       "op": "INDEX",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n4",
+       "op": "RANGE",
+       "dtype": "dtypes.weakint",
+       "arg": "(AxisType.WEAK, 0)",
+       "shape": "()"
+      },
+      {
+       "id": "n5",
+       "op": "ADD",
+       "dtype": "dtypes.weakint",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n6",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "4",
+       "shape": "()"
+      },
+      {
+       "id": "n7",
+       "op": "CMPLT",
+       "dtype": "dtypes.bool",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n8",
+       "op": "CONST",
+       "dtype": "dtypes.weakfloat",
+       "arg": "0.0",
+       "shape": "()"
+      },
+      {
+       "id": "n9",
+       "op": "PARAM",
+       "dtype": "dtypes.f32",
+       "arg": "ParamArg(1, dtypes.f32, device='CPU')",
+       "shape": "(5,)"
+      },
+      {
+       "id": "n10",
+       "op": "CONST",
+       "dtype": "dtypes.bool",
+       "arg": "False",
+       "shape": "()"
+      },
+      {
+       "id": "n11",
+       "op": "CMPEQ",
+       "dtype": "dtypes.bool",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n12",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "-4",
+       "shape": "()"
+      },
+      {
+       "id": "n13",
+       "op": "ADD",
+       "dtype": "dtypes.weakint",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n14",
+       "op": "CONST",
+       "dtype": "dtypes.bool",
+       "arg": "Invalid",
+       "shape": "()"
+      },
+      {
+       "id": "n15",
+       "op": "WHERE",
+       "dtype": "dtypes.weakint",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n16",
+       "op": "INDEX",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n17",
+       "op": "WHERE",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n18",
+       "op": "REDUCE",
+       "dtype": "dtypes.f32",
+       "arg": "(Ops.ADD, 0)",
+       "shape": "()"
+      },
+      {
+       "id": "n19",
+       "op": "STORE",
+       "dtype": "dtypes.void",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n20",
+       "op": "END",
+       "dtype": "dtypes.void",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n21",
+       "op": "SINK",
+       "dtype": "dtypes.void",
+       "arg": "KernelInfo(name='test', applied_opts=(), opts_to_apply=None\u2026",
+       "shape": ""
+      }
+     ],
+     "edges": [
+      [
+       "n0",
+       "n1",
+       0
+      ],
+      [
+       "n0",
+       "n2",
+       0
+      ],
+      [
+       "n1",
+       "n3",
+       0
+      ],
+      [
+       "n2",
+       "n3",
+       1
+      ],
+      [
+       "n0",
+       "n4",
+       0
+      ],
+      [
+       "n2",
+       "n5",
+       0
+      ],
+      [
+       "n4",
+       "n5",
+       1
+      ],
+      [
+       "n5",
+       "n7",
+       0
+      ],
+      [
+       "n6",
+       "n7",
+       1
+      ],
+      [
+       "n0",
+       "n9",
+       0
+      ],
+      [
+       "n7",
+       "n11",
+       0
+      ],
+      [
+       "n10",
+       "n11",
+       1
+      ],
+      [
+       "n5",
+       "n13",
+       0
+      ],
+      [
+       "n12",
+       "n13",
+       1
+      ],
+      [
+       "n11",
+       "n15",
+       0
+      ],
+      [
+       "n13",
+       "n15",
+       1
+      ],
+      [
+       "n14",
+       "n15",
+       2
+      ],
+      [
+       "n9",
+       "n16",
+       0
+      ],
+      [
+       "n15",
+       "n16",
+       1
+      ],
+      [
+       "n7",
+       "n17",
+       0
+      ],
+      [
+       "n8",
+       "n17",
+       1
+      ],
+      [
+       "n16",
+       "n17",
+       2
+      ],
+      [
+       "n17",
+       "n18",
+       0
+      ],
+      [
+       "n4",
+       "n18",
+       1
+      ],
+      [
+       "n3",
+       "n19",
+       0
+      ],
+      [
+       "n18",
+       "n19",
+       1
+      ],
+      [
+       "n19",
+       "n20",
+       0
+      ],
+      [
+       "n2",
+       "n20",
+       1
+      ],
+      [
+       "n20",
+       "n21",
+       0
+      ]
+     ]
+    },
+    "name": "r_5_5",
+    "fname": "r_5_5",
+    "src": "struct r_5_5_args { float* arg0; float* arg1; };\nvoid r_5_5(const struct r_5_5_args* args) {\n  float* data0_5 = args->arg0;\n  float* data1_5 = args->arg1;\n  float buf0[1];\n  for (int Lidx1 = 0; Lidx1 < 5; Lidx1++) {\n    *(buf0+0) = 0.0f;\n    for (int Lidx0 = 0; Lidx0 < 5; Lidx0++) {\n      int alu1 = (Lidx0+Lidx1);\n      float val0 = ((3<alu1)?*(data1_5+(alu1+-4)):0.0f);\n      *(buf0+0) = ((*(buf0+0))+val0);\n    }\n    *(data0_5+Lidx1) = (*(buf0+0));\n  }\n}",
+    "census": {
+     "CONST": 6,
+     "PARAM": 2,
+     "RANGE": 2,
+     "INDEX": 2,
+     "ADD": 2,
+     "CMPLT": 1,
+     "CMPEQ": 1,
+     "WHERE": 2,
+     "REDUCE": 1,
+     "STORE": 1,
+     "END": 1,
+     "SINK": 1
+    }
+   }
+  ],
+  "x / x.sum()": [
+   {
+    "uir": "%0 = param 4 : dtype=f32 slot=0 device=CPU\n%1 = range 4 : WEAK 1\n%2 = index %0, %1\n%3 = param 4 : dtype=f32 slot=1 device=CPU\n%4 = index %3, %1\n%5 = param 4 : dtype=f32 slot=2 device=CPU\n%6 = range 4 : WEAK 0\n%7 = index %5, %6\n%8 = reduce %7, %6 : op=add\n%9 = recip %8\n%10 = mul %4, %9\n%11 = store %2, %10\n%12 = end %11, %1\n%13 = sink %12 : test",
+    "graph": {
+     "nodes": [
+      {
+       "id": "n0",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "4",
+       "shape": "()"
+      },
+      {
+       "id": "n1",
+       "op": "PARAM",
+       "dtype": "dtypes.f32",
+       "arg": "ParamArg(0, dtypes.f32, device='CPU')",
+       "shape": "(4,)"
+      },
+      {
+       "id": "n2",
+       "op": "RANGE",
+       "dtype": "dtypes.weakint",
+       "arg": "(AxisType.WEAK, 1)",
+       "shape": "()"
+      },
+      {
+       "id": "n3",
+       "op": "INDEX",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n4",
+       "op": "PARAM",
+       "dtype": "dtypes.f32",
+       "arg": "ParamArg(1, dtypes.f32, device='CPU')",
+       "shape": "(4,)"
+      },
+      {
+       "id": "n5",
+       "op": "INDEX",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n6",
+       "op": "PARAM",
+       "dtype": "dtypes.f32",
+       "arg": "ParamArg(2, dtypes.f32, device='CPU')",
+       "shape": "(4,)"
+      },
+      {
+       "id": "n7",
+       "op": "RANGE",
+       "dtype": "dtypes.weakint",
+       "arg": "(AxisType.WEAK, 0)",
+       "shape": "()"
+      },
+      {
+       "id": "n8",
+       "op": "INDEX",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n9",
+       "op": "REDUCE",
+       "dtype": "dtypes.f32",
+       "arg": "(Ops.ADD, 0)",
+       "shape": "()"
+      },
+      {
+       "id": "n10",
+       "op": "RECIP",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n11",
+       "op": "MUL",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n12",
+       "op": "STORE",
+       "dtype": "dtypes.void",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n13",
+       "op": "END",
+       "dtype": "dtypes.void",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n14",
+       "op": "SINK",
+       "dtype": "dtypes.void",
+       "arg": "KernelInfo(name='test', applied_opts=(), opts_to_apply=None\u2026",
+       "shape": ""
+      }
+     ],
+     "edges": [
+      [
+       "n0",
+       "n1",
+       0
+      ],
+      [
+       "n0",
+       "n2",
+       0
+      ],
+      [
+       "n1",
+       "n3",
+       0
+      ],
+      [
+       "n2",
+       "n3",
+       1
+      ],
+      [
+       "n0",
+       "n4",
+       0
+      ],
+      [
+       "n4",
+       "n5",
+       0
+      ],
+      [
+       "n2",
+       "n5",
+       1
+      ],
+      [
+       "n0",
+       "n6",
+       0
+      ],
+      [
+       "n0",
+       "n7",
+       0
+      ],
+      [
+       "n6",
+       "n8",
+       0
+      ],
+      [
+       "n7",
+       "n8",
+       1
+      ],
+      [
+       "n8",
+       "n9",
+       0
+      ],
+      [
+       "n7",
+       "n9",
+       1
+      ],
+      [
+       "n9",
+       "n10",
+       0
+      ],
+      [
+       "n5",
+       "n11",
+       0
+      ],
+      [
+       "n10",
+       "n11",
+       1
+      ],
+      [
+       "n3",
+       "n12",
+       0
+      ],
+      [
+       "n11",
+       "n12",
+       1
+      ],
+      [
+       "n12",
+       "n13",
+       0
+      ],
+      [
+       "n2",
+       "n13",
+       1
+      ],
+      [
+       "n13",
+       "n14",
+       0
+      ]
+     ]
+    },
+    "name": "r_4_4",
+    "fname": "r_4_4",
+    "src": "struct r_4_4_args { float* arg0; float* arg1; float* arg2; };\nvoid r_4_4(const struct r_4_4_args* args) {\n  float* data0_4 = args->arg0;\n  float* data1_4 = args->arg1;\n  float* data2_4 = args->arg2;\n  float buf0[1];\n  *(buf0+0) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 4; Lidx0++) {\n    float val0 = (*(data2_4+Lidx0));\n    *(buf0+0) = ((*(buf0+0))+val0);\n  }\n  for (int Lidx1 = 0; Lidx1 < 4; Lidx1++) {\n    float val1 = (*(data1_4+Lidx1));\n    *(data0_4+Lidx1) = (val1/(*(buf0+0)));\n  }\n}",
+    "census": {
+     "CONST": 1,
+     "PARAM": 3,
+     "RANGE": 2,
+     "INDEX": 3,
+     "REDUCE": 1,
+     "RECIP": 1,
+     "MUL": 1,
+     "STORE": 1,
+     "END": 1,
+     "SINK": 1
+    }
+   }
+  ],
+  "argmax": [
+   {
+    "uir": "%0 = param 3 : dtype=f32 slot=0 device=CPU\n%1 = range 3 : WEAK 1\n%2 = index %0, %1\n%3 = param 15 : dtype=f32 slot=1 device=CPU\n%4 = mul %1, 5\n%5 = range 5 : WEAK 0\n%6 = add %4, %5\n%7 = index %3, %6\n%8 = reduce %7, %5 : op=max\n%9 = store %2, %8\n%10 = end %9, %1\n%11 = sink %10 : test",
+    "graph": {
+     "nodes": [
+      {
+       "id": "n0",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "3",
+       "shape": "()"
+      },
+      {
+       "id": "n1",
+       "op": "PARAM",
+       "dtype": "dtypes.f32",
+       "arg": "ParamArg(0, dtypes.f32, device='CPU')",
+       "shape": "(3,)"
+      },
+      {
+       "id": "n2",
+       "op": "RANGE",
+       "dtype": "dtypes.weakint",
+       "arg": "(AxisType.WEAK, 1)",
+       "shape": "()"
+      },
+      {
+       "id": "n3",
+       "op": "INDEX",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n4",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "15",
+       "shape": "()"
+      },
+      {
+       "id": "n5",
+       "op": "PARAM",
+       "dtype": "dtypes.f32",
+       "arg": "ParamArg(1, dtypes.f32, device='CPU')",
+       "shape": "(15,)"
+      },
+      {
+       "id": "n6",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "5",
+       "shape": "()"
+      },
+      {
+       "id": "n7",
+       "op": "MUL",
+       "dtype": "dtypes.weakint",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n8",
+       "op": "RANGE",
+       "dtype": "dtypes.weakint",
+       "arg": "(AxisType.WEAK, 0)",
+       "shape": "()"
+      },
+      {
+       "id": "n9",
+       "op": "ADD",
+       "dtype": "dtypes.weakint",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n10",
+       "op": "INDEX",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n11",
+       "op": "REDUCE",
+       "dtype": "dtypes.f32",
+       "arg": "(Ops.MAX, 0)",
+       "shape": "()"
+      },
+      {
+       "id": "n12",
+       "op": "STORE",
+       "dtype": "dtypes.void",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n13",
+       "op": "END",
+       "dtype": "dtypes.void",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n14",
+       "op": "SINK",
+       "dtype": "dtypes.void",
+       "arg": "KernelInfo(name='test', applied_opts=(), opts_to_apply=None\u2026",
+       "shape": ""
+      }
+     ],
+     "edges": [
+      [
+       "n0",
+       "n1",
+       0
+      ],
+      [
+       "n0",
+       "n2",
+       0
+      ],
+      [
+       "n1",
+       "n3",
+       0
+      ],
+      [
+       "n2",
+       "n3",
+       1
+      ],
+      [
+       "n4",
+       "n5",
+       0
+      ],
+      [
+       "n2",
+       "n7",
+       0
+      ],
+      [
+       "n6",
+       "n7",
+       1
+      ],
+      [
+       "n6",
+       "n8",
+       0
+      ],
+      [
+       "n7",
+       "n9",
+       0
+      ],
+      [
+       "n8",
+       "n9",
+       1
+      ],
+      [
+       "n5",
+       "n10",
+       0
+      ],
+      [
+       "n9",
+       "n10",
+       1
+      ],
+      [
+       "n10",
+       "n11",
+       0
+      ],
+      [
+       "n8",
+       "n11",
+       1
+      ],
+      [
+       "n3",
+       "n12",
+       0
+      ],
+      [
+       "n11",
+       "n12",
+       1
+      ],
+      [
+       "n12",
+       "n13",
+       0
+      ],
+      [
+       "n2",
+       "n13",
+       1
+      ],
+      [
+       "n13",
+       "n14",
+       0
+      ]
+     ]
+    },
+    "name": "r_3_5",
+    "fname": "r_3_5",
+    "src": "struct r_3_5_args { float* arg0; float* arg1; };\nvoid r_3_5(const struct r_3_5_args* args) {\n  float* data0_3 = args->arg0;\n  float* data1_15 = args->arg1;\n  float buf0[1];\n  for (int Lidx1 = 0; Lidx1 < 3; Lidx1++) {\n    *(buf0+0) = ((float)(-__builtin_inff()));\n    for (int Lidx0 = 0; Lidx0 < 5; Lidx0++) {\n      float val0 = (*(data1_15+((Lidx1*5)+Lidx0)));\n      float val1 = (*(buf0+0));\n      float alu1 = ((val1<val0)?val0:val1);\n      *(buf0+0) = alu1;\n    }\n    *(data0_3+Lidx1) = (*(buf0+0));\n  }\n}",
+    "census": {
+     "CONST": 3,
+     "PARAM": 2,
+     "RANGE": 2,
+     "INDEX": 2,
+     "MUL": 1,
+     "ADD": 1,
+     "REDUCE": 1,
+     "STORE": 1,
+     "END": 1,
+     "SINK": 1
+    }
+   },
+   {
+    "uir": "%0 = param 3 : dtype=i32 slot=0 device=CPU\n%1 = range 3 : WEAK 1\n%2 = index %0, %1\n%3 = param 15 : dtype=f32 slot=1 device=CPU\n%4 = mul %1, 5\n%5 = range 5 : WEAK 0\n%6 = add %4, %5\n%7 = index %3, %6\n%8 = param 3 : dtype=f32 slot=2 device=CPU\n%9 = index %8, %1\n%10 = cmpeq %7, %9\n%11 = cast %10 : i32\n%12 = cast %5 : i32\n%13 = add %12, 1\n%14 = mul %13, -1\n%15 = add %14, 6\n%16 = mul %11, %15\n%17 = reduce %16, %5 : op=max\n%18 = mul %17, -1\n%19 = add 5, %18\n%20 = store %2, %19\n%21 = end %20, %1\n%22 = sink %21 : test",
+    "graph": {
+     "nodes": [
+      {
+       "id": "n0",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "3",
+       "shape": "()"
+      },
+      {
+       "id": "n1",
+       "op": "PARAM",
+       "dtype": "dtypes.i32",
+       "arg": "ParamArg(0, dtypes.i32, device='CPU')",
+       "shape": "(3,)"
+      },
+      {
+       "id": "n2",
+       "op": "RANGE",
+       "dtype": "dtypes.weakint",
+       "arg": "(AxisType.WEAK, 1)",
+       "shape": "()"
+      },
+      {
+       "id": "n3",
+       "op": "INDEX",
+       "dtype": "dtypes.i32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n4",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "5",
+       "shape": "()"
+      },
+      {
+       "id": "n5",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "15",
+       "shape": "()"
+      },
+      {
+       "id": "n6",
+       "op": "PARAM",
+       "dtype": "dtypes.f32",
+       "arg": "ParamArg(1, dtypes.f32, device='CPU')",
+       "shape": "(15,)"
+      },
+      {
+       "id": "n7",
+       "op": "MUL",
+       "dtype": "dtypes.weakint",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n8",
+       "op": "RANGE",
+       "dtype": "dtypes.weakint",
+       "arg": "(AxisType.WEAK, 0)",
+       "shape": "()"
+      },
+      {
+       "id": "n9",
+       "op": "ADD",
+       "dtype": "dtypes.weakint",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n10",
+       "op": "INDEX",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n11",
+       "op": "PARAM",
+       "dtype": "dtypes.f32",
+       "arg": "ParamArg(2, dtypes.f32, device='CPU')",
+       "shape": "(3,)"
+      },
+      {
+       "id": "n12",
+       "op": "INDEX",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n13",
+       "op": "CMPEQ",
+       "dtype": "dtypes.bool",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n14",
+       "op": "CAST",
+       "dtype": "dtypes.i32",
+       "arg": "dtypes.i32",
+       "shape": "()"
+      },
+      {
+       "id": "n15",
+       "op": "CAST",
+       "dtype": "dtypes.i32",
+       "arg": "dtypes.i32",
+       "shape": "()"
+      },
+      {
+       "id": "n16",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "1",
+       "shape": "()"
+      },
+      {
+       "id": "n17",
+       "op": "ADD",
+       "dtype": "dtypes.i32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n18",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "-1",
+       "shape": "()"
+      },
+      {
+       "id": "n19",
+       "op": "MUL",
+       "dtype": "dtypes.i32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n20",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "6",
+       "shape": "()"
+      },
+      {
+       "id": "n21",
+       "op": "ADD",
+       "dtype": "dtypes.i32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n22",
+       "op": "MUL",
+       "dtype": "dtypes.i32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n23",
+       "op": "REDUCE",
+       "dtype": "dtypes.i32",
+       "arg": "(Ops.MAX, 0)",
+       "shape": "()"
+      },
+      {
+       "id": "n24",
+       "op": "MUL",
+       "dtype": "dtypes.i32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n25",
+       "op": "ADD",
+       "dtype": "dtypes.i32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n26",
+       "op": "STORE",
+       "dtype": "dtypes.void",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n27",
+       "op": "END",
+       "dtype": "dtypes.void",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n28",
+       "op": "SINK",
+       "dtype": "dtypes.void",
+       "arg": "KernelInfo(name='test', applied_opts=(), opts_to_apply=None\u2026",
+       "shape": ""
+      }
+     ],
+     "edges": [
+      [
+       "n0",
+       "n1",
+       0
+      ],
+      [
+       "n0",
+       "n2",
+       0
+      ],
+      [
+       "n1",
+       "n3",
+       0
+      ],
+      [
+       "n2",
+       "n3",
+       1
+      ],
+      [
+       "n5",
+       "n6",
+       0
+      ],
+      [
+       "n2",
+       "n7",
+       0
+      ],
+      [
+       "n4",
+       "n7",
+       1
+      ],
+      [
+       "n4",
+       "n8",
+       0
+      ],
+      [
+       "n7",
+       "n9",
+       0
+      ],
+      [
+       "n8",
+       "n9",
+       1
+      ],
+      [
+       "n6",
+       "n10",
+       0
+      ],
+      [
+       "n9",
+       "n10",
+       1
+      ],
+      [
+       "n0",
+       "n11",
+       0
+      ],
+      [
+       "n11",
+       "n12",
+       0
+      ],
+      [
+       "n2",
+       "n12",
+       1
+      ],
+      [
+       "n10",
+       "n13",
+       0
+      ],
+      [
+       "n12",
+       "n13",
+       1
+      ],
+      [
+       "n13",
+       "n14",
+       0
+      ],
+      [
+       "n8",
+       "n15",
+       0
+      ],
+      [
+       "n15",
+       "n17",
+       0
+      ],
+      [
+       "n16",
+       "n17",
+       1
+      ],
+      [
+       "n17",
+       "n19",
+       0
+      ],
+      [
+       "n18",
+       "n19",
+       1
+      ],
+      [
+       "n19",
+       "n21",
+       0
+      ],
+      [
+       "n20",
+       "n21",
+       1
+      ],
+      [
+       "n14",
+       "n22",
+       0
+      ],
+      [
+       "n21",
+       "n22",
+       1
+      ],
+      [
+       "n22",
+       "n23",
+       0
+      ],
+      [
+       "n8",
+       "n23",
+       1
+      ],
+      [
+       "n23",
+       "n24",
+       0
+      ],
+      [
+       "n18",
+       "n24",
+       1
+      ],
+      [
+       "n4",
+       "n25",
+       0
+      ],
+      [
+       "n24",
+       "n25",
+       1
+      ],
+      [
+       "n3",
+       "n26",
+       0
+      ],
+      [
+       "n25",
+       "n26",
+       1
+      ],
+      [
+       "n26",
+       "n27",
+       0
+      ],
+      [
+       "n2",
+       "n27",
+       1
+      ],
+      [
+       "n27",
+       "n28",
+       0
+      ]
+     ]
+    },
+    "name": "r_3_5",
+    "fname": "r_3_5",
+    "src": "struct r_3_5_args { int* arg0; float* arg1; float* arg2; };\nvoid r_3_5(const struct r_3_5_args* args) {\n  int* data0_3 = args->arg0;\n  float* data1_15 = args->arg1;\n  float* data2_3 = args->arg2;\n  int buf0[1];\n  for (int Lidx1 = 0; Lidx1 < 3; Lidx1++) {\n    float val0 = (*(data2_3+Lidx1));\n    *(buf0+0) = -2147483648;\n    for (int Lidx0 = 0; Lidx0 < 5; Lidx0++) {\n      int val1 = (*(buf0+0));\n      float val2 = (*(data1_15+((Lidx1*5)+Lidx0)));\n      int alu1 = (((int)((val2==val0)))*(5-Lidx0));\n      int alu2 = ((val1<alu1)?alu1:val1);\n      *(buf0+0) = alu2;\n    }\n    *(data0_3+Lidx1) = (5-(*(buf0+0)));\n  }\n}",
+    "census": {
+     "CONST": 6,
+     "PARAM": 3,
+     "RANGE": 2,
+     "INDEX": 3,
+     "MUL": 4,
+     "ADD": 4,
+     "CMPEQ": 1,
+     "CAST": 2,
+     "REDUCE": 1,
+     "STORE": 1,
+     "END": 1,
+     "SINK": 1
+    }
+   }
+  ],
+  "gather a[idx]": [
+   {
+    "uir": "%0 = param 8 : dtype=f32 slot=0 device=CPU\n%1 = range 2 : WEAK 1\n%2 = mul %1, 4\n%3 = range 4 : WEAK 2\n%4 = add %2, %3\n%5 = index %0, %4\n%6 = param 2 : dtype=i32 slot=1 device=CPU\n%7 = index %6, %1\n%8 = cmplt %7, 0\n%9 = add %7, 6\n%10 = where %8, %9, %7\n%11 = range 6 : WEAK 0\n%12 = cast %11 : i32\n%13 = cmpeq %10, %12\n%14 = param 24 : dtype=f32 slot=2 device=CPU\n%15 = mul %11, 4\n%16 = add %15, %3\n%17 = index %14, %16\n%18 = where %13, %17, 0.0\n%19 = reduce %18, %11 : op=add\n%20 = store %5, %19\n%21 = end %20, %1, %3\n%22 = sink %21 : test",
+    "graph": {
+     "nodes": [
+      {
+       "id": "n0",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "8",
+       "shape": "()"
+      },
+      {
+       "id": "n1",
+       "op": "PARAM",
+       "dtype": "dtypes.f32",
+       "arg": "ParamArg(0, dtypes.f32, device='CPU')",
+       "shape": "(8,)"
+      },
+      {
+       "id": "n2",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "2",
+       "shape": "()"
+      },
+      {
+       "id": "n3",
+       "op": "RANGE",
+       "dtype": "dtypes.weakint",
+       "arg": "(AxisType.WEAK, 1)",
+       "shape": "()"
+      },
+      {
+       "id": "n4",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "4",
+       "shape": "()"
+      },
+      {
+       "id": "n5",
+       "op": "MUL",
+       "dtype": "dtypes.weakint",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n6",
+       "op": "RANGE",
+       "dtype": "dtypes.weakint",
+       "arg": "(AxisType.WEAK, 2)",
+       "shape": "()"
+      },
+      {
+       "id": "n7",
+       "op": "ADD",
+       "dtype": "dtypes.weakint",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n8",
+       "op": "INDEX",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n9",
+       "op": "PARAM",
+       "dtype": "dtypes.i32",
+       "arg": "ParamArg(1, dtypes.i32, device='CPU')",
+       "shape": "(2,)"
+      },
+      {
+       "id": "n10",
+       "op": "INDEX",
+       "dtype": "dtypes.i32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n11",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "0",
+       "shape": "()"
+      },
+      {
+       "id": "n12",
+       "op": "CMPLT",
+       "dtype": "dtypes.bool",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n13",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "6",
+       "shape": "()"
+      },
+      {
+       "id": "n14",
+       "op": "ADD",
+       "dtype": "dtypes.i32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n15",
+       "op": "WHERE",
+       "dtype": "dtypes.i32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n16",
+       "op": "RANGE",
+       "dtype": "dtypes.weakint",
+       "arg": "(AxisType.WEAK, 0)",
+       "shape": "()"
+      },
+      {
+       "id": "n17",
+       "op": "CAST",
+       "dtype": "dtypes.i32",
+       "arg": "dtypes.i32",
+       "shape": "()"
+      },
+      {
+       "id": "n18",
+       "op": "CMPEQ",
+       "dtype": "dtypes.bool",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n19",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "24",
+       "shape": "()"
+      },
+      {
+       "id": "n20",
+       "op": "PARAM",
+       "dtype": "dtypes.f32",
+       "arg": "ParamArg(2, dtypes.f32, device='CPU')",
+       "shape": "(24,)"
+      },
+      {
+       "id": "n21",
+       "op": "MUL",
+       "dtype": "dtypes.weakint",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n22",
+       "op": "ADD",
+       "dtype": "dtypes.weakint",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n23",
+       "op": "INDEX",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n24",
+       "op": "CONST",
+       "dtype": "dtypes.weakfloat",
+       "arg": "0.0",
+       "shape": "()"
+      },
+      {
+       "id": "n25",
+       "op": "WHERE",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n26",
+       "op": "REDUCE",
+       "dtype": "dtypes.f32",
+       "arg": "(Ops.ADD, 0)",
+       "shape": "()"
+      },
+      {
+       "id": "n27",
+       "op": "STORE",
+       "dtype": "dtypes.void",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n28",
+       "op": "END",
+       "dtype": "dtypes.void",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n29",
+       "op": "SINK",
+       "dtype": "dtypes.void",
+       "arg": "KernelInfo(name='test', applied_opts=(), opts_to_apply=None\u2026",
+       "shape": ""
+      }
+     ],
+     "edges": [
+      [
+       "n0",
+       "n1",
+       0
+      ],
+      [
+       "n2",
+       "n3",
+       0
+      ],
+      [
+       "n3",
+       "n5",
+       0
+      ],
+      [
+       "n4",
+       "n5",
+       1
+      ],
+      [
+       "n4",
+       "n6",
+       0
+      ],
+      [
+       "n5",
+       "n7",
+       0
+      ],
+      [
+       "n6",
+       "n7",
+       1
+      ],
+      [
+       "n1",
+       "n8",
+       0
+      ],
+      [
+       "n7",
+       "n8",
+       1
+      ],
+      [
+       "n2",
+       "n9",
+       0
+      ],
+      [
+       "n9",
+       "n10",
+       0
+      ],
+      [
+       "n3",
+       "n10",
+       1
+      ],
+      [
+       "n10",
+       "n12",
+       0
+      ],
+      [
+       "n11",
+       "n12",
+       1
+      ],
+      [
+       "n10",
+       "n14",
+       0
+      ],
+      [
+       "n13",
+       "n14",
+       1
+      ],
+      [
+       "n12",
+       "n15",
+       0
+      ],
+      [
+       "n14",
+       "n15",
+       1
+      ],
+      [
+       "n10",
+       "n15",
+       2
+      ],
+      [
+       "n13",
+       "n16",
+       0
+      ],
+      [
+       "n16",
+       "n17",
+       0
+      ],
+      [
+       "n15",
+       "n18",
+       0
+      ],
+      [
+       "n17",
+       "n18",
+       1
+      ],
+      [
+       "n19",
+       "n20",
+       0
+      ],
+      [
+       "n16",
+       "n21",
+       0
+      ],
+      [
+       "n4",
+       "n21",
+       1
+      ],
+      [
+       "n21",
+       "n22",
+       0
+      ],
+      [
+       "n6",
+       "n22",
+       1
+      ],
+      [
+       "n20",
+       "n23",
+       0
+      ],
+      [
+       "n22",
+       "n23",
+       1
+      ],
+      [
+       "n18",
+       "n25",
+       0
+      ],
+      [
+       "n23",
+       "n25",
+       1
+      ],
+      [
+       "n24",
+       "n25",
+       2
+      ],
+      [
+       "n25",
+       "n26",
+       0
+      ],
+      [
+       "n16",
+       "n26",
+       1
+      ],
+      [
+       "n8",
+       "n27",
+       0
+      ],
+      [
+       "n26",
+       "n27",
+       1
+      ],
+      [
+       "n27",
+       "n28",
+       0
+      ],
+      [
+       "n3",
+       "n28",
+       1
+      ],
+      [
+       "n6",
+       "n28",
+       2
+      ],
+      [
+       "n28",
+       "n29",
+       0
+      ]
+     ]
+    },
+    "name": "E_2_4",
+    "fname": "E_2_4",
+    "src": "struct E_2_4_args { float* arg0; int* arg1; float* arg2; };\nvoid E_2_4(const struct E_2_4_args* args) {\n  float* data0_8 = args->arg0;\n  int* data1_2 = args->arg1;\n  float* data2_24 = args->arg2;\n  for (int Lidx1 = 0; Lidx1 < 2; Lidx1++) {\n    int val0 = (*(data1_2+Lidx1));\n    int alu0 = ((val0<0)?(val0+6):val0);\n    for (int Lidx2 = 0; Lidx2 < 4; Lidx2++) {\n      float val1 = (((-1<alu0)&(alu0<6))?*(data2_24+((alu0<<2)+Lidx2)):0.0f);\n      *(data0_8+((Lidx1<<2)+Lidx2)) = val1;\n    }\n  }\n}",
+    "census": {
+     "CONST": 7,
+     "PARAM": 3,
+     "RANGE": 3,
+     "MUL": 2,
+     "ADD": 3,
+     "INDEX": 3,
+     "CMPLT": 1,
+     "WHERE": 2,
+     "CAST": 1,
+     "CMPEQ": 1,
+     "REDUCE": 1,
+     "STORE": 1,
+     "END": 1,
+     "SINK": 1
+    }
+   }
+  ],
+  "conv2d": [
+   {
+    "uir": "%0 = param 8 : dtype=f32 slot=0 device=CPU\n%1 = range 2 : WEAK 3\n%2 = mul %1, 2\n%3 = range 2 : WEAK 4\n%4 = add %2, %3\n%5 = range 2 : WEAK 2\n%6 = mul %5, 4\n%7 = add %4, %6\n%8 = index %0, %7\n%9 = param 16 : dtype=f32 slot=1 device=CPU\n%10 = range 3 : WEAK 1\n%11 = add %3, %10\n%12 = range 3 : WEAK 0\n%13 = add %1, %12\n%14 = mul %13, 4\n%15 = add %11, %14\n%16 = index %9, %15\n%17 = param 18 : dtype=f32 slot=2 device=CPU\n%18 = mul %12, 3\n%19 = add %18, %10\n%20 = mul %5, 9\n%21 = add %19, %20\n%22 = index %17, %21\n%23 = mul %16, %22\n%24 = reduce %23, %12, %10 : op=add\n%25 = store %8, %24\n%26 = end %25, %5, %1, %3\n%27 = sink %26 : test",
+    "graph": {
+     "nodes": [
+      {
+       "id": "n0",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "8",
+       "shape": "()"
+      },
+      {
+       "id": "n1",
+       "op": "PARAM",
+       "dtype": "dtypes.f32",
+       "arg": "ParamArg(0, dtypes.f32, device='CPU')",
+       "shape": "(8,)"
+      },
+      {
+       "id": "n2",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "2",
+       "shape": "()"
+      },
+      {
+       "id": "n3",
+       "op": "RANGE",
+       "dtype": "dtypes.weakint",
+       "arg": "(AxisType.WEAK, 3)",
+       "shape": "()"
+      },
+      {
+       "id": "n4",
+       "op": "MUL",
+       "dtype": "dtypes.weakint",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n5",
+       "op": "RANGE",
+       "dtype": "dtypes.weakint",
+       "arg": "(AxisType.WEAK, 4)",
+       "shape": "()"
+      },
+      {
+       "id": "n6",
+       "op": "ADD",
+       "dtype": "dtypes.weakint",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n7",
+       "op": "RANGE",
+       "dtype": "dtypes.weakint",
+       "arg": "(AxisType.WEAK, 2)",
+       "shape": "()"
+      },
+      {
+       "id": "n8",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "4",
+       "shape": "()"
+      },
+      {
+       "id": "n9",
+       "op": "MUL",
+       "dtype": "dtypes.weakint",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n10",
+       "op": "ADD",
+       "dtype": "dtypes.weakint",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n11",
+       "op": "INDEX",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n12",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "16",
+       "shape": "()"
+      },
+      {
+       "id": "n13",
+       "op": "PARAM",
+       "dtype": "dtypes.f32",
+       "arg": "ParamArg(1, dtypes.f32, device='CPU')",
+       "shape": "(16,)"
+      },
+      {
+       "id": "n14",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "3",
+       "shape": "()"
+      },
+      {
+       "id": "n15",
+       "op": "RANGE",
+       "dtype": "dtypes.weakint",
+       "arg": "(AxisType.WEAK, 1)",
+       "shape": "()"
+      },
+      {
+       "id": "n16",
+       "op": "ADD",
+       "dtype": "dtypes.weakint",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n17",
+       "op": "RANGE",
+       "dtype": "dtypes.weakint",
+       "arg": "(AxisType.WEAK, 0)",
+       "shape": "()"
+      },
+      {
+       "id": "n18",
+       "op": "ADD",
+       "dtype": "dtypes.weakint",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n19",
+       "op": "MUL",
+       "dtype": "dtypes.weakint",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n20",
+       "op": "ADD",
+       "dtype": "dtypes.weakint",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n21",
+       "op": "INDEX",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n22",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "18",
+       "shape": "()"
+      },
+      {
+       "id": "n23",
+       "op": "PARAM",
+       "dtype": "dtypes.f32",
+       "arg": "ParamArg(2, dtypes.f32, device='CPU')",
+       "shape": "(18,)"
+      },
+      {
+       "id": "n24",
+       "op": "MUL",
+       "dtype": "dtypes.weakint",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n25",
+       "op": "ADD",
+       "dtype": "dtypes.weakint",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n26",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "9",
+       "shape": "()"
+      },
+      {
+       "id": "n27",
+       "op": "MUL",
+       "dtype": "dtypes.weakint",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n28",
+       "op": "ADD",
+       "dtype": "dtypes.weakint",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n29",
+       "op": "INDEX",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n30",
+       "op": "MUL",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n31",
+       "op": "REDUCE",
+       "dtype": "dtypes.f32",
+       "arg": "(Ops.ADD, 0)",
+       "shape": "()"
+      },
+      {
+       "id": "n32",
+       "op": "STORE",
+       "dtype": "dtypes.void",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n33",
+       "op": "END",
+       "dtype": "dtypes.void",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n34",
+       "op": "SINK",
+       "dtype": "dtypes.void",
+       "arg": "KernelInfo(name='test', applied_opts=(), opts_to_apply=None\u2026",
+       "shape": ""
+      }
+     ],
+     "edges": [
+      [
+       "n0",
+       "n1",
+       0
+      ],
+      [
+       "n2",
+       "n3",
+       0
+      ],
+      [
+       "n3",
+       "n4",
+       0
+      ],
+      [
+       "n2",
+       "n4",
+       1
+      ],
+      [
+       "n2",
+       "n5",
+       0
+      ],
+      [
+       "n4",
+       "n6",
+       0
+      ],
+      [
+       "n5",
+       "n6",
+       1
+      ],
+      [
+       "n2",
+       "n7",
+       0
+      ],
+      [
+       "n7",
+       "n9",
+       0
+      ],
+      [
+       "n8",
+       "n9",
+       1
+      ],
+      [
+       "n6",
+       "n10",
+       0
+      ],
+      [
+       "n9",
+       "n10",
+       1
+      ],
+      [
+       "n1",
+       "n11",
+       0
+      ],
+      [
+       "n10",
+       "n11",
+       1
+      ],
+      [
+       "n12",
+       "n13",
+       0
+      ],
+      [
+       "n14",
+       "n15",
+       0
+      ],
+      [
+       "n5",
+       "n16",
+       0
+      ],
+      [
+       "n15",
+       "n16",
+       1
+      ],
+      [
+       "n14",
+       "n17",
+       0
+      ],
+      [
+       "n3",
+       "n18",
+       0
+      ],
+      [
+       "n17",
+       "n18",
+       1
+      ],
+      [
+       "n18",
+       "n19",
+       0
+      ],
+      [
+       "n8",
+       "n19",
+       1
+      ],
+      [
+       "n16",
+       "n20",
+       0
+      ],
+      [
+       "n19",
+       "n20",
+       1
+      ],
+      [
+       "n13",
+       "n21",
+       0
+      ],
+      [
+       "n20",
+       "n21",
+       1
+      ],
+      [
+       "n22",
+       "n23",
+       0
+      ],
+      [
+       "n17",
+       "n24",
+       0
+      ],
+      [
+       "n14",
+       "n24",
+       1
+      ],
+      [
+       "n24",
+       "n25",
+       0
+      ],
+      [
+       "n15",
+       "n25",
+       1
+      ],
+      [
+       "n7",
+       "n27",
+       0
+      ],
+      [
+       "n26",
+       "n27",
+       1
+      ],
+      [
+       "n25",
+       "n28",
+       0
+      ],
+      [
+       "n27",
+       "n28",
+       1
+      ],
+      [
+       "n23",
+       "n29",
+       0
+      ],
+      [
+       "n28",
+       "n29",
+       1
+      ],
+      [
+       "n21",
+       "n30",
+       0
+      ],
+      [
+       "n29",
+       "n30",
+       1
+      ],
+      [
+       "n30",
+       "n31",
+       0
+      ],
+      [
+       "n17",
+       "n31",
+       1
+      ],
+      [
+       "n15",
+       "n31",
+       2
+      ],
+      [
+       "n11",
+       "n32",
+       0
+      ],
+      [
+       "n31",
+       "n32",
+       1
+      ],
+      [
+       "n32",
+       "n33",
+       0
+      ],
+      [
+       "n7",
+       "n33",
+       1
+      ],
+      [
+       "n3",
+       "n33",
+       2
+      ],
+      [
+       "n5",
+       "n33",
+       3
+      ],
+      [
+       "n33",
+       "n34",
+       0
+      ]
+     ]
+    },
+    "name": "r_2_2_2_3_3",
+    "fname": "r_2_2_2_3_3",
+    "src": "struct r_2_2_2_3_3_args { float* arg0; float* arg1; float* arg2; };\nvoid r_2_2_2_3_3(const struct r_2_2_2_3_3_args* args) {\n  float* data0_8 = args->arg0;\n  float* data1_16 = args->arg1;\n  float* data2_18 = args->arg2;\n  float buf0[1];\n  for (int Lidx2 = 0; Lidx2 < 2; Lidx2++) {\n    for (int Lidx3 = 0; Lidx3 < 2; Lidx3++) {\n      for (int Lidx4 = 0; Lidx4 < 2; Lidx4++) {\n        *(buf0+0) = 0.0f;\n        for (int Lidx0 = 0; Lidx0 < 3; Lidx0++) {\n          for (int Lidx1 = 0; Lidx1 < 3; Lidx1++) {\n            float val0 = (*(data1_16+((Lidx0<<2)+(Lidx3<<2)+Lidx1+Lidx4)));\n            float val1 = (*(data2_18+((Lidx0*3)+Lidx1+(Lidx2*9))));\n            *(buf0+0) = ((*(buf0+0))+(val0*val1));\n          }\n        }\n        *(data0_8+((Lidx3<<1)+Lidx4+(Lidx2<<2))) = (*(buf0+0));\n      }\n    }\n  }\n}",
+    "census": {
+     "CONST": 7,
+     "PARAM": 3,
+     "RANGE": 5,
+     "MUL": 6,
+     "ADD": 7,
+     "INDEX": 3,
+     "REDUCE": 1,
+     "STORE": 1,
+     "END": 1,
+     "SINK": 1
+    }
+   }
+  ],
+  "cat": [
+   {
+    "uir": "%0 = param 12 : dtype=f32 slot=0 device=CPU\n%1 = range 2 : WEAK 1\n%2 = mul %1, 3\n%3 = range 3 : WEAK 2\n%4 = add %2, %3\n%5 = range 2 : WEAK 0\n%6 = mul %5, 6\n%7 = add %4, %6\n%8 = index %0, %7\n%9 = cmplt %5, 1\n%10 = param 6 : dtype=f32 slot=1 device=CPU\n%11 = index %10, %4\n%12 = param 6 : dtype=f32 slot=2 device=CPU\n%13 = index %12, %4\n%14 = where %9, %11, %13\n%15 = store %8, %14\n%16 = end %15, %5, %1, %3\n%17 = sink %16 : test",
+    "graph": {
+     "nodes": [
+      {
+       "id": "n0",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "12",
+       "shape": "()"
+      },
+      {
+       "id": "n1",
+       "op": "PARAM",
+       "dtype": "dtypes.f32",
+       "arg": "ParamArg(0, dtypes.f32, device='CPU')",
+       "shape": "(12,)"
+      },
+      {
+       "id": "n2",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "2",
+       "shape": "()"
+      },
+      {
+       "id": "n3",
+       "op": "RANGE",
+       "dtype": "dtypes.weakint",
+       "arg": "(AxisType.WEAK, 1)",
+       "shape": "()"
+      },
+      {
+       "id": "n4",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "3",
+       "shape": "()"
+      },
+      {
+       "id": "n5",
+       "op": "MUL",
+       "dtype": "dtypes.weakint",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n6",
+       "op": "RANGE",
+       "dtype": "dtypes.weakint",
+       "arg": "(AxisType.WEAK, 2)",
+       "shape": "()"
+      },
+      {
+       "id": "n7",
+       "op": "ADD",
+       "dtype": "dtypes.weakint",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n8",
+       "op": "RANGE",
+       "dtype": "dtypes.weakint",
+       "arg": "(AxisType.WEAK, 0)",
+       "shape": "()"
+      },
+      {
+       "id": "n9",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "6",
+       "shape": "()"
+      },
+      {
+       "id": "n10",
+       "op": "MUL",
+       "dtype": "dtypes.weakint",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n11",
+       "op": "ADD",
+       "dtype": "dtypes.weakint",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n12",
+       "op": "INDEX",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n13",
+       "op": "CONST",
+       "dtype": "dtypes.weakint",
+       "arg": "1",
+       "shape": "()"
+      },
+      {
+       "id": "n14",
+       "op": "CMPLT",
+       "dtype": "dtypes.bool",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n15",
+       "op": "PARAM",
+       "dtype": "dtypes.f32",
+       "arg": "ParamArg(1, dtypes.f32, device='CPU')",
+       "shape": "(6,)"
+      },
+      {
+       "id": "n16",
+       "op": "INDEX",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n17",
+       "op": "PARAM",
+       "dtype": "dtypes.f32",
+       "arg": "ParamArg(2, dtypes.f32, device='CPU')",
+       "shape": "(6,)"
+      },
+      {
+       "id": "n18",
+       "op": "INDEX",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n19",
+       "op": "WHERE",
+       "dtype": "dtypes.f32",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n20",
+       "op": "STORE",
+       "dtype": "dtypes.void",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n21",
+       "op": "END",
+       "dtype": "dtypes.void",
+       "arg": "None",
+       "shape": "()"
+      },
+      {
+       "id": "n22",
+       "op": "SINK",
+       "dtype": "dtypes.void",
+       "arg": "KernelInfo(name='test', applied_opts=(), opts_to_apply=None\u2026",
+       "shape": ""
+      }
+     ],
+     "edges": [
+      [
+       "n0",
+       "n1",
+       0
+      ],
+      [
+       "n2",
+       "n3",
+       0
+      ],
+      [
+       "n3",
+       "n5",
+       0
+      ],
+      [
+       "n4",
+       "n5",
+       1
+      ],
+      [
+       "n4",
+       "n6",
+       0
+      ],
+      [
+       "n5",
+       "n7",
+       0
+      ],
+      [
+       "n6",
+       "n7",
+       1
+      ],
+      [
+       "n2",
+       "n8",
+       0
+      ],
+      [
+       "n8",
+       "n10",
+       0
+      ],
+      [
+       "n9",
+       "n10",
+       1
+      ],
+      [
+       "n7",
+       "n11",
+       0
+      ],
+      [
+       "n10",
+       "n11",
+       1
+      ],
+      [
+       "n1",
+       "n12",
+       0
+      ],
+      [
+       "n11",
+       "n12",
+       1
+      ],
+      [
+       "n8",
+       "n14",
+       0
+      ],
+      [
+       "n13",
+       "n14",
+       1
+      ],
+      [
+       "n9",
+       "n15",
+       0
+      ],
+      [
+       "n15",
+       "n16",
+       0
+      ],
+      [
+       "n7",
+       "n16",
+       1
+      ],
+      [
+       "n9",
+       "n17",
+       0
+      ],
+      [
+       "n17",
+       "n18",
+       0
+      ],
+      [
+       "n7",
+       "n18",
+       1
+      ],
+      [
+       "n14",
+       "n19",
+       0
+      ],
+      [
+       "n16",
+       "n19",
+       1
+      ],
+      [
+       "n18",
+       "n19",
+       2
+      ],
+      [
+       "n12",
+       "n20",
+       0
+      ],
+      [
+       "n19",
+       "n20",
+       1
+      ],
+      [
+       "n20",
+       "n21",
+       0
+      ],
+      [
+       "n8",
+       "n21",
+       1
+      ],
+      [
+       "n3",
+       "n21",
+       2
+      ],
+      [
+       "n6",
+       "n21",
+       3
+      ],
+      [
+       "n21",
+       "n22",
+       0
+      ]
+     ]
+    },
+    "name": "E_2_6",
+    "fname": "E_2_6",
+    "src": "struct E_2_6_args { float* arg0; float* arg1; float* arg2; };\nvoid E_2_6(const struct E_2_6_args* args) {\n  float* data0_12 = args->arg0;\n  float* data1_6 = args->arg1;\n  float* data2_6 = args->arg2;\n  for (int Lidx0 = 0; Lidx0 < 2; Lidx0++) {\n    for (int Lidx1 = 0; Lidx1 < 6; Lidx1++) {\n      float val0 = (*(data1_6+Lidx1));\n      float val1 = (*(data2_6+Lidx1));\n      float alu0 = ((Lidx0<1)?val0:val1);\n      *(data0_12+((Lidx0*6)+Lidx1)) = alu0;\n    }\n  }\n}",
+    "census": {
+     "CONST": 5,
+     "PARAM": 3,
+     "RANGE": 3,
+     "MUL": 2,
+     "ADD": 2,
+     "INDEX": 3,
+     "CMPLT": 1,
+     "WHERE": 1,
+     "STORE": 1,
+     "END": 1,
+     "SINK": 1
+    }
+   }
+  ]
+ }
+}

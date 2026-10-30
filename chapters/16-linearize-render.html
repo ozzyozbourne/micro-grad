@@ -1,0 +1,2114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>16. Linearizer &amp; renderers — tinygrad internals</title>
+<link rel="stylesheet" href="../assets/vendor/hljs-dark.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/vendor/highlight.min.js"></script>
+<script src="../assets/vendor/dagre.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/chapters.js"></script>
+<script src="../assets/guide.js"></script>
+<style>
+.ch16-two { display:grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr); gap:12px; }
+@media (max-width: 1100px) { .ch16-two { grid-template-columns: 1fr; } }
+.ch16-graph .uopgraph { max-height: 620px; }
+.demo .ch16-graph .uopgraph svg { max-width:none; }
+.ch16-list { background:#0d0f12; border:1px solid var(--line); border-radius:8px; font-family:var(--mono); font-size:11.5px; max-height:620px; overflow:auto; padding:4px 0; }
+.ch16-row { display:grid; grid-template-columns: 30px 1fr auto; gap:6px; padding:0 8px; line-height:17px; white-space:pre; color:#cfd8dc; }
+.ch16-row .i { color:var(--dim); text-align:right; }
+.ch16-row .p { color:#7f8a96; font-size:10.5px; }
+.ch16-row.empty { color:#2f353c; }
+.ch16-row.empty .p { color:#2f353c; }
+.ch16-row.cur { background: rgba(255,214,102,.18); }
+.ch16-row.cur .t { color: var(--yellow); font-weight:700; }
+.ch16-row.rng .t { color: var(--red); } .ch16-row.end .t { color: #e57373; }
+.ch16-heap { display:flex; flex-wrap:wrap; gap:4px; margin:6px 0; min-height:24px; align-items:center; }
+.ch16-chip { font-family:var(--mono); font-size:11px; padding:1px 7px; border-radius:10px; border:1px solid var(--line); background:var(--bg3); }
+.ch16-chip.top { border-color: var(--yellow); color: var(--yellow); }
+.ch16-chip.new { border-color: var(--green); color: var(--green); }
+.ch16-badge { display:inline-block; font-size:11.5px; padding:1px 8px; border-radius:10px; background:var(--bg2); border:1px solid var(--line); color:var(--dim); margin:0 4px 4px 0; font-family:var(--mono); }
+.ch16-badge.ok { color:var(--green); border-color:var(--green); } .ch16-badge.bad { color:var(--red); border-color:var(--red); } .ch16-badge.warn { color:var(--gold); border-color:var(--gold); }
+.ch16-src { background:#0d0f12; border:1px solid var(--line); border-radius:8px; font-family:var(--mono); font-size:12px; padding:6px 0; overflow:auto; max-height:620px; }
+.ch16-src .ln { display:grid; grid-template-columns: 28px 1fr; gap:8px; padding:0 10px; white-space:pre; line-height:18px; cursor:pointer; }
+.ch16-src .ln .n { color:#4b535c; text-align:right; }
+.ch16-src .ln:hover { background: rgba(88,196,221,.08); }
+.ch16-src .ln.sel { background: rgba(255,214,102,.16); box-shadow: inset 3px 0 0 var(--yellow); }
+.ch16-src .ln.nomap { cursor:default; opacity:.6; }
+.ch16-info { background:var(--bg3); border-radius:8px; padding:8px 12px; font-size:13px; margin-top:8px; min-height:4em; }
+.ch16-info table { margin:4px 0; font-size:12px; } .ch16-info td { padding:2px 8px; font-family:var(--mono); }
+.ch16-info td.r { color: var(--yellow); }
+.ch16-tabbar { display:flex; gap:4px; flex-wrap:wrap; border-bottom:1px solid var(--line); margin:6px 0 8px; }
+.ch16-tabbar button { border-radius:6px 6px 0 0; border-bottom:none; font-size:13px; padding:4px 10px; }
+.ch16-tabbar button.active { background: var(--bg3); color: var(--yellow); border-color: var(--line); }
+.ch16-cmp { display:grid; grid-template-columns: 1fr; gap:10px; }
+.ch16-cmp.split { grid-template-columns: minmax(0,1fr) minmax(0,1fr); }
+.ch16-code { background:#0d0f12; border:1px solid var(--line); border-radius:8px; font-family:var(--mono); font-size:11.5px; padding:8px 10px; overflow:auto; max-height:560px; white-space:pre; margin:0; }
+.ch16-code .hdr { color: var(--dim); }
+.ch16-meta { font-size:12.5px; margin-bottom:4px; }
+#ra-svg { display:block; width:100%; background:#0d0f12; border:1px solid var(--line); border-radius:8px; }
+#ra-svg text { font-family: var(--mono); font-size: 10px; fill:#9aa3ad; }
+#ra-svg .vname { fill:#e6e6e6; font-size: 10.5px; }
+.ch16-regfile { display:grid; grid-template-columns: repeat(16, minmax(0,1fr)); gap:3px; margin:6px 0; }
+.ch16-reg { font-family:var(--mono); font-size:10.5px; text-align:center; border:1px solid var(--line); border-radius:4px; padding:2px 0; background:var(--bg3); color:#5b6470; min-height:30px; }
+.ch16-reg b { display:block; font-size:10px; color:#7f8a96; font-weight:400; }
+.ch16-reg.on { color:#000; font-weight:700; }
+.ch16-reg.on b { color:rgba(0,0,0,.6); }
+.ch16-insn { font-family:var(--mono); font-size:12.5px; background:var(--bg3); border-radius:6px; padding:6px 10px; white-space:pre; overflow:auto; }
+.ch16-pipe .pipeline .stage { font-size:12px; }
+table.ch16-t td, table.ch16-t th { font-size:12.5px; padding:3px 8px; }
+table.ch16-t td:first-child { font-family:var(--mono); color:var(--yellow); white-space:nowrap; }
+.ch16-ssa { display:flex; gap:6px; margin-bottom:6px; }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="sidebar" id="sidebar"></nav>
+<main>
+  <h1><span class="chnum">CHAPTER 16</span>Linearizer &amp; renderers</h1>
+  <p class="lede">At the end of <a href="15-lowering.html">Chapter 15</a> the kernel is still a <em>graph</em>: a SINK whose
+  ancestors are scalar (or float4) ALU ops, LOADs, STOREs, and RANGE/END pairs that delimit loops. A CPU or GPU wants a
+  <em>sequence</em> of instructions. This chapter covers the last three steps of codegen: <b>linearize</b> (turn the DAG into a
+  list, with properly nested loops), <b>render</b> (turn each UOp into a line of C, LLVM IR, PTX, WGSL… or into machine
+  instructions with real registers), and <b>compile</b> (turn the text into a binary). The same 4×8 reduction kernel runs
+  through all of it, through ten renderers, and finally through clang into x86 machine code.</p>
+
+  <!-- ============================================================== -->
+  <h2 id="intuition"><span class="sec">16.1</span>Intuition: from a dependency chart to a recipe card</h2>
+  <p>A DAG only says <em>what depends on what</em>. "Load <code>x[r,c]</code> before adding it" is in the graph; "write the
+  three loops in this order and close each one before the next opens" is not. Picture a kitchen dependency chart
+  (sauce needs onions, onions need chopping) versus the recipe card a cook actually reads top to bottom. Linearizing is
+  writing the card: any order that respects the arrows is <em>correct</em> as far as data goes, but some orders are
+  better (load early, store late, keep work out of loops when it doesn't depend on the loop) and, because of loops,
+  some orders that respect every arrow are still <em>nonsense</em>.</p>
+  <div class="callout analogy"><span class="title">Analogy</span>RANGE and END are parentheses. The DAG tells you which
+  tokens must appear inside each pair of parentheses (everything that depends on the range), but nothing stops a naive
+  toposort from writing <code>( [ ) ]</code>. In C, <code>}</code> always closes the most recent <code>{</code>, so the
+  linear order must be <b>properly nested</b>. tinygrad gets this by adding a few <em>extra edges</em> to the graph before
+  linearizing (§16.3), so that any toposort is properly nested.</div>
+  <p>Our running kernel is <code>(x.sum(1) + x.max(1))</code> for <code>x</code> of shape 4×8, compiled with no
+  optimizations (<code>opts_to_apply=()</code>) so all three loops stay visible: an outer loop over the 4 rows, and two
+  <em>sibling</em> inner loops over the 8 columns, one accumulating the sum and one the max. Here is where it ends up (Clang
+  renderer):</p>
+  <pre class="output"><code>struct r_4_8_8_args { float* arg0; float* arg1; };
+void r_4_8_8(const struct r_4_8_8_args* args) {
+  float* data0_4 = args-&gt;arg0;
+  float* data1_32 = args-&gt;arg1;
+  float buf0[1];
+  float buf1[1];
+  for (int Lidx2 = 0; Lidx2 &lt; 4; Lidx2++) {
+    int alu0 = (Lidx2&lt;&lt;3);
+    *(buf1+0) = 0.0f;
+    for (int Lidx0 = 0; Lidx0 &lt; 8; Lidx0++) {
+      float val0 = (*(data1_32+(alu0+Lidx0)));
+      *(buf1+0) = ((*(buf1+0))+val0);
+    }
+    *(buf0+0) = ((float)(-__builtin_inff()));
+    for (int Lidx1 = 0; Lidx1 &lt; 8; Lidx1++) {
+      float val1 = (*(data1_32+(alu0+Lidx1)));
+      float val2 = (*(buf0+0));
+      float alu5 = ((val2&lt;val1)?val1:val2);
+      *(buf0+0) = alu5;
+    }
+    *(data0_4+Lidx2) = ((*(buf1+0))+(*(buf0+0)));
+  }
+}</code></pre>
+  <p>Everything in this chapter explains how that text came from a graph, and how the same graph becomes OpenCL, CUDA,
+  Metal, HIP, PTX, LLVM IR, WGSL or raw x86 instead.</p>
+
+  <!-- ============================================================== -->
+  <h2 id="map"><span class="sec">16.2</span>Where we are: the tail of <code>to_program</code></h2>
+  <p><a class="src" data-path="tinygrad/codegen/__init__.py" data-line="509">to_program(ast, renderer)</a> is the whole of codegen
+  (it is cached on <code>(ast.key, type(renderer), target, config…)</code>). It calls
+  <a class="src" data-path="tinygrad/codegen/__init__.py" data-line="469">do_to_program</a>, which runs
+  <code>full_rewrite_to_sink</code> (Chapters <a href="14-optimizations.html">14</a>–<a href="15-lowering.html">15</a>), builds a
+  <code>PROGRAM</code> UOp, and then grows that PROGRAM one source at a time with a five-rule PatternMatcher, <code>pm_to_program</code>:</p>
+  <div class="ch16-pipe" id="pipe16"></div>
+  <div class="ch16-info" id="pipe16-info">Click a stage.</div>
+  <div class="codecap"><b>tinygrad/codegen/__init__.py:469-499</b> — <a class="src" data-path="tinygrad/codegen/__init__.py" data-line="469">do_to_program</a></div>
+  <pre><code class="language-python">def do_to_program(ast:UOp, renderer:Renderer) -&gt; UOp:
+  &quot;&quot;&quot;
+  Transform an AST into a compiled PROGRAM. May trigger BEAM search.
+
+  Args:
+    ast: The Ops.SINK/Ops.PROGRAM rooted AST
+    renderer: The renderer used to generate the code
+
+  Returns:
+    The Ops.PROGRAM with SINK/LINEAR/SOURCE/BINARY.
+  &quot;&quot;&quot;
+  if VIZ: graph_rewrite(ast, PatternMatcher([]), name=&quot;View Base AST&quot;)
+  ast = graph_rewrite(ast, pm_lower_calls, ctx=LowerCallsCtx(renderer), name=&quot;lower calls&quot;, walk=True)
+  if ast.op is Ops.PROGRAM: prg = ast
+  elif ast.op is Ops.SINK:
+    assert isinstance(ast.arg, KernelInfo), &quot;requires KernelInfo on arg to to_program&quot;
+    full_sink = full_rewrite_to_sink(ast, renderer, optimize=not ast.arg.optimized)
+    prog_info = ProgramInfo.from_sink(full_sink, renderer.target)
+    # instruction selection
+    if isinstance(renderer, ISARenderer):
+      # Instruction selection replaces LOAD/STORE/ALU with INS, so estimate while their meaning is still available.
+      if full_sink.arg.estimates is None:
+        full_sink = full_sink.replace(arg=replace(full_sink.arg, estimates=Estimates.from_uops(tuple(linearize(full_sink)), ignore_indexing=True)))
+      full_sink = graph_rewrite(full_sink, renderer.pre_isel_matcher, ctx=itertools.count(-1, -1), name=&quot;pre instruction selection&quot;, bottom_up=True)
+      full_sink = graph_rewrite(full_sink, renderer.isel_matcher, ctx=IselContext(full_sink), name=&quot;instruction selection&quot;, bottom_up=True)
+    prg = UOp(Ops.PROGRAM, src=(full_sink,), arg=prog_info)
+  else: raise RuntimeError(f&quot;can&#x27;t call to_program on {ast.op}&quot;)
+  if not isinstance(prg.arg, ProgramInfo): prg = prg.replace(arg=ProgramInfo.from_sink(prg.src[0], renderer.target))
+  prg = graph_rewrite(prg, pm_to_program, ctx=renderer, name=&quot;linearize/render&quot;)
+  if VIZ: graph_rewrite(prg, PatternMatcher([]), name=&quot;View Program&quot;)
+  return prg</code></pre>
+  <div class="codecap"><b>tinygrad/codegen/__init__.py:421-465</b> — the four steps and <a class="src" data-path="tinygrad/codegen/__init__.py" data-line="459">pm_to_program</a></div>
+  <pre><code class="language-python">def do_linearize(ctx:Renderer, prg:UOp, sink:UOp) -&gt; UOp:
+  if DEBUG &gt;= 3 and sink.arg.applied_opts: print(f&quot;{sink.arg.function_name:&lt;25} opts: {sink.arg.applied_opts}&quot;)
+  lst = line_rewrite(linearize(sink), pm_linearize_cleanups+pm_alloc_to_buf)
+  prg = prg.replace(src=(lst[-1],))
+  # isa renderers need to allocate registers
+  if isinstance(ctx, ISARenderer):
+    lin_ctx = ctx.linear_ctx_type(ctx)
+    lst = line_rewrite(lst, ctx.pre_regalloc_matcher, lin_ctx)
+    # register definitions (INS without srcs) move to the top so regalloc sees their live ranges span the whole program (callee saved regs)
+    lst = sorted(lst, key=lambda u: u.op is not Ops.INS or bool(u.src))
+    regalloc_ctx = LinearScanRegallocContext(lin_ctx, lst, ctx)
+    lst = line_rewrite(lst, pm_regalloc_rewrite, regalloc_ctx)
+    lst = lin_ctx.insert_linearized(lst)
+    lst = line_rewrite(lst, ctx.post_regalloc_matcher, lin_ctx)
+    if DEBUG &gt;= 4: print(ctx.asm_str(lst, sink.arg.function_name))
+  return prg.replace(src=prg.src + (UOp(Ops.LINEAR, src=tuple(lst)),))
+
+def do_estimates(prg:UOp, sink:UOp, lin:UOp) -&gt; UOp|None:
+  if sink.arg.estimates is not None: return None
+  return prg.replace(src=(sink.replace(arg=replace(sink.arg, estimates=Estimates.from_uops(lin.src, ignore_indexing=True))),)+prg.src[1:])
+
+def do_assemble(ctx:Renderer, prg:UOp, lin:UOp) -&gt; UOp|None:
+  if getattr(type(ctx), &quot;asm&quot;) is Renderer.asm: return None
+  src = &quot;\n&quot;.join(str(u.arg[0]) for u in lin.src)
+  if DEBUG &gt;= 4: print(src)
+  binary = ctx.asm(prg, lin)
+  return prg.replace(src=prg.src[:2]+(UOp(Ops.SOURCE, arg=src), UOp(Ops.BINARY, arg=binary)))
+
+def do_render(ctx:Renderer, prg:UOp, lin:UOp) -&gt; UOp:
+  src = ctx.render(list(lin.src))
+  return prg.replace(src=prg.src + (UOp(Ops.SOURCE, arg=src),))
+
+def do_compile(ctx:Renderer, prg:UOp, source:UOp) -&gt; UOp|None:
+  if DEBUG &gt;= 4: print(source.arg)
+  lib = ctx.compiler.compile_cached(source.arg)
+  if DEBUG &gt;= 7: ctx.compiler.disassemble(lib)
+  return prg.replace(src=prg.src + (UOp(Ops.BINARY, arg=lib),))
+
+pm_to_program = PatternMatcher([
+  (UPat(Ops.PROGRAM, src=(UPat(Ops.SINK, name=&quot;sink&quot;),), name=&quot;prg&quot;), do_linearize),
+  (UPat(Ops.PROGRAM, src=(UPat(Ops.SINK, name=&quot;sink&quot;), UPat(Ops.LINEAR, name=&quot;lin&quot;)), name=&quot;prg&quot;), do_estimates),
+  (UPat(Ops.PROGRAM, src=(UPat(), UPat(Ops.LINEAR, src=UPat(Ops.INS), name=&quot;lin&quot;)), name=&quot;prg&quot;), do_assemble),
+  (UPat(Ops.PROGRAM, src=(UPat(), UPat(Ops.LINEAR, name=&quot;lin&quot;)), name=&quot;prg&quot;), do_render),
+  (UPat(Ops.PROGRAM, src=(UPat(), UPat(Ops.LINEAR), UPat(Ops.SOURCE, name=&quot;source&quot;)), name=&quot;prg&quot;), do_compile),
+])</code></pre>
+  <p>Notice the trick: each rule matches the PROGRAM by the <em>shape of its sources</em>. <code>PROGRAM(SINK)</code> matches
+  only the first rule, which appends a LINEAR; <code>PROGRAM(SINK, LINEAR)</code> then matches the estimates rule (which
+  rewrites the SINK's <code>KernelInfo</code> and returns <code>None</code> the second time) and then the render rule, and so
+  on. <code>graph_rewrite</code> keeps rewriting until nothing matches, so the "pipeline" is just a fixpoint. Stepping
+  <code>pm_to_program.rewrite</code> by hand shows the four steps:</p>
+  <div class="codecap"><b>examples/16_linearize.py</b> — run with <code>DEV=CPU python3 examples/16_linearize.py</code> (add <code>--json</code> to regenerate data/ch16_linear.json)</div>
+  <pre><code class="language-python">step = 0
+while (nxt := pm_to_program.rewrite(prg, ren)) is not None:
+  prg, step = nxt, step + 1
+  print(f&quot;  step {step}: PROGRAM.src = ({&#x27;, &#x27;.join(s.op.name for s in prg.src)})&quot;)
+sink2, lin, source, binary = prg.src
+print(f&quot;  ProgramInfo: global_size={prg.arg.global_size} local_size={prg.arg.local_size} globals={prg.arg.globals} outs={prg.arg.outs} ins={prg.arg.ins}&quot;)
+print(f&quot;  Estimates (filled in by do_estimates): {sink2.arg.estimates}&quot;)
+print(f&quot;  LINEAR has {len(lin.src)} uops, SOURCE has {len(source.arg.splitlines())} lines, BINARY is {len(binary.arg)} bytes of ELF object&quot;)
+print(source.arg)
+
+# ---- map every C line back to the UOps that produced it (used by the chapter&#x27;s &quot;UOp -&gt; source line&quot; demo) ----------
+lines_lst = line_rewrite(lst, pm_linearize_cleanups + pm_alloc_to_buf)   # exactly what do_linearize hands to render()</code></pre>
+  <pre class="output"><code>== 3. pm_to_program, one rule application at a time ==
+  step 1: PROGRAM.src = (SINK, LINEAR)
+  step 2: PROGRAM.src = (SINK, LINEAR)
+  step 3: PROGRAM.src = (SINK, LINEAR, SOURCE)
+  step 4: PROGRAM.src = (SINK, LINEAR, SOURCE, BINARY)
+  ProgramInfo: global_size=(1, 1, 1) local_size=(1, 1, 1) globals=(0, 1) outs=(0,) ins=(1,)
+  Estimates (filled in by do_estimates): Estimates(ops=100, lds=272, mem=144)
+  LINEAR has 60 uops, SOURCE has 24 lines, BINARY is 1280 bytes of ELF object</code></pre>
+  <div class="callout note"><span class="title">Two paths</span>For an <b>ISARenderer</b> (the x86 backend, §16.12), instruction
+  selection happens <em>before</em> the PROGRAM is built, so LINEAR contains <code>Ops.INS</code> UOps, and the third rule
+  (<code>do_assemble</code>, matching <code>LINEAR(src=INS…)</code>) produces SOURCE <em>and</em> BINARY at once. For text
+  renderers, <code>do_render</code> makes SOURCE and <code>do_compile</code> runs the renderer's <code>compiler</code>.</div>
+
+  <!-- ============================================================== -->
+  <h2 id="cfg"><span class="sec">16.3</span>Before linearizing: <code>CFGContext</code> and "add control flow"</h2>
+  <p>The fix for the parenthesis problem lives at the very end of <code>full_rewrite_to_sink</code>, in the stage literally
+  commented <em>"this was the linearizer"</em>:</p>
+  <div class="codecap"><b>tinygrad/codegen/__init__.py:356-364</b></div>
+  <pre><code class="language-python">  # hardware ranges are no longer loops; preserve their already lowered bounds
+  sink = graph_rewrite(sink, pm_range_to_special, name=&quot;range to special&quot;)
+
+  # this was the linearizer
+  sink = graph_rewrite(sink, pm_add_control_flow, ctx=CFGContext(sink), name=&quot;add control flow&quot;, bottom_up=True)
+
+  # put the variables in slots
+  num_params = max([x.arg.slot + 1 for x in sink.toposort() if x.op is Ops.PARAM and x.arg.slot != -1], default=0)
+  sink = graph_rewrite(sink, pm_number_params, ctx=(num_params, {}), name=&quot;number variables&quot;, walk=True)</code></pre>
+  <div class="codecap"><b>tinygrad/codegen/late/linearizer.py:53-86</b> — <a class="src" data-path="tinygrad/codegen/late/linearizer.py" data-line="53">CFGContext</a>, <a class="src" data-path="tinygrad/codegen/late/linearizer.py" data-line="83">pm_add_control_flow</a></div>
+  <pre><code class="language-python">class CFGContext:
+  def __init__(self, sink:UOp):
+    # there are 3 relationships between ranges:
+    # nested, meaning endrange y is a dependency of endrange x and range x is a dependency of endrange y
+    # dependent, meaning endrange y is a dependency of endrange x and range x is not a dependency of endrange y
+    # independent, endrange y is not a dependency of endrange x
+    # everything is nested inside the sink
+    deps: dict[UOp, dict[UOp, None]] = {}
+    nesting: dict[UOp, UOp] = {}
+    for u in sink.toposort():
+      # get the deps from the src
+      deps[u] = {}
+      for s in u.src_without_body: deps[u] |= deps[s]
+
+      if u.op in (Ops.END, Ops.BACKEDGE, Ops.SINK):
+        nesting |= {x:u for x in deps[u] if x.op in (Ops.END, Ops.BACKEDGE) and (u.op is Ops.SINK or u.src[1] in deps[x]) and x not in nesting}
+      if u.op in (Ops.RANGE, Ops.END, Ops.BACKEDGE): deps[u][u] = None
+
+    self.edges: dict[UOp, UOp] = {}
+    siblings: dict[UOp, list[UOp]] = {}
+    for k,vv in nesting.items(): siblings.setdefault(vv, []).append(k)
+    for k,v in siblings.items():
+      # ranges that have dependencies on other siblings need to be scheduled after them
+      order = sorted(v, key=lambda x: len([u for u in v if u in deps[x]]))
+      zipped = zip(order, order[1:]) if k.op is Ops.SINK else zip([k.src[1]] + order, order)
+      for x,y in zipped:
+        # TODO: this can happen! it causes infinite loop in shufflenet
+        assert y.src[1] not in x.backward_slice_with_self
+        self.edges[y.src[1]] = x
+
+pm_add_control_flow = PatternMatcher([
+  # the ordering dep goes on the bound wrapped in AFTER, so a RANGE always has exactly one src
+  (UPat(Ops.RANGE, name=&quot;x&quot;), lambda ctx,x: x.replace(src=(x.src[0].after(y),)) if (y:=ctx.edges.get(x)) is not None else None),
+])</code></pre>
+  <p>Read it in three moves:</p>
+  <ol>
+    <li><b>deps</b>: walking the graph in toposort order, <code>deps[u]</code> is the set of RANGE/END UOps that <code>u</code>
+    (transitively) depends on. Every RANGE/END adds itself.</li>
+    <li><b>nesting</b>: when we reach an END <code>u</code> (or the SINK), every not-yet-assigned END <code>x</code> in its deps
+    whose own deps contain <code>u</code>'s RANGE (<code>u.src[1]</code>) is <em>nested inside</em> <code>u</code>. Anything
+    not nested in a loop ends up nested in the SINK. So <code>nesting</code> maps each END to its immediate parent.</li>
+    <li><b>siblings → edges</b>: group ENDs by parent. Sort the siblings by how many of the other siblings they already depend
+    on (data-dependent siblings must come later), then chain them: the first sibling's RANGE must come after the parent's
+    RANGE; each later sibling's RANGE must come after the previous sibling's END. (Under the SINK there is no parent RANGE, so
+    only the sibling chain.)</li>
+  </ol>
+  <p>The edge is materialized in the cheapest possible way: <code>pm_add_control_flow</code> rewrites the RANGE so its bound
+  becomes <code>AFTER(bound, y)</code>. A RANGE still has exactly one source; it just can't be scheduled before <code>y</code>.
+  For our kernel:</p>
+  <pre class="output"><code>== 1. CFGContext on the sink entering &#x27;add control flow&#x27; ==
+  RANGE(axis 0)    must come after RANGE(axis 2)   -&gt; the RANGE&#x27;s bound gets wrapped: AFTER(bound, RANGE(axis 2))
+  RANGE(axis 1)    must come after END(axis 0)   -&gt; the RANGE&#x27;s bound gets wrapped: AFTER(bound, END(axis 0))
+  in the final sink these show up as AFTER uops feeding the RANGE bounds:
+    RANGE(axis 2)    src[0] = CAST(CONST)
+    RANGE(axis 0)    src[0] = AFTER(CAST, RANGE(axis 2))
+    RANGE(axis 1)    src[0] = AFTER(CAST, END(axis 0))</code></pre>
+  <div class="callout aha"><span class="title">Why a RANGE "floats"</span>A RANGE UOp's only source is its bound (a constant
+  here). Nothing in the plain DAG says the <code>for (c…)</code> loop must start after the <code>for (r…)</code> loop: the
+  <em>body</em> depends on both ranges, but the RANGE itself depends on neither. So a priority toposort is free to open an
+  inner loop before the outer one. With two siblings the priorities happen to save us; with three they don't.</div>
+  <p>Proof by sabotage: monkeypatch <code>graph_rewrite</code> to skip the "add control flow" stage, then check that every END
+  closes the most recently opened RANGE:</p>
+  <div class="codecap"><b>examples/16_why_control_flow.py</b> — run with <code>DEV=CPU python3 examples/16_why_control_flow.py</code></div>
+  <pre><code class="language-python">from tinygrad import Tensor, Device
+from tinygrad.uop.ops import Ops
+import tinygrad.codegen as cg
+from tinygrad.codegen.late.linearizer import linearize
+
+SKIP_CF = [False]
+_gr = cg.graph_rewrite
+def gr(sink, pm, *a, name=None, **kw):
+  if name == &quot;add control flow&quot; and SKIP_CF[0]: return sink      # pretend the stage does not exist
+  return _gr(sink, pm, *a, name=name, **kw)
+cg.graph_rewrite = gr
+
+def loop_events(lst):
+  &quot;&quot;&quot;the RANGE/END skeleton of a linear program, and whether it is properly nested&quot;&quot;&quot;
+  stack, ev, ok = [], [], True
+  for u in lst:
+    if u.op is Ops.RANGE:
+      stack.append(u); ev.append(f&quot;RANGE{u.arg[1]}(len {int(u.vmax)+1})&quot;)
+    elif u.op is Ops.END:
+      ev.append(f&quot;END{u.src[1].arg[1]}&quot;)
+      if not stack or stack[-1] is not u.src[1]: ok = False
+      elif stack: stack.pop()
+  return ok, ev
+
+x, y, z = Tensor.empty(4, 8), Tensor.empty(4, 16), Tensor.empty(4, 3)
+cases = {&quot;two siblings   x.sum(1)+x.max(1)&quot;: x.sum(1) + x.max(1),
+         &quot;three siblings x.sum(1)+y.max(1)+z.sum(1)&quot;: x.sum(1) + y.max(1) + z.sum(1)}
+ren = Device[&quot;CPU&quot;].renderer
+for desc, t in cases.items():
+  ast = t.schedule_linear().src[-1].src[0]
+  ast = ast.replace(arg=replace(ast.arg, opts_to_apply=()))     # no opts: keep every reduce as a real loop
+  print(f&quot;== {desc}&quot;)
+  for skip in (False, True):
+    SKIP_CF[0] = skip
+    ok, ev = loop_events(linearize(cg.full_rewrite_to_sink(ast, ren)))
+    print(f&quot;  {&#x27;WITHOUT&#x27; if skip else &#x27;with   &#x27;} add control flow: {&#x27;properly nested&#x27; if ok else &#x27;BROKEN NESTING&#x27;}&quot;)</code></pre>
+  <pre class="output"><code>== two siblings   x.sum(1)+x.max(1)
+  with    add control flow: properly nested
+     RANGE2(len 4)  RANGE0(len 8)  END0  RANGE1(len 8)  END1  END2
+  WITHOUT add control flow: properly nested
+     RANGE2(len 4)  RANGE1(len 8)  END1  RANGE0(len 8)  END0  END2
+== three siblings x.sum(1)+y.max(1)+z.sum(1)
+  with    add control flow: properly nested
+     RANGE3(len 4)  RANGE0(len 8)  END0  RANGE1(len 16)  END1  RANGE2(len 3)  END2  END3
+  WITHOUT add control flow: BROKEN NESTING
+     RANGE2(len 3)  RANGE3(len 4)  END2  RANGE1(len 16)  END1  RANGE0(len 8)  END0  END3</code></pre>
+  <p>Without the edges, the 3-long z-reduction's RANGE2 (run count 3) sorts <em>before</em> the outer RANGE3 (run count 4),
+  is opened first, and its END comes while the outer loop is still open: <code>( [ ) ]</code>. With the edges the three
+  siblings are chained 0 → 1 → 2 inside 3, and the order is perfect.</p>
+
+  <div class="quiz" data-answer="1">
+    <div class="q">In the 2-sibling kernel, CFGContext produced the edges <code>RANGE0 after RANGE2</code> and
+    <code>RANGE1 after END0</code>. What exactly does pm_add_control_flow change in the graph?</div>
+    <button class="opt">It inserts a new Ops.BARRIER between END0 and RANGE1</button>
+    <button class="opt">RANGE1's bound source becomes AFTER(bound, END0); RANGE0's becomes AFTER(bound, RANGE2)</button>
+    <button class="opt">It moves the body of loop 1 inside loop 0</button>
+    <button class="opt">It renumbers the axes so that axis order equals loop order</button>
+    <div class="explain">The rule is <code>x.replace(src=(x.src[0].after(y),))</code>: the RANGE keeps a single source, now
+    an AFTER that also depends on <code>y</code>. You can see it in the output: <code>RANGE(axis 1) src[0] = AFTER(CAST, END(axis 0))</code>.
+    In the C code that AFTER renders as nothing (<code>_render</code> just aliases AFTER to its first source).</div>
+  </div>
+
+  <!-- ============================================================== -->
+  <h2 id="splitends"><span class="sec">16.4</span><code>pm_split_ends</code>: one END per RANGE</h2>
+  <p>Earlier stages are allowed to close several loops with one END: <code>END(store, r0, r1)</code>. A linear program needs
+  one closing brace per loop, innermost first. <code>pm_split_ends</code> runs inside the "final rewrite" stage
+  (<code>pm_final_rewrite = pm_commit_weak+pm_decomp+extra_matcher+pm_split_ends</code>, codegen/__init__.py:347):</p>
+  <div class="codecap"><b>tinygrad/codegen/late/linearizer.py:88-97</b> — <a class="src" data-path="tinygrad/codegen/late/linearizer.py" data-line="88">do_split_ends</a></div>
+  <pre><code class="language-python">def do_split_ends(e:UOp):
+  ret = e.src[0]
+  rngs = dedup(r for s in e.src[1:] for r in ((s,) if s.op is Ops.RANGE else s.ranges))
+  for r in sorted(rngs, key=lambda x: x.arg, reverse=True): ret = ret.end(r)
+  return ret
+
+pm_split_ends = PatternMatcher([
+  # split the ends
+  (UPat(Ops.END, name=&quot;e&quot;), do_split_ends),
+])</code></pre>
+  <p>Input <code>END(v, r0, r1)</code> (where a source may also be a non-RANGE UOp whose <code>.ranges</code> count) →
+  output <code>END(END(v, r1), r0)</code>: sorted by <code>arg</code> (axis type, then axis number) in reverse, so the
+  innermost range (the one with the largest axis tuple, by tinygrad's convention) is closed first. After this, every END has
+  exactly two sources: the value it ends, and one RANGE. That invariant is what <code>CFGContext</code> (which reads
+  <code>u.src[1]</code>), the C renderer (one <code>}</code> per END) and the x86 <code>lower_end</code> (one jump per END)
+  rely on.</p>
+
+  <!-- ============================================================== -->
+  <h2 id="linearize"><span class="sec">16.5</span><code>linearize()</code>: a toposort with priorities</h2>
+  <div class="codecap"><b>tinygrad/codegen/late/linearizer.py:8-51</b> — <a class="src" data-path="tinygrad/codegen/late/linearizer.py" data-line="8">linearize</a></div>
+  <pre><code class="language-python">def linearize(sink:UOp) -&gt; list[UOp]:
+  # this is a toposort with priority
+  lst = list(sink.toposort())
+  out_degree:defaultdict[UOp, int] = defaultdict(int)
+  priorities:dict[UOp, tuple[int, int, int, Any]] = {}
+
+  # get consumers and assign priorities
+  # NOTE: this requires the lst be locally toposorted
+  for u in reversed(lst):
+    for s in u.src_without_body: out_degree[s] += 1
+
+    # we place UOps with higher run_counts later
+    run_count = prod([int(r.vmax)+1 for r in u.ranges])
+
+    # simple priority override. this is all bottom up now, smaller numbers will be closer to the top
+    extra = None
+    match u.op:
+      # the order and placement of these defines is important
+      case Ops.PARAM: priority, extra = -20, u.arg.slot
+      case Ops.BUFFER | Ops.ALLOC: priority = -17 if u.addrspace == AddrSpace.LOCAL else -18
+      case Ops.LOAD: priority = -1    # place loads early
+      case Ops.STORE: priority = 1    # place stores late
+      case Ops.RANGE: priority = 5    # placing RANGE is good
+      case Ops.END | Ops.BACKEDGE: priority = -5     # placing loop exits is bad
+      case _: priority = 0            # everything else has priority 0
+    priorities[u] = (run_count, len(u.ranges), priority, extra)
+
+  # number the uops in &quot;ideal&quot; order
+  nkey = {u:i for i,u in enumerate(sorted(lst, key=lambda x: priorities[x]+(x.tuplize if TUPLE_ORDER else ())))}
+
+  # then force them to be toposorted in as close to the ideal order as possible
+  heap = [(-nkey[sink], sink)]
+  newlst = []
+  while heap:
+    newlst.append(u:=heapq.heappop(heap)[1])
+    for v in u.src_without_body:
+      out_degree[v] -= 1
+      if out_degree[v] == 0: heapq.heappush(heap, (-nkey[v],v))
+  newlst = newlst[::-1]
+
+  if getenv(&quot;DEBUG_LINEARIZE&quot;):
+    for i,u in enumerate(newlst):
+      print(f&quot;{i:4d} {str(u.op):20s} {multirange_str(u.ranges, color=True, pad=10)} {priorities[u]}&quot;)
+  return newlst</code></pre>
+  <p>The algorithm, precisely:</p>
+  <ol>
+    <li><b>Priority key</b> for each UOp: <code>(run_count, len(u.ranges), op_priority, extra)</code>.
+      <ul>
+        <li><code>run_count = ∏ (range.vmax+1)</code> over the ranges the UOp lives in: how many times it executes. Things
+        that run 4 times sort before things that run 32 times. This is what hoists <code>alu0 = Lidx2&lt;&lt;3</code> out of
+        the inner loops: it only depends on the outer range, so its run count is 4, not 32.</li>
+        <li><code>len(u.ranges)</code>: depth, a tie-breaker.</li>
+        <li><code>op_priority</code>: PARAM −20 (with the slot as <code>extra</code>, so arguments come in order), BUFFER/ALLOC −18
+        (−17 for LOCAL), LOAD −1 ("place loads early"), STORE +1 ("place stores late"), RANGE +5, END/BACKEDGE −5 ("placing loop
+        exits is bad"), everything else 0.</li>
+      </ul></li>
+    <li><b>Ideal numbering</b> <code>nkey</code>: sort the toposorted list by that key; ties are broken by <code>u.tuplize</code> (a structural
+    key: op, repr(arg), dtype, then the sources' tuplize), because <code>TUPLE_ORDER</code> defaults to 1. That makes the order
+    independent of how the graph happened to be built.
+    If the ideal order were a valid toposort we'd be done; usually it isn't (a STORE with priority +1 must still come after its
+    LOAD, which may have a larger run count).</li>
+    <li><b>Repair</b> by a heap toposort <em>from the bottom</em>: start with the SINK; repeatedly pop the ready UOp with the
+    <em>largest</em> nkey and place it (at the end of the program, growing upward); a source becomes ready when all its consumers
+    are placed (<code>out_degree</code> hits 0). Reverse at the end. Because placement is bottom-up, "largest nkey first" means
+    "as late as possible" for things the ideal order wants late, and things that want to be early end up early.</li>
+  </ol>
+  <p>Here is the real result, with indentation tracking RANGE/END, and the priority tuple of each UOp:</p>
+  <pre class="output"><code>== 2. linearize(sink): a toposort with priorities ==
+    0 CONST                dtype=weakint prio(run_count,#ranges,op_prio,extra)=(1, 0, 0, None)
+    1 PARAM                dtype=f32    prio(run_count,#ranges,op_prio,extra)=(1, 0, -20, 0)
+    2 CONST                dtype=weakint prio(run_count,#ranges,op_prio,extra)=(1, 0, 0, None)
+    3 PARAM                dtype=f32    prio(run_count,#ranges,op_prio,extra)=(1, 0, -20, 1)
+    4 CONST                dtype=weakint prio(run_count,#ranges,op_prio,extra)=(1, 0, 0, None)
+    5 ALLOC                dtype=f32    prio(run_count,#ranges,op_prio,extra)=(1, 0, -18, None)
+    6 ALLOC                dtype=f32    prio(run_count,#ranges,op_prio,extra)=(1, 0, -18, None)
+    7 CONST                dtype=weakfloat prio(run_count,#ranges,op_prio,extra)=(1, 0, 0, None)
+    8 CAST                 dtype=f32    prio(run_count,#ranges,op_prio,extra)=(1, 0, 0, None)
+    9 CONST                dtype=weakfloat prio(run_count,#ranges,op_prio,extra)=(1, 0, 0, None)
+   10 CAST                 dtype=f32    prio(run_count,#ranges,op_prio,extra)=(1, 0, 0, None)
+   11 CONST                dtype=weakint prio(run_count,#ranges,op_prio,extra)=(1, 0, 0, None)
+   12 CAST                 dtype=i32    prio(run_count,#ranges,op_prio,extra)=(1, 0, 0, None)
+   13 CONST                dtype=weakint prio(run_count,#ranges,op_prio,extra)=(1, 0, 0, None)
+   14 CAST                 dtype=i32    prio(run_count,#ranges,op_prio,extra)=(1, 0, 0, None)
+   15 CAST                 dtype=i32    prio(run_count,#ranges,op_prio,extra)=(1, 0, 0, None)
+   16 CONST                dtype=weakint prio(run_count,#ranges,op_prio,extra)=(1, 0, 0, None)
+   17 CAST                 dtype=i32    prio(run_count,#ranges,op_prio,extra)=(1, 0, 0, None)
+   18 RANGE(axis 2)        dtype=i32    prio(run_count,#ranges,op_prio,extra)=(4, 1, 5, None)
+   19   AFTER                dtype=i32    prio(run_count,#ranges,op_prio,extra)=(4, 1, 0, None)
+   20   AFTER                dtype=f32    prio(run_count,#ranges,op_prio,extra)=(4, 1, 0, None)
+   21   INDEX                dtype=f32    prio(run_count,#ranges,op_prio,extra)=(4, 1, 0, None)
+   22   SHL                  dtype=i32    prio(run_count,#ranges,op_prio,extra)=(4, 1, 0, None)
+   23   STORE                dtype=void   prio(run_count,#ranges,op_prio,extra)=(4, 1, 1, None)
+   24   RANGE(axis 0)        dtype=i32    prio(run_count,#ranges,op_prio,extra)=(32, 2, 5, None)
+   25     ADD                  dtype=i32    prio(run_count,#ranges,op_prio,extra)=(32, 2, 0, None)
+   26     INDEX                dtype=f32    prio(run_count,#ranges,op_prio,extra)=(32, 2, 0, None)
+   27     LOAD                 dtype=f32    prio(run_count,#ranges,op_prio,extra)=(32, 2, -1, None)
+   28     AFTER                dtype=f32    prio(run_count,#ranges,op_prio,extra)=(32, 2, 0, None)
+   29     INDEX                dtype=f32    prio(run_count,#ranges,op_prio,extra)=(32, 2, 0, None)
+   30     LOAD                 dtype=f32    prio(run_count,#ranges,op_prio,extra)=(32, 2, -1, None)
+   31     ADD                  dtype=f32    prio(run_count,#ranges,op_prio,extra)=(32, 2, 0, None)
+   32     STORE                dtype=void   prio(run_count,#ranges,op_prio,extra)=(32, 2, 1, None)
+   33   END(axis 0)          dtype=void   prio(run_count,#ranges,op_prio,extra)=(4, 1, -5, None)
+   34   AFTER                dtype=i32    prio(run_count,#ranges,op_prio,extra)=(4, 1, 0, None)
+   35   AFTER                dtype=f32    prio(run_count,#ranges,op_prio,extra)=(4, 1, 0, None)
+   36   INDEX                dtype=f32    prio(run_count,#ranges,op_prio,extra)=(4, 1, 0, None)
+   37   STORE                dtype=void   prio(run_count,#ranges,op_prio,extra)=(4, 1, 1, None)
+   38   RANGE(axis 1)        dtype=i32    prio(run_count,#ranges,op_prio,extra)=(32, 2, 5, None)
+   39     ADD                  dtype=i32    prio(run_count,#ranges,op_prio,extra)=(32, 2, 0, None)
+   40     INDEX                dtype=f32    prio(run_count,#ranges,op_prio,extra)=(32, 2, 0, None)
+   41     LOAD                 dtype=f32    prio(run_count,#ranges,op_prio,extra)=(32, 2, -1, None)
+   42     AFTER                dtype=f32    prio(run_count,#ranges,op_prio,extra)=(32, 2, 0, None)
+   43     INDEX                dtype=f32    prio(run_count,#ranges,op_prio,extra)=(32, 2, 0, None)
+   44     LOAD                 dtype=f32    prio(run_count,#ranges,op_prio,extra)=(32, 2, -1, None)
+   45     CMPLT                dtype=bool   prio(run_count,#ranges,op_prio,extra)=(32, 2, 0, None)
+   46     WHERE                dtype=f32    prio(run_count,#ranges,op_prio,extra)=(32, 2, 0, None)
+   47     STORE                dtype=void   prio(run_count,#ranges,op_prio,extra)=(32, 2, 1, None)
+   48   END(axis 1)          dtype=void   prio(run_count,#ranges,op_prio,extra)=(4, 1, -5, None)
+   49   AFTER                dtype=f32    prio(run_count,#ranges,op_prio,extra)=(4, 1, 0, None)
+   50   INDEX                dtype=f32    prio(run_count,#ranges,op_prio,extra)=(4, 1, 0, None)
+   51   LOAD                 dtype=f32    prio(run_count,#ranges,op_prio,extra)=(4, 1, -1, None)
+   52   AFTER                dtype=f32    prio(run_count,#ranges,op_prio,extra)=(4, 1, 0, None)
+   53   INDEX                dtype=f32    prio(run_count,#ranges,op_prio,extra)=(4, 1, 0, None)
+   54   LOAD                 dtype=f32    prio(run_count,#ranges,op_prio,extra)=(4, 1, -1, None)
+   55   INDEX                dtype=f32    prio(run_count,#ranges,op_prio,extra)=(4, 1, 0, None)
+   56   ADD                  dtype=f32    prio(run_count,#ranges,op_prio,extra)=(4, 1, 0, None)
+   57   STORE                dtype=void   prio(run_count,#ranges,op_prio,extra)=(4, 1, 1, None)
+   58 END(axis 2)          dtype=void   prio(run_count,#ranges,op_prio,extra)=(1, 0, -5, None)
+   59 SINK                 dtype=void   prio(run_count,#ranges,op_prio,extra)=(1, 0, 0, None)</code></pre>
+  <p>Look at the inner loop body (rows 25–32): everything has run count 32 and 2 ranges, so op priority decides: LOADs (−1)
+  before ALU (0) before STORE (+1). The two accumulator initializations (rows 23 and 37: STORE of <code>0.0</code> and
+  <code>-inf</code>) have run count 4, so they sit in the outer loop, right before their inner loops. And END has −5, but the
+  heap can't place it before the STORE it depends on, so it lands immediately after its loop body.</p>
+
+  <div class="demo" id="demo-lin">
+    <div class="demo-title">Linearizer animation: the heap toposort, step by step (a JS port of linearize(), checked against the real list)</div>
+    <div class="demo-desc">Left: the 60-UOp graph that enters <code>linearize()</code> (the real sink, captured by
+    examples/16_linearize.py). Right: the program being built <b>from the bottom up</b>: each step pops the ready UOp with the
+    largest ideal number (<code>nkey</code>) off the heap and places it; its sources whose consumers are now all placed join the
+    heap (green). The JS port uses the real ideal numbering <code>nkey</code> exported by the example; the badge says whether its result is
+    identical to tinygrad's.</div>
+    <div class="controls"><span id="lin-check" class="ch16-badge"></span><label><input type="checkbox" id="lin-ind" checked> indent by loop depth</label>
+      <label><input type="checkbox" id="lin-prio" checked> show priority</label></div>
+    <div id="lin-step"></div>
+    <div class="ch16-heap" id="lin-heap"></div>
+    <div class="ch16-two">
+      <div class="ch16-graph" id="lin-graph"></div>
+      <div class="ch16-list" id="lin-list"></div>
+    </div>
+  </div>
+
+  <div class="quiz" data-answer="2">
+    <div class="q"><code>int alu0 = (Lidx2&lt;&lt;3);</code> is emitted once per outer iteration, not once per inner iteration.
+    Which part of the priority key is responsible?</div>
+    <button class="opt">op_priority: SHL has a special negative priority</button>
+    <button class="opt">extra: the slot of the PARAM it indexes</button>
+    <button class="opt">run_count: the SHL depends only on the outer range, so it runs 4 times, and 4 sorts before 32</button>
+    <button class="opt">Nothing; clang hoists it later</button>
+    <div class="explain"><code>u.ranges</code> of the SHL is just {RANGE axis 2}, so <code>run_count = 4</code>. Its nkey is
+    below everything with run count 32 and the heap repair keeps it there because no inner-loop UOp has to precede it. tinygrad
+    does its own loop-invariant code motion, by construction, instead of leaving it to the C compiler (which may not exist, e.g.
+    for the x86 backend).</div>
+  </div>
+
+  <!-- ============================================================== -->
+  <h2 id="cleanups"><span class="sec">16.6</span><code>line_rewrite</code>: rewriting a list instead of a graph</h2>
+  <p>Some transformations are only expressible once there <em>is</em> an order. IF/ENDIF, for instance, have no meaning in a
+  DAG. <code>do_linearize</code> applies them with <code>line_rewrite</code>, a one-pass, in-order rewrite where each rule returns
+  <code>(replacement, [uops to emit here])</code>:</p>
+  <div class="codecap"><b>tinygrad/codegen/__init__.py:379-399</b> — <a class="src" data-path="tinygrad/codegen/__init__.py" data-line="391">line_rewrite</a>, pm_linearize_cleanups, pm_alloc_to_buf</div>
+  <pre><code class="language-python"># inject IF/ENDIF. only needed if device doesn&#x27;t support gated stores
+pm_linearize_cleanups = PatternMatcher([
+  # if statements are not allowed in the graph
+  (UPat((Ops.IF, Ops.ENDIF)), lambda: panic(RuntimeError, &quot;if not allowed in graph&quot;)),
+  # gated STORE becomes IF-STORE-ENDIF. this is the only use of IF-ENDIF
+  (UPat(Ops.STORE, name=&quot;u&quot;, src=(UPat((Ops.INDEX, Ops.SHRINK)).or_casted(), UPat(), UPat(name=&quot;gate&quot;, dtype=dtypes.bool))),
+   lambda u, gate: ((st:=u.replace(src=u.src[0:2])), [mif:=UOp(Ops.IF, src=(gate, u.src[0])), st, UOp(Ops.ENDIF, src=(mif,))]))
+])
+
+pm_alloc_to_buf = PatternMatcher([(UPat(Ops.ALLOC, name=&quot;x&quot;), lambda x: ((buf:=x.replace(op=Ops.BUFFER)), [buf])),])
+
+# requires lst be toposorted. like graph rewrite, but for lines
+def line_rewrite(lst:list[UOp], pm:PatternMatcher, ctx=None) -&gt; list[UOp]:
+  newlst = []
+  replaced: dict[UOp, UOp] = {}
+  for u in lst:
+    nu = u.replace(src=tuple([replaced.get(x, x) for x in u.src]))
+    ret: tuple[UOp, list[UOp]] = pm.rewrite(nu, ctx) or (nu, [nu])
+    replaced[u] = ret[0]
+    newlst.extend(ret[1])
+  return newlst</code></pre>
+  <ul>
+    <li><b>pm_linearize_cleanups</b>: a <em>gated</em> STORE <code>STORE(idx, val, gate)</code> (a store guarded by a
+    condition, produced by the "move gates from index" stage of Chapter 15) becomes three lines:
+    <code>IF(gate)</code>, the ungated STORE, <code>ENDIF</code>. This is the <em>only</em> producer of IF/ENDIF, and IF/ENDIF
+    already in the graph is an error. (Gated <em>loads</em> stay as <code>LOAD(idx, alt, gate)</code> and render as a
+    ternary.)</li>
+    <li><b>pm_alloc_to_buf</b>: <code>ALLOC</code> (the accumulator registers of <code>lower_reduce</code>) becomes
+    <code>BUFFER</code>, the op the renderers know (<code>float buf0[1];</code>).</li>
+  </ul>
+  <p>For ISA renderers <code>line_rewrite</code> is used three more times (pre-regalloc, regalloc itself, post-regalloc), see
+  §16.12. It is the list-world analogue of <code>graph_rewrite</code>.</p>
+
+  <!-- ============================================================== -->
+  <h2 id="program"><span class="sec">16.7</span>What a PROGRAM carries: <code>ProgramInfo</code> and <code>Estimates</code></h2>
+  <p>The PROGRAM UOp's <code>arg</code> is a <code>ProgramInfo</code>, computed from the final sink <em>before</em> linearization:</p>
+  <div class="codecap"><b>tinygrad/uop/ops.py:1305-1339</b> — <a class="src" data-path="tinygrad/uop/ops.py" data-line="1306">ProgramInfo</a></div>
+  <pre><code class="language-python">@dataclass(frozen=True)
+class ProgramInfo:
+  global_size: tuple[int|float, ...] = (1, 1, 1)
+  local_size: tuple[int, ...] = (1, 1, 1)
+  params: tuple[UOp, ...] = ()
+  globals: tuple[int, ...] = ()
+  outs: tuple[int, ...] = ()
+  ins: tuple[int, ...] = ()
+  target: Target = Target()
+
+  def launch_dims(self, var_vals:dict[str, int]) -&gt; tuple[tuple[int, ...], tuple[int, ...]]:
+    global_size = tuple([sym_infer(sz, var_vals) for sz in self.global_size])  # type: ignore[arg-type]
+    local_size = tuple([sym_infer(sz, var_vals) for sz in self.local_size])
+    return global_size, local_size
+
+  @staticmethod
+  def from_sink(sink:UOp, target:Target=Target()) -&gt; ProgramInfo:
+    _params: list[UOp] = []
+    _globals: list[int] = []
+    outs: list[int] = []
+    ins: list[int] = []
+    global_size: list[int] = [1, 1, 1]
+    local_size: list[int] = [1, 1, 1]
+    for u in sink.toposort():
+      if u.op is Ops.PARAM: _params.append(u)
+      if u.op is Ops.PARAM and u.addrspace != AddrSpace.ALU: _globals.append(u.arg.slot)
+      if u.op in (Ops.STORE, Ops.LOAD):
+        if (idx:=u.src[0]).op in (Ops.INDEX, Ops.SHRINK) or (u.src[0].op is Ops.CAST and (idx:=u.src[0].src[0]).op is Ops.INDEX):
+          if (buf:=idx.src[0].buf_uop).op is Ops.PARAM: (outs if u.op is Ops.STORE else ins).append(buf.arg.slot)
+      if u.op is Ops.SPECIAL: (local_size if u.arg[0] == &#x27;l&#x27; else global_size)[int(u.arg[-1])] = cast(int, u.src[0].substitute(
+        {v:v.replace(arg=replace(v.arg, slot=-1)) for v in u.src[0].toposort() if v.op is Ops.PARAM and v.is_variable}).ssimplify())
+    if not outs and not ins: outs = ins = _globals # if neither is inferred, default to all buffers
+    return ProgramInfo(tuple(global_size), tuple(local_size),
+                       tuple(sorted(_params, key=lambda p: p.arg.slot)), tuple(sorted(dedup(_globals))), tuple(sorted(dedup(outs))),
+                       tuple(sorted(dedup(ins))), target)</code></pre>
+  <p>It is everything the runtime (<a href="17-runtime.html">Chapter 17</a>) needs to <em>launch</em> the binary without looking at
+  the code: the launch grid (read off the <code>SPECIAL</code> UOps created by "range to special": <code>gidx0</code> of size
+  4 gives <code>global_size=(4,1,1)</code> on GPUs; on the CPU there are no SPECIALs so it stays <code>(1,1,1)</code>), the
+  parameter list in slot order, and which buffers are written (<code>outs</code>) and read (<code>ins</code>), inferred from the
+  STOREs and LOADs. For our kernel: <code>globals=(0, 1) outs=(0,) ins=(1,)</code>.</p>
+  <p>The SINK's <code>KernelInfo.estimates</code> is filled by <code>do_estimates</code> from the <em>linear</em> list, because
+  counting needs the loop structure:</p>
+  <div class="codecap"><b>tinygrad/renderer/__init__.py:15-61</b> — <a class="src" data-path="tinygrad/renderer/__init__.py" data-line="16">Estimates.from_uops</a></div>
+  <pre><code class="language-python">@dataclass(frozen=True)
+class Estimates:
+  # number of FLOPS used in the Kernel
+  ops:sint = 0
+  # bytes accessed in loads and stores
+  lds:sint = 0
+  # total bytes accessed, counting only once for bytes that are accessed multiple times
+  mem:sint = 0
+  def __add__(self, o:Estimates): return Estimates(self.ops + o.ops, self.lds + o.lds, self.mem + o.mem)
+  def simplify(self): return Estimates(ssimplify(self.ops), ssimplify(self.lds), ssimplify(self.mem))
+  @staticmethod
+  def from_uops(uops:tuple[UOp, ...], ignore_indexing=False) -&gt; Estimates:
+    flops: sint = 0
+    lds: sint = 0
+    mem: dict[tuple[UOp, Ops], sint] = {}
+    mults: sint = 1
+    mult_stack: list[sint] = []
+    excluded: set[UOp] = set()
+    if ignore_indexing:
+      for u in uops:
+        if u.op in {Ops.INDEX, Ops.SHRINK}:
+          excluded = excluded.union(set(UOp.sink(*u.src[1:]).toposort(lambda x: x.op not in {Ops.END, Ops.BACKEDGE})))
+    for u in uops:
+      if u.op in {Ops.LOAD, Ops.STORE}:
+        buf = u
+        while len(buf.src) and buf.op not in GroupOp.Defines: buf = buf.src[0]
+        if buf.op is Ops.PARAM:
+          # u.src[0] is INDEX, cap at buffer size for re-reads (e.g. matmul)
+          accessed = mem.get((buf, u.op), 0) + u.src[0].max_numel() * u.src[0].dtype.itemsize * mults
+          mem[(buf, u.op)] = smin(accessed, buf.max_numel() * buf.dtype.itemsize)
+      if u.op is Ops.RANGE:
+        mult_stack.append(mults)
+        if u.dtype is not dtypes.void:  # unbounded loop, unknown trip count
+          mults *= cast(sint, u.src[0].without_after.ssimplify())
+          # SPECIAL are already counted in mults
+          mults = mults.substitute({x:x.const_like(0) for x in mults.toposort() if x.op is Ops.SPECIAL}) if isinstance(mults, UOp) else mults
+      elif u.op in {Ops.END, Ops.BACKEDGE}: mults = mult_stack.pop(-1)
+      elif u.op is Ops.SPECIAL: mults *= cast(sint, u.src[0].ssimplify()) # NOTE: we don&#x27;t push to the mult_stack here, you can&#x27;t end these
+      elif u.op is Ops.LOAD and u.src[0].addrspace != AddrSpace.REG:
+        lds += u.max_numel() * u.dtype.itemsize * mults
+      elif u.op is Ops.STORE and u.src[0].addrspace != AddrSpace.REG:
+        lds += u.max_numel() * u.src[1].dtype.itemsize * mults
+      elif u.op in GroupOp.ALU and u not in excluded:
+        flops += (mults * (2 if u.op is Ops.MULACC else 1)) * u.max_numel()
+      elif u.op is Ops.WMMA and u not in excluded:
+        flops += 2 * prod(u.arg[0]) // u.arg[2] * mults
+    return Estimates(ssimplify(flops), lds, sum(mem.values()))</code></pre>
+  <p>It walks the list keeping a multiplier stack: each RANGE multiplies by its trip count, each END pops. ALU ops add
+  <code>mults</code> FLOPs (×2 for MULACC) unless they are pure index arithmetic (<code>ignore_indexing</code> excludes everything
+  feeding an INDEX); LOAD/STORE to non-register memory add bytes; <code>mem</code> counts each PARAM buffer at most once (capped
+  at its size). Check it by hand for our kernel, <code>Estimates(ops=100, lds=272, mem=144)</code>:</p>
+  <ul>
+    <li><b>ops</b>: inner sum loop: 1 ADD × 32 = 32. Inner max loop: CMPLT + WHERE = 2 × 32 = 64. Outer: the final ADD × 4 = 4.
+    <code>alu0 = Lidx2&lt;&lt;3</code> and <code>alu0+Lidx0</code> are indexing, excluded. Total <b>100</b>.</li>
+    <li><b>lds</b>: the two inner loops each LOAD 32 floats from <code>data1</code> = 2×32×4 = 256 bytes, plus 4 stores of 4 bytes = 16.
+    Loads/stores of the REG accumulators don't count. Total <b>272</b>.</li>
+    <li><b>mem</b>: <code>data1</code> is read twice but capped at its size, 128 bytes; <code>data0</code> 16 bytes. Total <b>144</b>.</li>
+  </ul>
+  <p>These numbers are what <code>DEBUG=2</code> prints as GFLOPS and GB/s after a kernel runs, BEAM search
+  (<a href="14-optimizations.html">Chapter 14</a>) ranks candidates by timing real runs, and only uses <code>estimates.ops</code>
+  to throw away candidates that need 1000× more compute than the cheapest one (codegen/opt/search.py:138).</p>
+  <div class="quiz" data-answer="3">
+    <div class="q">If you UPCAST the inner reduce axis by 8 (so the 8 loads become one float4 pair and the 7 adds become a
+    horizontal chain), what happens to <code>Estimates.ops</code>?</div>
+    <button class="opt">It drops to 4×(1+2)+4 = 16, since there is no inner loop any more</button>
+    <button class="opt">It doubles, because vector ops count twice</button>
+    <button class="opt">It becomes symbolic</button>
+    <button class="opt">Roughly the same: unrolled ALU ops are counted one by one (×<code>max_numel()</code> for vector ones), so the
+    work is still about 100</button>
+    <div class="explain">Estimates counts work, not loop structure: an ALU op adds <code>mults × u.max_numel()</code>. Unrolling
+    removes the loop multiplier but creates more (or wider) ALU UOps. Measured with <code>Opt(OptOps.SPLIT, axis, (8, AxisType.UPCAST))</code>: 96 when the sum axis is
+    upcast, 92 for the max axis (the 8 lanes need 7 combining ops instead of 8 accumulations), versus 100 without opts: the
+    same arithmetic, minus the accumulator updates.</div>
+  </div>
+
+  <!-- ============================================================== -->
+  <h2 id="renderer"><span class="sec">16.8</span>The <code>Renderer</code> base class: the inventory</h2>
+  <div class="codecap"><b>tinygrad/renderer/__init__.py:63-88</b> — <a class="src" data-path="tinygrad/renderer/__init__.py" data-line="63">Renderer</a></div>
+  <pre><code class="language-python">class Renderer:
+  target: Target
+  suffix: str = &quot;&quot;
+  inline_prefix: str|None = None
+  # TODO: make this generic with a list of supported types
+  supports_float4: bool = True
+  has_local: bool = True
+  has_shared: bool = True
+  # NOTE: these two should be in (x,y,z) order to match the max_sizes argument in get_grouped_dims
+  global_max: tuple[int, ...]|None = (0x8FFFFFFF,) * (3) # TODO: Ops.SPECIAL int32 indexes right now
+  local_max: tuple[int, ...]|None = (0x8FFFFFFF,) * (3) # TODO: Ops.SPECIAL int32 indexes right now
+  global_prod_max: tuple[int, ...]|None = None
+  shared_max: int = 32768
+  tensor_cores: list[TensorCore] = []
+  extra_matcher: PatternMatcher|None = None
+  code_for_op: dict[Ops, Callable] = {}
+
+  compiler: Compiler = Compiler()
+
+  def __init__(self, target:Target): self.target = target
+  def __reduce__(self): return self.__class__, (self.target,)
+  def render(self, uops:list[UOp]) -&gt; str: raise NotImplementedError(&quot;needs a renderer&quot;)
+  def asm(self, prg:UOp, lin:UOp) -&gt; bytes: raise NotImplementedError(&quot;needs an assembler&quot;)
+  def supported_dtypes(self) -&gt; set[DType]:
+    # double can&#x27;t be bitcast to anything without long support
+    return set(dtypes.all) - ({dtypes.double} if dtypes.long in EMULATED_DTYPES.tolist(dtypes) else set())</code></pre>
+  <p>A Renderer is two things at once. It is the <b>capability description</b> that drives lowering
+  (<a href="15-lowering.html">Chapter 15</a>) and optimization (<a href="14-optimizations.html">Chapter 14</a>), and it is the
+  <b>code generator</b> (<code>render</code> for text backends, <code>asm</code> for binary ones), plus a <code>compiler</code>.
+  The attributes in detail:</p>
+  <table class="ch16-t">
+    <tr><th>attribute</th><th>read by</th><th>meaning</th></tr>
+    <tr><td>target</td><td>everything</td><td><code>Target(device, interface, arch)</code>, e.g. <code>Target("CUDA","PTX","sm_89")</code></td></tr>
+    <tr><td>code_for_op</td><td>decompositions (ch.15), x86 isel</td><td>which ALU ops the backend prints natively. Missing ⇒ decomposed (EXP2 → polynomial, MAX → WHERE…)</td></tr>
+    <tr><td>extra_matcher</td><td>"final rewrite" stage</td><td>backend-specific rewrites (narrow uint arithmetic, bf16 emulation, PTX bool tricks…)</td></tr>
+    <tr><td>supports_float4</td><td>memory_coalescing</td><td>may loads/stores be vectorized</td></tr>
+    <tr><td>has_local / has_shared</td><td>optimizer, gpudims</td><td>are there workgroups / shared memory</td></tr>
+    <tr><td>global_max / local_max / global_prod_max</td><td>group gpudims</td><td>launch-grid limits; dims are merged/split to fit</td></tr>
+    <tr><td>shared_max</td><td>optimizer</td><td>bytes of LOCAL memory</td></tr>
+    <tr><td>tensor_cores</td><td>optimizer (TC opt)</td><td>WMMA shapes the hardware has</td></tr>
+    <tr><td>supported_dtypes()</td><td>decomp dtypes</td><td>dtypes not in this set are emulated</td></tr>
+    <tr><td>inline_prefix</td><td>lower calls</td><td>render CALLed sub-programs inline (static inline functions)</td></tr>
+    <tr><td>compiler</td><td>do_compile</td><td>a <code>Compiler</code>; the base class's <code>compile</code> returns the source bytes</td></tr>
+  </table>
+  <p>Instantiating all renderers we can build on this machine (no GPU toolchains, so the GPU compilers are stubbed; rendering
+  doesn't need them) and printing the inventory:</p>
+  <div class="codecap"><b>examples/16_renderer_caps.py</b> — run with <code>DEV=CPU python3 examples/16_renderer_caps.py</code></div>
+  <pre class="output"><code>renderer         float4 local global_max           local_max        smem   TCs #ops missing from code_for_op
+ClangRenderer    True   False (1, 0, 0)            huge             32768  0   18   EXP2 LOG2 SIN RECIP MAX MULACC
+CPULLVMRenderer  True   False (1, 0, 0)            huge             32768  0   16   SIN RECIP MAX MULACC
+X86Renderer      True   False (1, 0, 0)            huge             32768  0   10   EXP2 LOG2 SIN RECIP MAX MULACC TRUNCDIV TRUNCMOD CMPEQ
+OpenCLRenderer   True   True  huge                 huge             32768  0   21   FDIV MAX MULACC
+MetalRenderer    True   True  huge                 huge             32768  5   21   FDIV MAX MULACC
+CUDARenderer     True   True  (2147483647, 65535, 65535) (1024, 1024, 64) 49152  8   21   FDIV MAX MULACC
+PTXRenderer      True   True  (2147483647, 65535, 65535) (1024, 1024, 64) 49152  5   21   FDIV
+HIPRenderer      True   True  (2147483647, 65535, 65535) huge             65536  4   21   FDIV MAX MULACC
+AMDLLVMRenderer  True   True  (2147483647, 65535, 65535) huge             65536  4   16   SIN RECIP MAX MULACC
+WGSLRenderer     False  True  (65535, 65535, 65535) (256, 256, 64)   32768  0   21   FDIV MAX MULACC
+
+C-family string options (CStyleLanguage subclasses):
+  ClangRenderer   kernel=&#x27;void&#x27;                                 buffer_prefix=&#x27;&#x27;           smem=&#x27;&#x27;                     workitem={}
+  OpenCLRenderer  kernel=&#x27;__kernel void&#x27;                        buffer_prefix=&#x27;__global &#x27;  smem=&#x27;__local &#x27;             workitem={&#x27;g&#x27;: &#x27;get_group_id(0)&#x27;, &#x27;l&#x27;: &#x27;get_local_id(0)&#x27;}
+  MetalRenderer   kernel=&#x27;kernel void&#x27;                          buffer_prefix=&#x27;device &#x27;    smem=&#x27;threadgroup __attribute__((aligned(16))) &#x27; workitem={&#x27;g&#x27;: &#x27;gid.x&#x27;, &#x27;l&#x27;: &#x27;lid.x&#x27;}
+  CUDARenderer    kernel=&#x27;extern &quot;C&quot; __global__ void __launc&#x27;   buffer_prefix=&#x27;&#x27;           smem=&#x27;__shared__ __align__(16) &#x27; workitem={&#x27;g&#x27;: &#x27;blockIdx.x&#x27;, &#x27;l&#x27;: &#x27;threadIdx.x&#x27;}
+  HIPRenderer     kernel=&#x27;extern &quot;C&quot; __attribute__((global))&#x27;   buffer_prefix=&#x27;&#x27;           smem=&#x27;__attribute__((shared, aligned(16)))&#x27; workitem={&#x27;g&#x27;: &#x27;__ockl_get_group_id(0)&#x27;, &#x27;l&#x27;: &#x27;__ockl_get_local_id(0)&#x27;}
+  WGSLRenderer    kernel=&#x27;void&#x27;                                 buffer_prefix=&#x27;&#x27;           smem=&#x27;&#x27;                     workitem={&#x27;g&#x27;: &#x27;i32(gindex.x)&#x27;, &#x27;l&#x27;: &#x27;i32(lindex.x)&#x27;}</code></pre>
+  <p>Read the last column against Chapter 15: Clang lacks EXP2/LOG2/SIN, so on Clang <code>exp</code> becomes a polynomial;
+  nobody except PTX prints MAX, so MAX → <code>(a&lt;b)?b:a</code> everywhere else; the x86 backend has the fewest native ops (10)
+  because each one costs an instruction-selection rule.</p>
+
+  <!-- ============================================================== -->
+  <h2 id="cstyle"><span class="sec">16.9</span><code>CStyleLanguage</code>: one PatternMatcher from UOps to C fragments</h2>
+  <p>Six renderers (Clang, OpenCL, Metal, CUDA, HIP and, surprisingly, WGSL) share <code>CStyleLanguage</code>. Its core is a
+  PatternMatcher, <code>string_rewrite</code>, whose rules return <em>strings</em> instead of UOps, with the renderer as
+  <code>ctx</code>; <code>ctx[x]</code> is the string already chosen for source <code>x</code>:</p>
+  <div class="codecap"><b>tinygrad/renderer/cstyle.py:11-83</b> — <a class="src" data-path="tinygrad/renderer/cstyle.py" data-line="11">base_rewrite</a></div>
+  <pre><code class="language-python">base_rewrite = PatternMatcher([
+  # local/reg buffers
+  (UPat(Ops.BUFFER, name=&quot;x&quot;), lambda ctx,x: ctx.render_buffer(x)),
+  (UPat(Ops.BINARY, name=&quot;x&quot;), lambda ctx,x: f&#x27;const unsigned char {ctx[x]}[] = &quot;&#x27; + &#x27;&#x27;.join(f&#x27;\\x{b:02x}&#x27; for b in x.arg) + &#x27;&quot;;&#x27;),
+
+  # range/loop/if/endif
+  (UPat(Ops.RANGE, dtypes.void), lambda ctx: &quot;for (;;) {&quot;),
+  (UPat(Ops.RANGE, name=&quot;x&quot;),
+   lambda ctx,x: f&quot;for ({ctx.render_dtype(x.dtype)} {ctx[x]} = 0; {ctx[x]} &lt; {ctx[x.src[0]]}; {ctx[x]}++) {{&quot;),
+  (UPat(Ops.BACKEDGE, src=(UPat(), UPat(Ops.RANGE), UPat(name=&quot;c&quot;, dtype=dtypes.bool))), lambda ctx,c: f&quot;  if (!({ctx[c]})) {{ break; }}\n}}&quot;),
+  (UPat(Ops.IF, name=&quot;x&quot;), lambda ctx,x: f&quot;if ({ctx[x.src[0]]}) {{&quot;),
+  (UPat((Ops.ENDIF, Ops.END)), lambda ctx: &quot;}&quot;),
+
+  # const
+  (UPat.cvar(&quot;c&quot;).cast(dtypes.floats, name=&quot;x&quot;), lambda ctx,x,c: None if math.isfinite(v:=c.val) else \
+    f&quot;({ctx.render_cast(x, ctx.nan if math.isnan(v) else ctx.infinity if v &gt; 0 else f&#x27;-{ctx.infinity}&#x27;)})&quot;),
+  (UPat.cvar(&quot;c&quot;).cast(dtypes.float), lambda ctx,c: f&quot;{c.val}f&quot;),
+  (UPat.cvar(&quot;c&quot;).cast(dtypes.int64), lambda ctx,c: f&quot;{c.val}l&quot;),
+  (UPat.cvar(&quot;c&quot;).cast(dtypes.uint64, name=&quot;x&quot;), lambda ctx,x,c: f&quot;{truncate[x.dtype](c.val)}ul&quot;),
+  (UPat.cvar(&quot;c&quot;).cast(dtypes.uint32, name=&quot;x&quot;), lambda ctx,x,c: f&quot;{truncate[x.dtype](c.val)}u&quot;),
+  (UPat.cvar(&quot;c&quot;).cast(dtypes.bool), lambda ctx,c: &quot;1&quot; if c.val else &quot;0&quot;),
+  # consts are rendered to larger type and casted
+  (UPat.cvar(&quot;c&quot;).cast((*dtypes.fp8s, dtypes.bfloat16, dtypes.half), name=&quot;x&quot;), lambda ctx,x,c: f&quot;({ctx.render_cast(x, f&#x27;{c.val}f&#x27;)})&quot;),
+  (UPat.cvar(&quot;c&quot;).cast((dtypes.uint8, dtypes.uint16), name=&quot;x&quot;), lambda ctx,x,c: f&quot;({ctx.render_cast(x, f&#x27;{c.val}u&#x27;)})&quot;),
+  (UPat.cvar(&quot;c&quot;).cast((dtypes.int8, dtypes.int16), name=&quot;x&quot;), lambda ctx,x,c: f&quot;({ctx.render_cast(x, str(c.val))})&quot;),
+  # default const render
+  (UPat.cvar(&quot;c&quot;).cast(), lambda ctx,c: str(c.val)),
+
+  # casting
+  (UPat(Ops.CAST, name=&quot;x&quot;), lambda ctx,x: f&quot;({ctx.render_cast(x, ctx[x.src[0]])})&quot;),
+  (UPat(Ops.BITCAST, name=&quot;x&quot;), lambda ctx,x: f&quot;(({ctx._render_dtype(x.dtype, addrspace=x.addrspace)})({ctx[x.src[0]]}))&quot;
+   if x.addrspace in (AddrSpace.GLOBAL, AddrSpace.LOCAL) else None),
+  (UPat(Ops.BITCAST, name=&quot;x&quot;), lambda ctx,x: f&quot;__builtin_bit_cast({ctx.render_type(x)}, ({ctx.render_type(x.src[0])})({ctx[x.src[0]]}))&quot;),
+
+  # GPU stuff
+  (UPat(Ops.BARRIER), lambda ctx: ctx.barrier),
+  (UPat(Ops.SPECIAL, name=&quot;x&quot;), lambda ctx,x: f&quot;{ctx.code_for_workitem[x.arg[0]](x.arg[-1])}; /* {(x.src[0]).render()} */&quot;),
+
+  # SHRINK/INDEX
+  (UPat(Ops.INDEX, src=(UPat.var(&quot;buf&quot;), UPat.var(&#x27;idx&#x27;)), name=&quot;x&quot;), lambda ctx,**kwargs: ctx.render_index(**kwargs)),
+  (UPat(Ops.SHRINK, src=(UPat.var(&quot;buf&quot;), UPat.var(&#x27;idx&#x27;), UPat.cvar().cast()), name=&quot;x&quot;), lambda ctx,**kwargs: ctx.render_index(**kwargs)),
+  (UPat(Ops.STACK, name=&quot;x&quot;),
+   lambda ctx,x: f&quot;{ctx.float4.replace(&#x27;float4&#x27;, ctx.render_type(x))}&quot; + \
+                 f&quot;{ctx.float4_style[0]}{&#x27;,&#x27;.join([ctx[y] for y in x.src])}{ctx.float4_style[1]}&quot;),
+
+  # load/store
+  (UPat(Ops.LOAD, src=(UPat.var(&#x27;bidx&#x27;),)), lambda ctx,bidx: f&quot;({ctx.render_access(bidx)})&quot;),
+  (UPat(Ops.LOAD, src=(UPat.var(&quot;bidx&quot;), UPat.var(&quot;var&quot;), UPat.var(&quot;gate&quot;))),
+   lambda ctx,bidx,var,gate: f&quot;({ctx[gate]}?{ctx.render_access(bidx)}:{ctx[var]})&quot;),
+  (UPat(Ops.STORE, src=(UPat.var(&#x27;bidx&#x27;), UPat.var(&quot;var&quot;))), lambda ctx,bidx,var: f&quot;{ctx.render_access(bidx)} = {ctx[var]};&quot;),
+
+  # alu/gep
+  (UPat(Ops.WMMA, name=&quot;x&quot;), lambda ctx,x: f&quot;__{_wmma_name(x)}({ctx[x.src[0]]}, {ctx[x.src[1]]}, {ctx[x.src[2]]})&quot;),
+  (UPat(GroupOp.ALU, name=&quot;x&quot;), lambda ctx,x: ctx.code_for_op[x.op](
+    *([strip_parens(ctx[v]) if v.op == x.op and x.op in {Ops.ADD, Ops.MUL, Ops.XOR, Ops.OR, Ops.AND} else ctx[v] for v in x.src]), x.dtype)),
+
+  # call an external function by symbol: the CUSTOM_FUNCTION body names the callee, the srcs are the args and set the types
+  (UPat(Ops.CALL, src=(UPat(Ops.CUSTOM_FUNCTION, name=&quot;f&quot;),), allow_any_len=True, name=&quot;x&quot;), lambda ctx,x,f:
+   f&quot;(({ctx.abi}{ctx.render_dtype(x.dtype)}(*)({&#x27;, &#x27;.join(map(ctx.render_type, x.src[1:]))}))({f.arg.name}))&quot;
+   f&quot;({&#x27;, &#x27;.join(f&#x27;({ctx.render_type(y)})({ctx[y]})&#x27; for y in x.src[1:])})&quot; + (&quot;;&quot; if x.dtype is dtypes.void else &quot;&quot;)),
+
+  # call to PROGRAM links BINARY at runtime
+  (UPat(Ops.CALL, src=(UPat(Ops.PROGRAM, name=&quot;body&quot;),), allow_any_len=True, name=&quot;x&quot;), lambda ctx,x,body:
+   f&quot;{body.src[0].arg.function_name}(&amp;(struct {body.src[0].arg.function_name}_args){{&quot;
+   f&quot;{&#x27;, &#x27;.join(f&#x27;({ctx.param_type(p)}){ctx[x.src[p.arg.slot+1]]}&#x27; for p in body.arg.params)}}});&quot;),
+
+  # call to LINEAR renders the call in SOURCE
+  (UPat(Ops.CALL, src=(UPat(Ops.LINEAR, name=&quot;body&quot;),), allow_any_len=True, name=&quot;x&quot;), lambda ctx,x,body: f&quot;{body.arg}(&quot;
+   f&quot;{&#x27;, &#x27;.join(f&#x27;({ctx.param_type(p)}){ctx[x.src[s+1]]}&#x27; for s,p in [(u.arg.slot,u) for u in body.src if u.op is Ops.PARAM])});&quot;),
+
+  # custom passes through with format
+  (UPat((Ops.CUSTOM, Ops.CUSTOMI), name=&quot;x&quot;), lambda ctx,x: x.arg[0].format(*[ctx[y] for y in x.src])),
+])</code></pre>
+  <p>ALU ops go through one generic rule that calls <code>code_for_op[x.op](*operand_strings, dtype)</code>. Note the
+  <code>strip_parens</code> for associative chains: <code>a+b+c</code> renders as <code>((a+b)+c)</code> → <code>(a+b+c)</code>.
+  (That reassociation is what changed the floating-point results of the Cody–Waite reduction in
+  <a href="15-lowering.html#transcendental">Chapter 15</a>.)</p>
+  <div class="codecap"><b>tinygrad/renderer/cstyle.py:154-162</b> — the default <a class="src" data-path="tinygrad/renderer/cstyle.py" data-line="154">code_for_op</a></div>
+  <pre><code class="language-python">  code_for_op: dict = {
+    Ops.SQRT: lambda x,dtype: f&quot;sqrt({x})&quot;, Ops.RECIP: lambda x,dtype: f&quot;(1/{x})&quot;, Ops.NEG: lambda x,dtype: f&quot;-{x}&quot;,
+    Ops.EXP2: lambda x,dtype: f&quot;exp2({x})&quot;, Ops.LOG2: lambda x,dtype: f&quot;log2({x})&quot;, Ops.SIN: lambda x,dtype: f&quot;sin({x})&quot;,
+    Ops.TRUNC: lambda x,dtype: f&quot;trunc({x})&quot;,
+    Ops.AND: lambda a,b,dtype: f&quot;({a}&amp;{b})&quot;, Ops.XOR: lambda a,b,dtype: f&quot;({a}^{b})&quot;, Ops.OR: lambda a,b,dtype: f&quot;({a}|{b})&quot;,
+    Ops.ADD: lambda a,b,dtype: f&quot;({a}+{b})&quot;, Ops.SUB: lambda a,b,dtype: f&quot;({a}-{b})&quot;, Ops.MUL: lambda a,b,dtype: f&quot;({a}*{b})&quot;,
+    Ops.TRUNCMOD: lambda a,b,dtype: f&quot;({a}%{b})&quot;, Ops.TRUNCDIV: lambda a,b,dtype: f&quot;({a}/{b})&quot;, Ops.CMPNE: lambda a,b,dtype: f&quot;({a}!={b})&quot;,
+    Ops.SHR: lambda a,b,dtype: f&quot;({a}&gt;&gt;{b})&quot;, Ops.SHL: lambda a,b,dtype: f&quot;({a}&lt;&lt;{b})&quot;, Ops.CMPLT: lambda a,b,dtype: f&quot;({a}&lt;{b})&quot;,
+    Ops.WHERE: lambda a,b,c,dtype: f&quot;({a}?{b}:{c})&quot;, Ops.CMPEQ: lambda a,b,dtype: f&quot;({a}=={b})&quot;}</code></pre>
+  <p>The driver loop, <code>_render</code>, walks the linear list once:</p>
+  <div class="codecap"><b>tinygrad/renderer/cstyle.py:223-281</b> — <a class="src" data-path="tinygrad/renderer/cstyle.py" data-line="223">CStyleLanguage._render</a></div>
+  <pre><code class="language-python">  def _render(self, uops:list[UOp]) -&gt; tuple[str, list[str], list[tuple[str,tuple[UOp,bool]]]]:
+    r: dict[UOp, str] = {}
+    self.r = r
+
+    child_count = Counter(v for ru in uops for v in ru.src)
+    # find which PARAMs are stored to with a single toposort
+    writable_params = {u for u in UOp.sink(*[u.src[0] for u in uops if u.op is Ops.STORE]).toposort(lambda u: u.op not in {Ops.END, Ops.BACKEDGE})
+                       if u.op is Ops.PARAM}
+    bufs: dict[UOp, tuple[str, tuple[UOp, bool]]] = {}
+    kernel = []
+    depth = 1
+    c: defaultdict[str, int] = defaultdict(int)
+    name = &quot;test&quot;
+    for u in uops:
+      if u.op in {Ops.NOOP, Ops.CONST, Ops.CUSTOM_FUNCTION}: continue
+      if u.op == Ops.STACK and len(u.src) == 0: continue
+      if u.op is Ops.AFTER:
+        if u.dtype is dtypes.void: continue
+        r[u] = r[u.src[0]]
+        continue
+      if u.op is Ops.SINK:
+        if u.arg is not None: name = u.arg.function_name
+        continue
+      if u.op is Ops.PARAM:
+        r[u] = (u.arg.name.replace(&quot;:&quot;, &quot;_&quot;) if u.arg.name is not None else f&quot;data{u.arg.slot}&quot;) + \
+          &quot;_&quot; + &#x27;_&#x27;.join([str(x) for x in u.shape])
+        bufs[u] = (r[u], (u, u in writable_params))
+        continue
+
+      # naming
+      prefix = None
+      if u.op is Ops.SPECIAL: r[u] = u.arg
+      elif u.op is Ops.RANGE: r[u] = f&quot;{axis_letters[u.axis_type]}idx&quot;+range_str(u)
+      else:
+        prefix = {Ops.WMMA: &quot;wmma&quot;, Ops.BUFFER: &quot;buf&quot;, Ops.CAST: &quot;cast&quot;, Ops.BITCAST: &quot;cast&quot;, Ops.STACK: &quot;cast&quot;,
+                  Ops.INDEX: &quot;bidx&quot;, Ops.LOAD: &quot;val&quot;}.get(u.op, &quot;alu&quot;)
+        r[u] = f&quot;{prefix}{c[prefix]}&quot;
+
+      l: str|None = self.string_rewrite.rewrite(u, ctx=self)
+      assert l is not None, f&quot;failed to render {u.op} {u.dtype} {[(x.op,x.dtype) for x in u.src]} {u.arg}&quot;
+
+      if u.op in {Ops.ENDIF, Ops.END, Ops.BACKEDGE}: depth -= 1
+      if (u.op is not Ops.CAST or u.max_numel() == 1) and ((u.op is Ops.CAST and u.src[0].op is Ops.CONST) or \
+        u.op in {Ops.INDEX, Ops.SHRINK, Ops.CUSTOMI} or \
+        (u.op is Ops.LOAD and u.src[0].addrspace == AddrSpace.REG and child_count[u] == 1) or \
+        (u.op in {Ops.CAST, Ops.BITCAST} and u.addrspace in (AddrSpace.GLOBAL, AddrSpace.LOCAL)) or \
+        (u.op in {Ops.STACK, *(GroupOp.ALU-{Ops.WHERE}), Ops.CAST, Ops.BITCAST} and child_count[u] == 1 and not getenv(&quot;EXPAND_SSA&quot;))):
+        r[u] = l
+      else:
+        if u.op not in {Ops.RANGE, Ops.BUFFER, Ops.BINARY} and u.dtype != dtypes.void:
+          l = f&quot;{self.render_type(u)} {r[u]} = {l}&quot; + (&quot;;&quot; if u.op is not Ops.SPECIAL else &quot;&quot;)
+        elif u.op is Ops.CAST: l += &quot;;&quot;  # a discarded value renders as a bare statement
+        kernel.append(&quot;\n&quot;.join(&quot;  &quot;*depth + line for line in l.split(&quot;\n&quot;)))
+        if prefix: c[prefix] += 1  # if it was used, increment
+      if u.op in {Ops.IF, Ops.RANGE}: depth += 1
+    del self.r
+
+    # NOTE: this relies on bufs dict preserving order
+    return (name, kernel, list(bufs.values()))</code></pre>
+  <ul>
+    <li><b>Skipped</b>: CONST (consts are always wrapped in a CAST since "cast consts", and the CAST renders the literal),
+    NOOP, SINK (just records the function name), void AFTER; a non-void AFTER aliases its first source (that's how the control-flow
+    edges of §16.3 vanish from the text).</li>
+    <li><b>Naming</b>: PARAM → <code>data{slot}_{shape}</code> (<code>data1_32</code>), RANGE →
+    <code>{axis letter}idx{axis}</code> (<code>Lidx0</code>; L for loop, g/l for global/local), SPECIAL → its arg
+    (<code>gidx0</code>), otherwise a prefix + counter: <code>val</code> for LOAD, <code>bidx</code> INDEX, <code>cast</code>
+    CAST/BITCAST/STACK, <code>buf</code> BUFFER, <code>wmma</code>, and <code>alu</code> for everything else (including STORE and
+    END, which is why our kernel jumps from <code>alu0</code> to <code>alu5</code>).</li>
+    <li><b>Inline or declare</b>: CAST-of-CONST, INDEX, single-use register LOADs and single-use ALU/CAST/BITCAST/STACK
+    (except WHERE) are <em>inlined</em>: <code>r[u]</code> becomes the expression itself. Anything else gets its own line
+    <code>&lt;type&gt; &lt;name&gt; = &lt;expr&gt;;</code> and the counter advances.</li>
+    <li><b>Indentation</b>: <code>depth</code> goes up after RANGE/IF and down at END/ENDIF; each line is prefixed with
+    <code>"  "*depth</code>. Because the list is properly nested, that is all it takes to get correctly nested braces.</li>
+  </ul>
+  <p>Every C line therefore comes from exactly one <em>emitted</em> UOp plus the chain of inlined UOps feeding it. The example
+  recovers that map by spying on <code>string_rewrite</code> during a real render:</p>
+  <pre class="output"><code>== 4. which UOps produced which C line ==
+  float* data0_4 = args-&gt;arg0;                                 &lt;- %1 PARAM
+  float* data1_32 = args-&gt;arg1;                                &lt;- %3 PARAM
+  float buf0[1];                                               &lt;- %4 CONST, %5 BUFFER
+  float buf1[1];                                               &lt;- %4 CONST, %6 BUFFER
+  for (int Lidx2 = 0; Lidx2 &lt; 4; Lidx2++) {                    &lt;- %0 CONST, %15 CAST, %18 RANGE
+  int alu0 = (Lidx2&lt;&lt;3);                                       &lt;- %13 CONST, %14 CAST, %22 SHL
+  *(buf1+0) = 0.0f;                                            &lt;- %9 CONST, %10 CAST, %11 CONST, %12 CAST, %20 AFTER, %21 INDEX, %23 STORE
+  for (int Lidx0 = 0; Lidx0 &lt; 8; Lidx0++) {                    &lt;- %16 CONST, %17 CAST, %19 AFTER, %24 RANGE
+  float val0 = (*(data1_32+(alu0+Lidx0)));                     &lt;- %25 ADD, %26 INDEX, %27 LOAD
+  *(buf1+0) = ((*(buf1+0))+val0);                              &lt;- %11 CONST, %12 CAST, %28 AFTER, %29 INDEX, %30 LOAD, %31 ADD, %32 STORE
+  }                                                            &lt;- %33 END
+  *(buf0+0) = ((float)(-__builtin_inff()));                    &lt;- %7 CONST, %8 CAST, %11 CONST, %12 CAST, %35 AFTER, %36 INDEX, %37 STORE
+  for (int Lidx1 = 0; Lidx1 &lt; 8; Lidx1++) {                    &lt;- %16 CONST, %17 CAST, %34 AFTER, %38 RANGE
+  float val1 = (*(data1_32+(alu0+Lidx1)));                     &lt;- %39 ADD, %40 INDEX, %41 LOAD
+  float val2 = (*(buf0+0));                                    &lt;- %11 CONST, %12 CAST, %42 AFTER, %43 INDEX, %44 LOAD
+  float alu5 = ((val2&lt;val1)?val1:val2);                        &lt;- %45 CMPLT, %46 WHERE
+  *(buf0+0) = alu5;                                            &lt;- %11 CONST, %12 CAST, %42 AFTER, %43 INDEX, %47 STORE
+  }                                                            &lt;- %48 END
+  *(data0_4+Lidx2) = ((*(buf1+0))+(*(buf0+0)));                &lt;- %11 CONST, %12 CAST, %49 AFTER, %50 INDEX, %51 LOAD, %52 AFTER, %53 INDEX, %54 LOAD, %55 INDEX, %56 ADD, %57 STORE
+  }                                                            &lt;- %58 END</code></pre>
+
+  <div class="demo" id="demo-map">
+    <div class="demo-title">UOp ↔ source line: click a line of generated C, see the UOps it came from</div>
+    <div class="demo-desc">Real data from examples/16_linearize.py. Click a line on the left: the graph highlights the UOps that
+    produced it (the emitted one and everything inlined into it), and the table shows what <code>_render</code> stored in
+    <code>ctx.r</code> for each one: a variable name, or the inlined expression. Click a node in the graph to go the other way.</div>
+    <div class="ch16-two">
+      <div><div class="ch16-src" id="map-src"></div><div class="ch16-info" id="map-info">Click a line.</div></div>
+      <div class="ch16-graph" id="map-graph"></div>
+    </div>
+  </div>
+
+  <p>The inlining rule is easiest to see by turning it off. <code>EXPAND_SSA=1</code> disables the "single-use ALU/CAST" case,
+  so every SSA value gets its own line. An elementwise kernel with the heuristic's UPCAST-by-4 (float4 load and store):</p>
+  <div class="codecap"><b>examples/16_expand_ssa.py</b> — run with <code>DEV=CPU python3 examples/16_expand_ssa.py</code> and with <code>EXPAND_SSA=1</code> in front</div>
+  <pre><code class="language-python">import os
+from tinygrad import Tensor, Device
+from tinygrad.codegen import to_program
+
+ren = Device[&quot;CPU&quot;].renderer
+x = Tensor.empty(4, 4)
+ast = ((x * 2 + 1).sqrt() * x.max(1, keepdim=True)).schedule_linear().src[-1].src[0]   # default (heuristic) opts
+src = to_program(ast, ren).src[2].arg
+print(f&quot;EXPAND_SSA={os.environ.get(&#x27;EXPAND_SSA&#x27;, &#x27;0&#x27;)}: {len(src.splitlines())} lines&quot;)</code></pre>
+  <div class="tabs">
+    <div class="tabpane" data-title="default (inlined)"><pre class="output"><code>EXPAND_SSA=0: 13 lines
+typedef float float4 __attribute__((aligned(4),ext_vector_type(4)));
+struct E_4_4_args { float* arg0; float* arg1; float* arg2; };
+void E_4_4(const struct E_4_4_args* args) {
+  float* data0_16 = args-&gt;arg0;
+  float* data1_16 = args-&gt;arg1;
+  float* data2_4 = args-&gt;arg2;
+  for (int Lidx0 = 0; Lidx0 &lt; 4; Lidx0++) {
+    float val0 = (*(data2_4+Lidx0));
+    int alu0 = (Lidx0&lt;&lt;2);
+    float4 val1 = (*((float4*)((data1_16+alu0))));
+    *((float4*)((data0_16+alu0))) = (float4){(__builtin_sqrtf(((val1[0]*2.0f)+1.0f))*val0),(__builtin_sqrtf(((val1[1]*2.0f)+1.0f))*val0),(__builtin_sqrtf(((val1[2]*2.0f)+1.0f))*val0),(__builtin_sqrtf(((val1[3]*2.0f)+1.0f))*val0)};
+  }
+}</code></pre></div>
+    <div class="tabpane" data-title="EXPAND_SSA=1"><pre class="output"><code>EXPAND_SSA=1: 30 lines
+typedef float float4 __attribute__((aligned(4),ext_vector_type(4)));
+struct E_4_4_args { float* arg0; float* arg1; float* arg2; };
+void E_4_4(const struct E_4_4_args* args) {
+  float* data0_16 = args-&gt;arg0;
+  float* data1_16 = args-&gt;arg1;
+  float* data2_4 = args-&gt;arg2;
+  for (int Lidx0 = 0; Lidx0 &lt; 4; Lidx0++) {
+    float val0 = (*(data2_4+Lidx0));
+    int alu0 = (Lidx0&lt;&lt;2);
+    float4 val1 = (*((float4*)((data1_16+alu0))));
+    float alu1 = (val1[0]*2.0f);
+    float alu2 = (alu1+1.0f);
+    float alu3 = __builtin_sqrtf(alu2);
+    float alu4 = (val1[1]*2.0f);
+    float alu5 = (alu4+1.0f);
+    float alu6 = __builtin_sqrtf(alu5);
+    float alu7 = (val1[2]*2.0f);
+    float alu8 = (alu7+1.0f);
+    float alu9 = __builtin_sqrtf(alu8);
+    float alu10 = (val1[3]*2.0f);
+    float alu11 = (alu10+1.0f);
+    float alu12 = __builtin_sqrtf(alu11);
+    float alu13 = (alu3*val0);
+    float alu14 = (alu6*val0);
+    float alu15 = (alu9*val0);
+    float alu16 = (alu12*val0);
+    float4 cast0 = (float4){alu13,alu14,alu15,alu16};
+    *((float4*)((data0_16+alu0))) = cast0;
+  }
+}</code></pre></div>
+  </div>
+  <p><code>val0</code> (used by 4 lanes) and <code>alu0</code> (used by the load and the store) are declared in both versions;
+  the per-lane <code>*2+1</code>, sqrt, multiply chains are inlined by default. Also notice <code>(float4){…}</code> (the STACK
+  rule with Clang's <code>float4_style=('{','}')</code>) and <code>val1[0]</code> (lane access, because Clang's
+  <code>gep_arr_threshold = 0</code>; other backends write <code>val1.x</code>).</p>
+
+  <div class="quiz" data-answer="0">
+    <div class="q">In the reduce kernel, why is there <code>float alu5</code> but no <code>alu1</code>…<code>alu4</code>?</div>
+    <button class="opt">STOREs and ENDs are named with the <code>alu</code> prefix too, and each emitted line advances the counter</button>
+    <button class="opt">alu1–alu4 were inlined, and inlined values still consume numbers</button>
+    <button class="opt">The numbers are UOp indices in the linear list</button>
+    <button class="opt">alu1–alu4 are dead code that clang removed</button>
+    <div class="explain">The prefix table maps anything that isn't WMMA/BUFFER/CAST/INDEX/LOAD to <code>"alu"</code>, and
+    <code>c[prefix] += 1</code> runs for every line appended to <code>kernel</code>, including <code>*(buf1+0) = 0.0f;</code>
+    (alu1), the inner STORE (alu2), the <code>}</code> (alu3), the <code>-inf</code> store (alu4). Inlined values do <em>not</em>
+    advance the counter (the increment is in the <code>else</code> branch). The demo's table shows <code>ctx.r</code> = 'alu1' for
+    the first STORE.</div>
+  </div>
+
+  <!-- ============================================================== -->
+  <h2 id="cfamily"><span class="sec">16.10</span>The C family: Clang, OpenCL, Metal, CUDA, HIP, WGSL</h2>
+  <p>A subclass changes four kinds of things: <b>strings</b> (<code>kernel_typedef</code>, <code>buffer_prefix</code>,
+  <code>smem_prefix</code>, <code>barrier</code>, <code>float4</code>, <code>type_map</code>, <code>infinity</code>/<code>nan</code>),
+  <b>work-item expressions</b> (<code>code_for_workitem</code> maps SPECIAL <code>g</code>/<code>l</code> to
+  <code>get_group_id(0)</code>, <code>blockIdx.x</code>, <code>gid.x</code>, <code>__ockl_get_group_id(0)</code>…),
+  <b>extra string rules</b> prepended to <code>base_rewrite</code> (first match wins: CUDA's <code>tg_bitcast</code>, OpenCL's
+  <code>read_imagef</code>), and the <b>kernel wrapper</b> (<code>render_kernel</code>).</p>
+  <div class="codecap"><b>tinygrad/renderer/cstyle.py:294-337</b> — <a class="src" data-path="tinygrad/renderer/cstyle.py" data-line="294">ClangRenderer</a></div>
+  <pre><code class="language-python">class ClangRenderer(CStyleLanguage):
+  float4 = &quot;(float4)&quot;
+  float4_style = (&#x27;{&#x27;, &#x27;}&#x27;)
+  gep_arr_threshold = 0
+  has_local = False
+  global_max = (1, 0, 0)
+  args_struct_prefix = &quot;const&quot;
+  infinity = &quot;__builtin_inff()&quot;
+  nan = &#x27;__builtin_nanf(&quot;&quot;)&#x27;
+
+  # language options
+  barrier = &quot;__atomic_thread_fence(__ATOMIC_SEQ_CST);&quot;
+  buffer_suffix = &quot; restrict&quot;
+  type_map = {**CStyleLanguage.type_map, dtypes.bool:&quot;_Bool&quot;, dtypes.f16:&quot;__fp16&quot;}
+  code_for_op = {**({k:v for k,v in CStyleLanguage.code_for_op.items() if k not in [Ops.EXP2, Ops.SIN, Ops.LOG2, Ops.RECIP]}),
+                 Ops.SQRT: lambda x,dtype: f&quot;__builtin_sqrt({x})&quot; if dtype == dtypes.float64 else f&quot;__builtin_sqrtf({x})&quot;,
+                 Ops.TRUNC: lambda x,dtype: f&quot;__builtin_trunc({x})&quot; if dtype == dtypes.float64 else f&quot;__builtin_truncf({x})&quot;,
+                 Ops.FDIV: lambda a,b,dtype: f&quot;({a}/{b})&quot;}
+
+  # LLVM legalizes double =&gt; half cast on systems that don&#x27;t support it natively (like x86 cpus without AVX512-FP16) into a compiler-rt libcall.
+  extra_matcher = PatternMatcher([(UPat.var(&quot;x&quot;, dtypes.float64).cast(dtypes.float16), lambda x: x.cast(dtypes.float32).cast(dtypes.float16))]) \
+    + pm_narrow_uint + create_non_native_float_pats((dtypes.bfloat16,)) + pm_manual_bf16_cast
+
+  def render_vector_prefix(self, dt:DType, count:int) -&gt; str:
+    # round (down) to power of two (this is actually the default clang behavior)
+    alignment = dt.itemsize if self.target.device == &quot;CPU&quot; else (2**int(math.log2(dt.itemsize * count)) if not dtypes.is_bool(dt) else 1)
+    vec = self._render_dtype(dt, count, AddrSpace.REG)
+    return f&quot;typedef {self.render_dtype(dt)} {vec} __attribute__((aligned({alignment}),ext_vector_type({count})));&quot;
+
+  def _render_defines(self, uops) -&gt; list[str]: return [self.render_vector_prefix(dt, count) for dt, count in uops_to_dtypes(uops) if count &gt; 1]
+  def _render_body(self, function_name, kernel, bufs, uops, pref=None) -&gt; str: return super().render_kernel(function_name, kernel, bufs, uops, pref)
+  def _render_entry(self, function_name:str, bufs:list[tuple[str,tuple[UOp,bool]]]) -&gt; str: return &quot;&quot;
+
+  def render_kernel(self, function_name, kernel, bufs, uops, prefix=None) -&gt; str:
+    defines = &#x27;\n&#x27;.join(self._render_defines(uops))
+    return defines + &quot;\n&quot; + self._render_body(function_name, kernel, bufs, uops, prefix) + &quot;\n&quot; + self._render_entry(function_name, bufs)
+
+  def supported_dtypes(self):
+    return {d for d in super().supported_dtypes() if (d != dtypes.bfloat16 or self.target.arch.startswith((&quot;x86&quot;, &quot;arm&quot;))) and d not in dtypes.fp8s}
+
+  def __init__(self, target:Target):
+    super().__init__(target)
+    from tinygrad.runtime.support.compiler_cpu import ClangCompiler
+    self.compiler = ClangCompiler(target.arch.split(&quot;,&quot;))</code></pre>
+  <p>Clang is special: the CPU has no launch grid (<code>global_max=(1,0,0)</code>, <code>has_local=False</code>), so the outer
+  loop stays a <code>for</code> loop, while on every GPU renderer it became <code>gidx0</code>. The arguments arrive in a struct
+  (<code>args_struct_prefix="const"</code>): the CPU runtime calls every kernel as <code>fn(&amp;args)</code>. And it has no
+  <code>exp2</code>/<code>sin</code>/<code>log2</code> because tinygrad compiles with <code>-nostdlib</code>-style freestanding
+  code: no libm. OpenCL (<a class="src" data-path="tinygrad/renderer/cstyle.py" data-line="339">:339</a>), Metal
+  (<a class="src" data-path="tinygrad/renderer/cstyle.py" data-line="373">:373</a>), CUDA
+  (<a class="src" data-path="tinygrad/renderer/cstyle.py" data-line="424">:424</a>), HIP
+  (<a class="src" data-path="tinygrad/renderer/cstyle.py" data-line="509">:509</a>) and WGSL
+  (<a class="src" data-path="tinygrad/renderer/wgsl.py" data-line="56">wgsl.py:56</a>) are each 30–100 lines of such
+  overrides. WGSL is the most "un-C" of them: <code>var</code> declarations, <code>select(f,t,c)</code> for WHERE, no
+  <code>float4</code> (<code>supports_float4=False</code>, so the 4 lanes are 4 scalar loads in the tab below), no int64, and
+  packed-byte tricks for <code>uchar</code>.</p>
+
+  <!-- ============================================================== -->
+  <h2 id="others"><span class="sec">16.11</span>Beyond C: LLVM IR, PTX, NIR, and <code>renderer/amd</code></h2>
+  <ul>
+    <li><b>LLVM IR</b> (<a class="src" data-path="tinygrad/renderer/llvmir.py" data-line="162">llvmir.py:162</a>): same skeleton
+    (walk the list, name values <code>%v0, %v1…</code>, a <code>string_rewrite</code> of strings) but the target is SSA with
+    explicit control flow, so a RANGE becomes four basic blocks <code>loop_entry_N / loop_latch_N</code> (a <code>phi</code> for
+    the counter, compare, conditional branch) <code>/ loop_body_N</code>, and the END becomes <code>loop_footer_N</code> + the
+    branch back + <code>loop_exit_N</code>. REG buffers become <code>alloca</code>, LOCAL buffers <code>addrspace(3)</code>
+    globals. <code>CPULLVMRenderer</code> compiles in-process with LLVM; <code>AMDLLVMRenderer</code> targets amdgcn.</li>
+    <li><b>PTX</b> (<a class="src" data-path="tinygrad/renderer/ptx.py" data-line="137">ptx.py:137</a>): NVIDIA's virtual ISA.
+    <code>asm_for_op</code> maps each op to an instruction template (<code>ex2.approx.f32</code>, <code>fma.rn</code>,
+    <code>setp.lt</code>, <code>selp</code>); registers are typed and declared up front with counts
+    (<code>.reg .f32 %alu_f32_&lt;12&gt;;</code>). It is the only renderer that prints MAX natively
+    (<code>max.f32</code>), and it has its own <code>ptx_matcher</code> (bool CMPLT as XOR+AND, etc.).</li>
+    <li><b>NIR</b> (<a class="src" data-path="tinygrad/renderer/nir.py" data-line="115">nir.py:115</a>): doesn't produce text at all.
+    It builds a Mesa NIR shader through ctypes (<code>mesa.nir_*</code> builder calls) and hands it to Mesa's compilers: NAK
+    (NVIDIA), LVP (llvmpipe, a CPU), IR3 (Qualcomm Adreno). These need the Mesa shared library, which isn't installed here, so
+    they are not in the comparison.</li>
+    <li><b>renderer/amd</b>: not a renderer class but the AMD machine-code toolkit: <code>dsl.py</code> describes RDNA3/RDNA4/CDNA
+    instruction encodings as bitfields (<code>Inst</code>, <code>VGPRField</code>…), <code>generate.py</code> generates the
+    instruction tables from AMD's machine-readable ISA XML, <code>elf.py</code>'s <code>assemble_linear</code> packs a code
+    object (used by <code>HIPRenderer.asm</code> and the AMD LLVM path for an assembly-level backend), and <code>sqtt.py</code>
+    decodes SQ thread traces for VIZ's profiler.</li>
+  </ul>
+  <div class="callout warn"><span class="title">Verified, warts included</span>On this machine, <code>CPULLVMRenderer</code> renders
+  the <code>exp</code> kernel with <code>call float @llvm.exp2.float</code> (LLVM <em>does</em> list EXP2 as native) and the
+  in-process LLVM rejects it: <code>use of undefined value '@llvm.exp2.float'</code>. The comparison below records that error
+  instead of hiding it. The default CPU device uses Clang, which never emits it.</div>
+
+  <!-- ============================================================== -->
+  <h2 id="compare"><span class="sec">16.12</span>One kernel, ten renderers</h2>
+  <p><code>examples/16_renderers.py</code> runs <code>to_program(ast, renderer)</code> for every renderer class we can
+  build, on two kernels: the reduce kernel without opts, and <code>(x.exp()*2)</code> on 64 floats with each renderer's
+  <em>own</em> heuristic optimizations (so GPUs get a LOCAL axis and the CPU doesn't). Clang, LLVM (CPU) and x86 compile for real;
+  for the GPU ones the compiler is swapped for the base <code>Compiler</code>, whose <code>compile()</code> returns the source
+  bytes (<code>device.py</code>: "empty compiler is the default").</p>
+  <div class="codecap"><b>examples/16_renderers.py</b> — run with <code>DEV=CPU python3 examples/16_renderers.py</code> (add <code>--json</code> for data/ch16_renderers.json)</div>
+  <pre><code class="language-python">from dataclasses import replace
+from tinygrad import Tensor
+from tinygrad.helpers import Target
+from tinygrad.device import Compiler
+from tinygrad.codegen import to_program
+from tinygrad.uop.ops import Ops
+
+# --- compilers we cannot load here (no nvrtc, no comgr, no Metal framework): stub them so the renderer can be built
+import tinygrad.runtime.support.compiler_cuda as ccuda, tinygrad.runtime.support.compiler_amd as camd
+class StubCompiler(Compiler):
+  def __init__(self, *args, **kwargs): super().__init__(None)
+ccuda.NVRTCCompiler = ccuda.NVCCCompiler = ccuda.PTXCompiler = ccuda.NVPTXCompiler = StubCompiler
+camd.HIPCompiler = camd.HIPCCCompiler = StubCompiler
+sys.modules[&quot;tinygrad.runtime.ops_metal&quot;] = types.SimpleNamespace(MetalCompiler=StubCompiler)
+import tinygrad.runtime.support.compiler_llvm as cllvm
+cllvm.AMDLLVMCompiler = StubCompiler
+
+from tinygrad.renderer.cstyle import ClangRenderer, OpenCLRenderer, MetalRenderer, CUDARenderer, HIPRenderer
+from tinygrad.renderer.llvmir import CPULLVMRenderer, AMDLLVMRenderer
+from tinygrad.renderer.ptx import PTXRenderer
+from tinygrad.renderer.wgsl import WGSLRenderer
+from tinygrad.renderer.x86 import X86Renderer
+
+RENDERERS = [  # (tab name, constructor, compiles for real here?)
+  (&quot;Clang (CPU)&quot;,     lambda: ClangRenderer(Target(&quot;CPU&quot;, &quot;CLANG&quot;, &quot;x86_64,native&quot;)), True),
+  (&quot;LLVM IR (CPU)&quot;,   lambda: CPULLVMRenderer(Target(&quot;CPU&quot;, &quot;LLVM&quot;, &quot;x86_64,native&quot;)), True),
+  (&quot;x86-64 (ISA)&quot;,    lambda: X86Renderer(Target(&quot;CPU&quot;, &quot;X86&quot;, &quot;x86_64,native&quot;)), True),
+  (&quot;OpenCL&quot;,          lambda: OpenCLRenderer(Target(&quot;CL&quot;)), False),
+  (&quot;Metal&quot;,           lambda: MetalRenderer(Target(&quot;METAL&quot;, &quot;&quot;, &quot;Apple9&quot;)), False),
+  (&quot;CUDA&quot;,            lambda: CUDARenderer(Target(&quot;CUDA&quot;, &quot;&quot;, &quot;sm_89&quot;)), False),
+  (&quot;PTX&quot;,             lambda: PTXRenderer(Target(&quot;CUDA&quot;, &quot;PTX&quot;, &quot;sm_89&quot;)), False),
+  (&quot;HIP (AMD)&quot;,       lambda: HIPRenderer(Target(&quot;AMD&quot;, &quot;HIP&quot;, &quot;gfx1100&quot;)), False),
+  (&quot;LLVM IR (AMDGPU)&quot;, lambda: AMDLLVMRenderer(Target(&quot;AMD&quot;, &quot;LLVM&quot;, &quot;gfx1100&quot;)), False),
+  (&quot;WGSL (WebGPU)&quot;,   lambda: WGSLRenderer(Target(&quot;WEBGPU&quot;)), False),
+]
+
+def kernels():
+  x = Tensor.empty(4, 8)
+  a = (x.sum(1) + x.max(1)).schedule_linear().src[-1].src[0]
+  a = a.replace(arg=replace(a.arg, opts_to_apply=()))         # no optimizations: plain loops are easier to compare
+  b = (Tensor.empty(64).exp() * 2).schedule_linear().src[-1].src[0]   # default (heuristic) optimizations
+  return {&quot;reduce&quot;: (&quot;(x.sum(1) + x.max(1)) on a 4x8 tensor, no opts&quot;, a), &quot;exp&quot;: (&quot;(x.exp()*2) on 64 floats, default opts&quot;, b)}
+
+def render_all(ast):
+  out = []
+  for name, mk, real in RENDERERS:
+    ren = mk()
+    if not real: ren.compiler = StubCompiler()
+    error = None
+    try: prg = to_program(ast, ren)   # PROGRAM(SINK, LINEAR, SOURCE, BINARY)
+    except Exception as e:            # a real compile error: record it, and still show what the renderer produced</code></pre>
+  <pre class="output"><code>===== kernel &#x27;reduce&#x27;: (x.sum(1) + x.max(1)) on a 4x8 tensor, no opts
+--- Clang (CPU)       ClangRenderer    fn=r_4_8_8      global=[1, 1, 1] local=[1, 1, 1] linear uops= 60 source lines= 24 binary=1280B
+--- LLVM IR (CPU)     CPULLVMRenderer  fn=r_4_8_8      global=[1, 1, 1] local=[1, 1, 1] linear uops= 60 source lines= 76 binary=1200B
+--- x86-64 (ISA)      X86Renderer      fn=r_4_8_8      global=[1, 1, 1] local=[1, 1, 1] linear uops= 96 source lines= 57 binary=233B
+--- OpenCL            OpenCLRenderer   fn=r_4_8_8      global=[4, 1, 1] local=[1, 1, 1] linear uops= 58 source lines= 19 binary=594B (stub: = source)
+--- Metal             MetalRenderer    fn=r_4_8_8      global=[4, 1, 1] local=[1, 1, 1] linear uops= 58 source lines= 24 binary=846B (stub: = source)
+--- CUDA              CUDARenderer     fn=r_4_8_8      global=[4, 1, 1] local=[1, 1, 1] linear uops= 58 source lines= 23 binary=845B (stub: = source)
+--- PTX               PTXRenderer      fn=r_4_8_8      global=[4, 1, 1] local=[1, 1, 1] linear uops= 54 source lines= 62 binary=1890B (stub: = source)
+--- HIP (AMD)         HIPRenderer      fn=r_4_8_8      global=[4, 1, 1] local=[1, 1, 1] linear uops= 58 source lines= 25 binary=1017B (stub: = source)
+--- LLVM IR (AMDGPU)  AMDLLVMRenderer  fn=r_4_8_8      global=[4, 1, 1] local=[1, 1, 1] linear uops= 58 source lines= 61 binary=2319B (stub: = source)
+--- WGSL (WebGPU)     WGSLRenderer     fn=r_4_8_8      global=[4, 1, 1] local=[1, 1, 1] linear uops= 60 source lines= 24 binary=909B (stub: = source)
+
+===== kernel &#x27;exp&#x27;: (x.exp()*2) on 64 floats, default opts
+--- Clang (CPU)       ClangRenderer    fn=E_16_4       global=[1, 1, 1] local=[1, 1, 1] linear uops=238 source lines= 59 binary=2648B
+--- LLVM IR (CPU)     CPULLVMRenderer  fn=E_16_4       global=[1, 1, 1] local=[1, 1, 1] linear uops= 46 source lines= 46 binary=1970B
+      !! compile failed: RuntimeError: src:23:20: error: use of undefined value &#x27;@llvm.exp2.float&#x27;
+--- x86-64 (ISA)      X86Renderer      fn=E_16_4       global=[1, 1, 1] local=[1, 1, 1] linear uops=409 source lines=338 binary=1837B
+--- OpenCL            OpenCLRenderer   fn=E_16_4       global=[1, 1, 1] local=[16, 1, 1] linear uops= 45 source lines=  6 binary=421B (stub: = source)
+--- Metal             MetalRenderer    fn=E_16_4       global=[1, 1, 1] local=[16, 1, 1] linear uops= 45 source lines= 11 binary=665B (stub: = source)
+--- CUDA              CUDARenderer     fn=E_16_4       global=[1, 1, 1] local=[16, 1, 1] linear uops= 45 source lines= 10 binary=659B (stub: = source)
+--- PTX               PTXRenderer      fn=E_16_4       global=[1, 1, 1] local=[16, 1, 1] linear uops= 46 source lines= 51 binary=1658B (stub: = source)
+--- HIP (AMD)         HIPRenderer      fn=E_16_4       global=[1, 1, 1] local=[16, 1, 1] linear uops= 45 source lines= 13 binary=1054B (stub: = source)
+--- LLVM IR (AMDGPU)  AMDLLVMRenderer  fn=E_16_4       global=[1, 1, 1] local=[16, 1, 1] linear uops= 45 source lines= 31 binary=1606B (stub: = source)
+--- WGSL (WebGPU)     WGSLRenderer     fn=E_16_4       global=[1, 1, 1] local=[16, 1, 1] linear uops= 54 source lines= 20 binary=907B (stub: = source)</code></pre>
+
+  <div class="demo" id="demo-ren">
+    <div class="demo-title">Multi-renderer comparison (real output of to_program for each renderer)</div>
+    <div class="demo-desc">Pick a kernel and a renderer tab. Turn on "compare" to put a second renderer next to it. The badges show
+    the PROGRAM's ProgramInfo launch dims, the number of linear UOps, the source length, the BINARY size and whether the compile
+    was real. Things to look for: the outer loop becoming <code>gidx0</code> on GPUs; <code>exp2(…)</code> vs. Clang's 50-line
+    polynomial; float4 vs WGSL's four scalar loads; LLVM's phi-loops; PTX's register declarations; x86's real registers.</div>
+    <div class="controls" id="ren-kernels"></div>
+    <div class="ch16-tabbar" id="ren-tabs"></div>
+    <div class="controls"><label><input type="checkbox" id="ren-cmp"> compare with</label> <select id="ren-other"></select></div>
+    <div class="ch16-cmp" id="ren-panes"></div>
+  </div>
+
+  <div class="quiz" data-answer="1">
+    <div class="q">For the exp kernel, Clang's LINEAR has 238 UOps but OpenCL's only 45. Where did the difference come from?</div>
+    <button class="opt">OpenCL's renderer inlines more aggressively</button>
+    <button class="opt">Lowering, not rendering: Clang's code_for_op lacks EXP2, so "late decompositions" expanded every exp2 into
+    the xexp2 polynomial; OpenCL prints <code>exp2(…)</code> natively</button>
+    <button class="opt">OpenCL got a LOCAL axis, which removes UOps</button>
+    <button class="opt">The CPU needs extra UOps for the args struct</button>
+    <div class="explain">The renderer is consulted long before rendering. <code>get_transcendental_patterns(ops, …)</code> only
+    decomposes ops that are not in <code>ren.code_for_op</code>. Four lanes × the exp2 algorithm (range reduction, polynomial,
+    ldexp via bit manipulation) is ~190 extra UOps.</div>
+  </div>
+
+  <!-- ============================================================== -->
+  <h2 id="x86"><span class="sec">16.13</span>An ISA renderer: x86-64, instruction selection and register allocation</h2>
+  <p>The x86 backend (<a class="src" data-path="tinygrad/renderer/x86.py" data-line="730">X86Renderer</a>) skips C entirely and
+  emits machine code bytes. It is an <a class="src" data-path="tinygrad/renderer/x86.py" data-line="48">ISARenderer</a>, which adds
+  four PatternMatchers to the Renderer interface:</p>
+  <div class="codecap"><b>tinygrad/renderer/x86.py:14-60</b> — Register, IselContext, ISARenderer</div>
+  <pre><code class="language-python">@dataclass(frozen=True)
+class Register:
+  name: str
+  index: int
+  _cons: tuple[Register, ...] = field(default_factory=tuple)
+  size: int = 8
+  @property
+  def cons(self): return self._cons or (self,)
+  def __repr__(self): return self.name
+
+class IselContext:
+  def __init__(self, sink:UOp):
+    self.reg_n = itertools.count()
+    params = sorted([u for u in sink.toposort() if u.op is Ops.PARAM], key=lambda u: u.arg.slot)
+    self.arg_offsets = {u: o for u, (o, _) in zip(params, TinyELF.iter_sig(tuple((None, u.addrspace, u.dtype, ()) for u in params)))}
+
+  def vreg(self, cons:tuple[Register, ...]|Register, size:int=0):
+    cons = cons if isinstance(cons, tuple) else (cons,)
+    return Register(f&quot;v{next(self.reg_n)}&quot;, 0, cons, size or cons[0].size)
+
+# the registers an INS defines follow its opcode and dtype in its arg
+def regs(u:UOp) -&gt; tuple[Register, ...]: return u.arg[2:] if u.op is Ops.INS else ()
+def with_regs(u:UOp, r:tuple[Register, ...]) -&gt; UOp: return u.replace(arg=u.arg[:2]+r)
+
+def rdef(u:UOp):
+  if u.op in {Ops.AFTER, Ops.BITCAST}: return rdef(u.src[0])
+  return r[0] if (r:=regs(u)) else None
+
+class LinearContext:
+  def __init__(self, ren:ISARenderer):
+    self.ren, self.stack_size = ren, 0
+  def insert_linearized(self, uops:list[UOp]) -&gt; list[UOp]: return uops
+  def assign_spill_slot(self, r:Register, u:UOp) -&gt; Any: raise NotImplementedError(&quot;arch specific&quot;)
+
+class ISARenderer(Renderer):
+  pre_isel_matcher: PatternMatcher
+  isel_matcher: PatternMatcher
+  pre_regalloc_matcher: PatternMatcher
+  post_regalloc_matcher: PatternMatcher
+  linear_ctx_type: type = LinearContext
+
+  def is_two_address(self, x:UOp) -&gt; bool: return False
+  def spill(self, spill_slot:Any, x:UOp) -&gt; UOp: raise NotImplementedError(&quot;arch specific&quot;)
+  def fill(self, spill_slot:Any, x:UOp, reg:Register) -&gt; UOp: raise NotImplementedError(&quot;arch specific&quot;)
+  def asm_str(self, uops:list[UOp], function_name:str) -&gt; str: raise NotImplementedError(&quot;arch specific&quot;)
+
+# ***** X86 Ops *****</code></pre>
+  <p>The pipeline for an ISA renderer (code in §16.2):</p>
+  <ol>
+    <li><b>pre instruction selection</b> (graph, bottom-up): legalize things x86 can't do directly (gated loads/stores, flags).</li>
+    <li><b>instruction selection</b> (graph, bottom-up, <code>isel_matcher</code>): every LOAD/STORE/ALU/CONST becomes an
+    <code>Ops.INS</code> UOp whose arg is <code>(X86Ops.VADDSS, dtype, Register("v4", cons=XMM))</code>. The register is
+    <em>virtual</em>: a name and a tuple of allowed real registers (<code>cons</code>). Addresses fold into
+    <code>[base + idx*scale + disp]</code> operands. The graph is still a graph.</li>
+    <li><b>linearize</b>, exactly as for C.</li>
+    <li><b>pre_regalloc_matcher</b> (list): stack buffers get a <code>lea</code>, RANGE is lowered to
+    <code>mov idx, 0 / LABEL / cmp idx, bound / jge exit</code>, END to <code>add idx, 1</code> + END; flag-reading instructions
+    are rematerialized next to their compare.</li>
+    <li><b>register allocation</b> (<code>LinearScanRegallocContext</code> + <code>pm_regalloc_rewrite</code>): every virtual register
+    gets a real one, with spills/fills if needed.</li>
+    <li><b>insert_linearized</b>: save/restore callee-saved registers that were used (rbx, rbp, r12–r15) and reserve the stack frame.</li>
+    <li><b>post_regalloc_matcher</b>: RET at the SINK, <code>jmp</code> back + exit LABEL at each END, and two-address fix-up
+    (x86 <code>add a, b</code> overwrites <code>a</code>; if regalloc didn't put the result in the first source's register, a
+    <code>mov</code> is inserted).</li>
+    <li><b>do_assemble</b>: <code>asm()</code> encodes each INS to bytes and patches jump offsets (<code>render()</code> returns
+    the hex); <code>X86Compiler.compile</code> is just <code>bytes.fromhex</code>.</li>
+  </ol>
+  <div class="codecap"><b>tinygrad/renderer/x86.py:509-540</b> — lowering RANGE/END into labels and jumps</div>
+  <pre><code class="language-python">def label(x:UOp) -&gt; UOp: return UOp(Ops.INS, arg=(X86Ops.LABEL, dtypes.void), src=(x,))
+
+# a loop&#x27;s LABEL follows its RANGE. a bounded RANGE&#x27;s index is a register named by the RANGE, 0 before the loop, compared to the bound
+# after the LABEL and incremented before the END, the body reads it as AFTER(index, RANGE)
+def lower_range(x:UOp) -&gt; tuple[UOp, list[UOp]]:
+  if x.dtype is dtypes.void: return x, [x, label(x)]
+  bound, deps = (x.src[0].src[0], x.src[0].src[1:]) if x.src[0].op is Ops.AFTER else (x.src[0], ())
+  idx = UOp(Ops.INS, arg=(X86Ops.MOVi, x.dtype, regbuf_reg(x)), src=(imm(x.dtype, 0),) + deps)
+  cmp = UOp(Ops.INS, arg=(X86Ops.CMPi if is_imm(bound) else X86Ops.CMP, dtypes.void), src=(idx, bound))
+  return idx.after(x), [idx, x, start:=label(x), cmp, UOp(Ops.INS, arg=(X86Ops.JGE, dtypes.void), src=(start, cmp))]
+
+def lower_end(x:UOp, c:UOp) -&gt; tuple[UOp, list[UOp]]:
+  return (end:=x.replace(src=(x.src[0], c.src[1]))), [c.ins(X86Ops.ADDi, *regs(c.src[0]), src=(c, imm(c.dtype, 1))), end]
+
+pre_regalloc_matcher = PatternMatcher([
+  (UPat(Ops.BUFFER, name=&quot;x&quot;), lambda ctx,x: alloc_buffer(ctx,x) if x.addrspace is not AddrSpace.REG else None),
+  (UPat((Ops.INS, Ops.RANGE, Ops.END), name=&quot;x&quot;), flag_rematerialize),
+  (UPat(Ops.RANGE, name=&quot;x&quot;), lower_range),
+  (UPat(Ops.END, src=(UPat(), UPat(Ops.AFTER, name=&quot;c&quot;)), name=&quot;x&quot;), lower_end),
+])
+
+# ***** post register allocation *****
+# final rewrite to match the isa spec
+post_regalloc_matcher = PatternMatcher([
+  (UPat(Ops.SINK, name=&quot;x&quot;), lambda x: (x, [x.ins(X86Ops.RET)])),
+  # an END jumps back to its loop&#x27;s LABEL and labels the loop&#x27;s exit
+  (UPat(Ops.END, name=&quot;x&quot;), lambda x: (x, [UOp(Ops.INS, arg=(X86Ops.JMP, dtypes.void), src=(x.src[1],)), label(label(x.src[1]))])),
+  # rewrite two address instructions to two address form, if reused src wasn&#x27;t coalesced insert a move
+  (UPat(Ops.INS, name=&quot;x&quot;), lambda ctx,x: (nx:=x.replace(src=x.src[1:]),
+   [ctx.ren.copy(x.src[0], rdef(x)), nx] if rdef(x) != rdef(x.src[0]) else [nx]) if x.arg[0] in X86GroupOp.TwoAddress else None),
+])
+</code></pre>
+  <p>The register allocator is a linear scan over the list:</p>
+  <div class="codecap"><b>tinygrad/codegen/late/regalloc.py:10-97</b> — <a class="src" data-path="tinygrad/codegen/late/regalloc.py" data-line="10">LinearScanRegallocContext</a></div>
+  <pre><code class="language-python">class LinearScanRegallocContext:
+  # returns the uop that defines the virtual register
+  def vdef(self, v:Register) -&gt; UOp: return self.uops[self.live_range[v][0]]
+  def __init__(self, ctx:LinearContext, uops:list[UOp], ren:ISARenderer):
+    self.uops = uops
+    self.ren = ren
+    self.idx = itertools.count()
+
+    # compute live ranges
+    self.live_range: dict[Register, list[int]] = {}
+    lr = self.live_range
+    loops: dict[int, int] = {} # the interval of each loop, from its RANGE to the last non pseudo uop that reads that RANGE
+    for idx,u in reversed(list(enumerate(uops))):
+      if u.op in PSEUDO_OPS: continue
+      defs = regs(u)
+      for v in defs + tuple(rdef(s) for s in dedup(u.src)):
+        if isinstance(v, Register): lr.setdefault(v, []).insert(0, idx)
+      for v in defs:
+        if (n:=max((e for s,e in loops.items() if s &lt;= lr[v][-1] &lt; e), default=None)): lr[v].append(n)
+      if u.op is Ops.RANGE: loops[idx] = max(j for j,x in enumerate(uops) if u in x.src and x.op not in PSEUDO_OPS)
+
+    # allocate registers
+    self.spills: dict[Register, Any] = {} # mapping from virtual to arbitrary spill slot
+    self.reals: dict[int, dict[Register, Register]] = {} # mapping from virtual to real at each program point
+    self.insert_before: dict[int, list[tuple[Register, Register]]] = {} # fills to be inserted at each program point
+    live: dict[Register, Register] = {} # mapping from virtual to real that&#x27;s currently assigned to it
+    live_ins: list[dict[Register, Register]] = [] # mapping from virtual to real at loop entry
+
+    def alloc(cons:tuple[Register, ...], i:int) -&gt; Register:
+      live_inv = {v:k for k,v in live.items()}
+      # allocate the best register. Registers not in live or not used again are free and have priority,
+      # otherwise pick the one with the furthest next use. Regs that appear first in cons have priority in case of a tie
+      reg,vreg = max(((r,live_inv.get(r)) for r in cons),
+                    key=lambda rv: next((j-i for j in ([] if rv[1] is None else lr[rv[1]]) if j &gt;= i), len(uops)))
+      return live.pop(vreg) if vreg is not None else reg
+
+    # assign register to spilled virtual and record load to be emitted before current uop, also assign it a stack slot
+    def fill(v:Register, i:int, cons:tuple[Register, ...]|None=None) -&gt; Register:
+      if v not in self.spills:
+        self.spills[v] = ctx.assign_spill_slot(v, self.vdef(v))
+      r = alloc(cons if cons is not None else v.cons, i)
+      self.insert_before.setdefault(i, []).append((v, r))
+      return r
+
+    for i,u in enumerate(uops):
+      if u.op in PSEUDO_OPS: continue
+      # allocate uses
+      for s in u.src:
+        if not isinstance(v:=rdef(s), Register): continue
+        if v not in live: live[v] = fill(v, i)
+        self.reals.setdefault(i, {})[v] = live[v]
+
+      # allocate defs
+      if regs(u):
+        for j,v in enumerate(regs(u)):
+          if v not in live:
+            cons = v.cons
+            # two address instructions (src is reused by def) can only coalesce reused src.
+            # reused src goes first to get priority in case of a tiebreak
+            if ren.is_two_address(u) and j == 0:
+              uses = tuple(live.get(rdef(s)) for s in u.src)
+              cons = ((uses[0],) if uses[0] in cons else ()) + tuple(r for r in cons if r not in uses)
+            live[v] = alloc(cons, i+1)
+          self.reals.setdefault(i, {})[v] = live[v]
+
+      # loop prologue, avoid loading inside the loop
+      if u.op is Ops.RANGE:
+        # we move to registers vars used in the loop sorted by next use, vars not used in the loop will not be reloaded in the epilogue
+        used_in_loop = [v for v in live.keys() | self.spills.keys() if any(i &lt;= l &lt; loops[i] for l in lr[v])]
+        sorted_uses = sorted(used_in_loop, key=lambda k: (next(l-i for l in lr[k] if l &gt;= i), lr[k][0], k.name, k.index))
+        live_in: dict[Register, Register] = {}
+        for v in sorted_uses:
+          # if all the possible registers are already in live_in there&#x27;s no space for this var
+          if set(v.cons).issubset(live_in.values()): continue
+          if v not in live: live[v] = fill(v, i)
+          live_in[v] = live[v]
+        live_ins.append(live_in)
+
+      # loop epilogue at the loop&#x27;s last reader, reload registers that were live at loop entry
+      if i in loops.values():
+        # TODO: if a uop is in a different reg in live out vs live in move between registers instead of loading
+        # TODO: don&#x27;t reload if first use in loop is a load
+        live_in = live_ins.pop()
+        for v,r in live_in.items():
+          if v not in live or live[v] != r: live[v] = fill(v, i, (r,))
+        # a spilled var that only got a register inside the loop must be forced to reload from spill slot
+        for v in list(live.keys()):
+          if v in self.spills and v not in live_in: live.pop(v)</code></pre>
+  <ul>
+    <li><b>Live ranges</b> (backwards pass): the list of positions where each virtual register is defined or used. One subtle
+    extension: if a value is defined <em>outside</em> a loop and used inside it, the next iteration reads it again, so its range
+    is extended to the loop's last instruction. (Going backwards, a loop is only in <code>loops</code> once its RANGE has been
+    passed, so a value defined <em>inside</em> the outer loop is only extended to the end of the inner loops that read it.)</li>
+    <li><b>Allocation</b> (forward pass): at each instruction, sources must be in registers (fill from the spill slot if not), then
+    definitions get a register via <code>alloc</code>: prefer a free register; otherwise evict the one whose next use is
+    furthest away (Belady's heuristic), which becomes a spill.</li>
+    <li><b>Loops</b>: at a RANGE, values used inside the loop are loaded into registers (prologue); at the loop's last reader they
+    are reloaded into the <em>same</em> registers they had at entry (epilogue), so every iteration starts with the same register
+    assignment.</li>
+  </ul>
+  <p>Spying on the context for our reduce kernel (16 GPRs + 16 XMMs are plenty: nothing is spilled):</p>
+  <div class="codecap"><b>examples/16_regalloc.py</b> — run with <code>DEV=CPU python3 examples/16_regalloc.py</code> (add <code>--json</code> for data/ch16_regalloc.json)</div>
+  <pre><code class="language-python">
+caught = []
+class SpyRegalloc(cg.LinearScanRegallocContext):
+  def __init__(self, *args, **kwargs):
+    super().__init__(*args, **kwargs)
+    caught.append(self)
+cg.LinearScanRegallocContext = SpyRegalloc   # do_linearize looks the name up in tinygrad.codegen at call time
+
+x = Tensor.empty(4, 8)
+ast = (x.sum(1) + x.max(1)).schedule_linear().src[-1].src[0]
+ast = ast.replace(arg=replace(ast.arg, opts_to_apply=()))
+ren = X86Renderer(Target(&quot;CPU&quot;, &quot;X86&quot;, &quot;x86_64,native&quot;))
+prg = cg.to_program(ast, ren)</code></pre>
+  <pre class="output"><code>84 linear uops, 26 virtual registers, 0 spilled
+vreg   class live range   real   use positions
+v1     gpr   [  0, 22]    rdi    [0, 21, 22]
+k1     xmm   [  1, 82]    xmm0   [1, 35, 46, 50, 78, 82]
+k2     xmm   [  2, 82]    xmm1   [2, 56, 66, 71, 77, 82]
+v0     gpr   [ 21, 82]    rax    [21, 80, 82]
+v7     gpr   [ 22, 82]    rcx    [22, 47, 67, 82]
+v11    gpr   [ 23, 26]    rdx    [23, 26]
+v12    gpr   [ 24, 82]    rbx    [24, 40, 42, 60, 62, 82]
+v20    gpr   [ 25, 27]    rbp    [25, 27]
+v10    xmm   [ 26, 82]    xmm2   [26, 35, 82]
+v19    xmm   [ 27, 82]    xmm3   [27, 56, 82]
+k0     gpr   [ 28, 82]    rdx    [28, 31, 38, 39, 80, 81, 81, 82]
+v9     gpr   [ 38, 74]    rbp    [38, 45, 65, 74]
+k4     gpr   [ 39, 53]    rsi    [39, 42, 45, 52, 52, 53]
+v8     gpr   [ 45, 47]    rdi    [45, 47]
+v5     xmm   [ 46, 48]    xmm4   [46, 48]
+v6     xmm   [ 47, 48]    xmm5   [47, 48]
+v4     xmm   [ 48, 50]    xmm4   [48, 50]
+k3     gpr   [ 59, 74]    rsi    [59, 62, 65, 73, 73, 74]
+v17    gpr   [ 65, 67]    rdi    [65, 67]
+v15    xmm   [ 66, 69]    xmm4   [66, 68, 69]
+v16    xmm   [ 67, 69]    xmm5   [67, 68, 69]
+v18    xmm   [ 68, 69]    xmm6   [68, 69]
+v14    xmm   [ 69, 71]    xmm4   [69, 71]
+v13    xmm   [ 77, 79]    xmm4   [77, 79]
+v3     xmm   [ 78, 79]    xmm5   [78, 79]
+v2     xmm   [ 79, 80]    xmm4   [79, 80]
+
+--- instructions with virtual registers -&gt; real registers (only INS that define/use registers) ---
+  0  (reg)                                      {&#x27;v1&#x27;: &#x27;rdi&#x27;}
+  1  (reg)                                      {&#x27;k1&#x27;: &#x27;xmm0&#x27;}
+  2  (reg)                                      {&#x27;k2&#x27;: &#x27;xmm1&#x27;}
+ 21  mov     v0, [v1]                           {&#x27;v1&#x27;: &#x27;rdi&#x27;, &#x27;v0&#x27;: &#x27;rax&#x27;}
+ 22  mov     v7, [v1 + 8]                       {&#x27;v1&#x27;: &#x27;rdi&#x27;, &#x27;v7&#x27;: &#x27;rcx&#x27;}
+ 23  mov     v11, 0                             {&#x27;v11&#x27;: &#x27;rdx&#x27;}
+ 24  mov     v12, 8                             {&#x27;v12&#x27;: &#x27;rbx&#x27;}
+ 25  mov     v20, -8388608                      {&#x27;v20&#x27;: &#x27;rbp&#x27;}
+ 26  vmovd   v10, v11                           {&#x27;v11&#x27;: &#x27;rdx&#x27;, &#x27;v10&#x27;: &#x27;xmm2&#x27;}
+ 27  vmovd   v19, v20                           {&#x27;v20&#x27;: &#x27;rbp&#x27;, &#x27;v19&#x27;: &#x27;xmm3&#x27;}
+ 28  mov     k0, 0                              {&#x27;k0&#x27;: &#x27;rdx&#x27;}
+ 31  cmp     k0, 4                              {&#x27;k0&#x27;: &#x27;rdx&#x27;}
+ 35  vmovss  k1, v10                            {&#x27;v10&#x27;: &#x27;xmm2&#x27;, &#x27;k1&#x27;: &#x27;xmm0&#x27;}
+ 38  shl     v9, k0, 3                          {&#x27;k0&#x27;: &#x27;rdx&#x27;, &#x27;v9&#x27;: &#x27;rbp&#x27;}
+ 39  mov     k4, 0, k0                          {&#x27;k0&#x27;: &#x27;rdx&#x27;, &#x27;k4&#x27;: &#x27;rsi&#x27;}
+ 40  range                                      {&#x27;v12&#x27;: &#x27;rbx&#x27;}
+ 42  cmp     k4, v12                            {&#x27;k4&#x27;: &#x27;rsi&#x27;, &#x27;v12&#x27;: &#x27;rbx&#x27;}
+ 45  add     v8, v9, k4                         {&#x27;v9&#x27;: &#x27;rbp&#x27;, &#x27;k4&#x27;: &#x27;rsi&#x27;, &#x27;v8&#x27;: &#x27;rdi&#x27;}
+ 46  vmovss  v5, k1                             {&#x27;k1&#x27;: &#x27;xmm0&#x27;, &#x27;v5&#x27;: &#x27;xmm4&#x27;}
+ 47  vmovss  v6, [v7 + v8*4]                    {&#x27;v7&#x27;: &#x27;rcx&#x27;, &#x27;v8&#x27;: &#x27;rdi&#x27;, &#x27;v6&#x27;: &#x27;xmm5&#x27;}
+ 48  vaddss  v4, v5, v6                         {&#x27;v5&#x27;: &#x27;xmm4&#x27;, &#x27;v6&#x27;: &#x27;xmm5&#x27;, &#x27;v4&#x27;: &#x27;xmm4&#x27;}
+ 50  vmovss  k1, v4                             {&#x27;v4&#x27;: &#x27;xmm4&#x27;, &#x27;k1&#x27;: &#x27;xmm0&#x27;}
+ 52  add     k4, k4, 1                          {&#x27;k4&#x27;: &#x27;rsi&#x27;}
+ 56  vmovss  k2, v19                            {&#x27;v19&#x27;: &#x27;xmm3&#x27;, &#x27;k2&#x27;: &#x27;xmm1&#x27;}
+ 59  mov     k3, 0                              {&#x27;k3&#x27;: &#x27;rsi&#x27;}
+ 60  range                                      {&#x27;v12&#x27;: &#x27;rbx&#x27;}
+ 62  cmp     k3, v12                            {&#x27;k3&#x27;: &#x27;rsi&#x27;, &#x27;v12&#x27;: &#x27;rbx&#x27;}
+ 65  add     v17, v9, k3                        {&#x27;v9&#x27;: &#x27;rbp&#x27;, &#x27;k3&#x27;: &#x27;rsi&#x27;, &#x27;v17&#x27;: &#x27;rdi&#x27;}
+ 66  vmovss  v15, k2                            {&#x27;k2&#x27;: &#x27;xmm1&#x27;, &#x27;v15&#x27;: &#x27;xmm4&#x27;}
+ 67  vmovss  v16, [v7 + v17*4]                  {&#x27;v7&#x27;: &#x27;rcx&#x27;, &#x27;v17&#x27;: &#x27;rdi&#x27;, &#x27;v16&#x27;: &#x27;xmm5&#x27;}
+ 68  vcmpss  v18, v15, v16, 1                   {&#x27;v15&#x27;: &#x27;xmm4&#x27;, &#x27;v16&#x27;: &#x27;xmm5&#x27;, &#x27;v18&#x27;: &#x27;xmm6&#x27;}
+ 69  vblendvps v14, v15, v16, v18               {&#x27;v15&#x27;: &#x27;xmm4&#x27;, &#x27;v16&#x27;: &#x27;xmm5&#x27;, &#x27;v18&#x27;: &#x27;xmm6&#x27;, &#x27;v14&#x27;: &#x27;xmm4&#x27;}
+ 71  vmovss  k2, v14                            {&#x27;v14&#x27;: &#x27;xmm4&#x27;, &#x27;k2&#x27;: &#x27;xmm1&#x27;}
+ 73  add     k3, k3, 1                          {&#x27;k3&#x27;: &#x27;rsi&#x27;}
+ 77  vmovss  v13, k2                            {&#x27;k2&#x27;: &#x27;xmm1&#x27;, &#x27;v13&#x27;: &#x27;xmm4&#x27;}
+ 78  vmovss  v3, k1                             {&#x27;k1&#x27;: &#x27;xmm0&#x27;, &#x27;v3&#x27;: &#x27;xmm5&#x27;}
+ 79  vaddss  v2, v3, v13                        {&#x27;v3&#x27;: &#x27;xmm5&#x27;, &#x27;v13&#x27;: &#x27;xmm4&#x27;, &#x27;v2&#x27;: &#x27;xmm4&#x27;}
+ 80  vmovss  [v0 + k0*4], v2                    {&#x27;v0&#x27;: &#x27;rax&#x27;, &#x27;k0&#x27;: &#x27;rdx&#x27;, &#x27;v2&#x27;: &#x27;xmm4&#x27;}
+ 81  add     k0, k0, 1                          {&#x27;k0&#x27;: &#x27;rdx&#x27;}
+
+--- final assembly (after regalloc, callee-saved spills and stack frame were inserted) ---
+.r_4_8_8:
+    sub     rsp, 16
+    mov     [rsp], rbx
+    mov     [rsp + 8], rbp
+    mov     rax, [rdi]
+    mov     rcx, [rdi + 8]
+    mov     edx, 0
+    mov     ebx, 8
+    mov     ebp, -8388608
+    vmovd   xmm2, edx
+    vmovd   xmm3, ebp
+    mov     edx, 0
+.L33:
+    cmp     edx, 4
+    jge     .L91
+    vmovss  xmm0, xmm2
+    mov     ebp, edx
+    shl     ebp, 3
+    mov     esi, 0, edx
+.L45:
+    cmp     esi, ebx
+    jge     .L59
+    mov     edi, ebp
+    add     edi, esi
+    vmovss  xmm4, xmm0
+    vmovss  xmm5, [rcx + rdi*4]
+    vaddss  xmm4, xmm4, xmm5
+    vmovss  xmm0, xmm4
+    add     esi, 1
+    jmp     .L45
+.L59:
+    vmovss  xmm1, xmm3
+    mov     esi, 0
+.L67:
+    cmp     esi, ebx
+    jge     .L82
+    mov     edi, ebp
+    add     edi, esi
+    vmovss  xmm4, xmm1
+    vmovss  xmm5, [rcx + rdi*4]
+    vcmpss  xmm6, xmm4, xmm5, 1
+    vblendvps xmm4, xmm4, xmm5, xmm6
+    vmovss  xmm1, xmm4
+    add     esi, 1
+    jmp     .L67
+.L82:
+    vmovss  xmm4, xmm1
+    vmovss  xmm5, xmm0
+    vaddss  xmm4, xmm5, xmm4
+    vmovss  [rax + rdx*4], xmm4
+    add     edx, 1
+    jmp     .L33
+.L91:
+    mov     rbx, [rsp]
+    mov     rbp, [rsp + 8]
+    add     rsp, 16
+    ret    </code></pre>
+  <p>Names: <code>v<i>n</i></code> are the isel's virtual registers; the long names (shown as <code>k<i>n</i></code>) come from
+  <code>regbuf_reg</code>, which names the register for a RANGE counter or a one-element REG buffer after the UOp's key:
+  <code>k0</code> is the outer counter (in <code>rdx</code>), <code>k4</code>/<code>k3</code> the inner counters (both in
+  <code>rsi</code>: their live ranges don't overlap), <code>k1</code>/<code>k2</code> the sum and max accumulators
+  (<code>buf1</code>/<code>buf0</code> in C), living in <code>xmm0</code>/<code>xmm1</code> for the whole program because their
+  register definitions were moved to the top by <code>do_linearize</code>. The odd <code>mov esi, 0, edx</code> is the printer
+  showing an ordering dependency (the AFTER from §16.3 travels with the counter's initial <code>mov</code>); the encoder ignores
+  it.</p>
+
+  <div class="demo" id="demo-ra">
+    <div class="demo-title">Register allocation: live ranges and the register file (real data from LinearScanRegallocContext)</div>
+    <div class="demo-desc">Each bar is a virtual register's live range over the 84 linear UOps, colored by the real register it
+    got; dots are uses/definitions. Shaded bands are loops (RANGE…END). Drag the slider or hover the chart to move the program
+    point: the instruction, its virtual→real mapping and the register file at that point are shown below. Values whose bars
+    don't overlap can share a register (look at <code>rsi</code>, <code>rdi</code>, <code>xmm4</code>).</div>
+    <svg id="ra-svg"></svg>
+    <div class="controls"><input type="range" id="ra-pos" min="0" max="83" value="47" style="flex:1"><span id="ra-pnum" class="ch16-badge"></span>
+      <label><input type="checkbox" id="ra-pseudo"> show pseudo-ops in the instruction list</label></div>
+    <div class="ch16-insn" id="ra-insn"></div>
+    <div class="ch16-regfile" id="ra-gpr"></div>
+    <div class="ch16-regfile" id="ra-xmm"></div>
+  </div>
+
+  <div class="quiz" data-answer="2">
+    <div class="q"><code>v12</code> (the constant 8, the inner loops' bound, in <code>rbx</code>) is defined at position 24 and
+    last read at 62, but its live range is <code>[24, 82]</code>. Why?</div>
+    <button class="opt">Because rbx is callee-saved and must be kept until the end</button>
+    <button class="opt">A bug: the allocator over-approximates every range to the end of the program</button>
+    <button class="opt">It is defined before the outer loop (29…82) and read inside it, so the next outer iteration reads it again:
+    it must survive until the loop's last instruction</button>
+    <button class="opt">Because the SINK reads all registers</button>
+    <div class="explain">The backwards pass appends the end of the enclosing loop (<code>lr[v].append(n)</code>) for values whose
+    last use is inside a loop that started after their definition. Compare <code>v9</code> (<code>Lidx2&lt;&lt;3</code>, in
+    rbp), which is defined <em>inside</em> the outer loop: its range ends at 74, the end of the last inner loop reading it.</div>
+  </div>
+
+  <!-- ============================================================== -->
+  <h2 id="compile"><span class="sec">16.14</span>Compile and run: SOURCE → BINARY → the CPU</h2>
+  <p>For text renderers, <code>do_compile</code> calls <code>renderer.compiler.compile_cached(source)</code> (cached on disk by
+  source text) and, at <code>DEBUG&gt;=7</code>, <code>compiler.disassemble(lib)</code>. On the CPU that is
+  <code>ClangCompiler</code> (an ELF relocatable object, loaded by tinygrad's own ELF loader in
+  <a href="17-runtime.html">Chapter 17</a>) and <code>cpu_objdump</code>:</p>
+  <div class="codecap"><b>examples/16_compile_run.py</b> — run with <code>DEV=CPU python3 examples/16_compile_run.py</code></div>
+  <pre><code class="language-python">from dataclasses import replace
+from tinygrad import Tensor, Device
+from tinygrad.codegen import to_program
+
+x = Tensor.empty(4, 8)
+ast = (x.sum(1) + x.max(1)).schedule_linear().src[-1].src[0]
+ast = ast.replace(arg=replace(ast.arg, opts_to_apply=()))
+ren = Device[&quot;CPU&quot;].renderer
+prg = to_program(ast, ren)
+sink, lin, source, binary = prg.src
+print(f&quot;renderer={type(ren).__name__} compiler={type(ren.compiler).__name__} args={ren.compiler.args}&quot;)
+print(f&quot;BINARY: {len(binary.arg)} bytes, starts with {binary.arg[:4]!r} (an ELF relocatable object)&quot;)
+print(&quot;--- disassembly (what DEBUG=7 prints) ---&quot;, flush=True)
+ren.compiler.disassemble(binary.arg)
+
+# now run the real thing end to end and check it against plain python
+vals = [[float((r * 8 + c) % 7 - 3) for c in range(8)] for r in range(4)]
+t = Tensor(vals)
+got = (t.sum(1) + t.max(1)).tolist()
+want = [sum(row) + max(row) for row in vals]
+print(&quot;tinygrad:&quot;, got)
+print(&quot;python  :&quot;, want, &quot;-&gt; match&quot; if got == want else &quot;-&gt; MISMATCH&quot;)</code></pre>
+  <pre class="output"><code>renderer=ClangRenderer compiler=ClangCompiler args=[&#x27;-march=native&#x27;]
+BINARY: 1280 bytes, starts with b&#x27;\x7fELF&#x27; (an ELF relocatable object)
+--- disassembly (what DEBUG=7 prints) ---
+/tmp/tmps2rpmrv9/kernel.o:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+0000000000000000 &lt;r_4_8_8&gt;:
+   0:	55                   	push   %rbp
+   1:	48 89 e5             	mov    %rsp,%rbp
+   4:	48 8b 07             	mov    (%rdi),%rax
+   7:	48 8b 4f 08          	mov    0x8(%rdi),%rcx
+   b:	c5 fa 10 11          	vmovss (%rcx),%xmm2
+   f:	c5 fa 10 59 04       	vmovss 0x4(%rcx),%xmm3
+  14:	c5 fa 10 61 08       	vmovss 0x8(%rcx),%xmm4
+  19:	c5 fa 10 69 0c       	vmovss 0xc(%rcx),%xmm5
+  1e:	c5 fa 10 71 10       	vmovss 0x10(%rcx),%xmm6
+  23:	c5 fa 10 79 14       	vmovss 0x14(%rcx),%xmm7
+  28:	c5 7a 10 51 18       	vmovss 0x18(%rcx),%xmm10
+  2d:	c5 fa 10 49 1c       	vmovss 0x1c(%rcx),%xmm1
+  32:	c5 7a 10 05 00 00 00 	vmovss 0x0(%rip),%xmm8        # 3a &lt;r_4_8_8+0x3a&gt;
+  39:	00 
+  3a:	c4 c1 6a 5f c0       	vmaxss %xmm8,%xmm2,%xmm0
+  3f:	c5 e2 5f c0          	vmaxss %xmm0,%xmm3,%xmm0
+  43:	c5 da 5f c0          	vmaxss %xmm0,%xmm4,%xmm0
+  47:	c5 d2 5f c0          	vmaxss %xmm0,%xmm5,%xmm0
+  4b:	c5 ca 5f c0          	vmaxss %xmm0,%xmm6,%xmm0
+  4f:	c5 c2 5f c0          	vmaxss %xmm0,%xmm7,%xmm0
+  53:	c5 aa 5f c0          	vmaxss %xmm0,%xmm10,%xmm0
+  57:	c5 f2 5f c0          	vmaxss %xmm0,%xmm1,%xmm0
+  5b:	c4 41 30 57 c9       	vxorps %xmm9,%xmm9,%xmm9
+  60:	c5 b2 58 d2          	vaddss %xmm2,%xmm9,%xmm2
+  64:	c5 ea 58 d3          	vaddss %xmm3,%xmm2,%xmm2
+  68:	c5 ea 58 d4          	vaddss %xmm4,%xmm2,%xmm2
+  6c:	c5 ea 58 d5          	vaddss %xmm5,%xmm2,%xmm2
+  70:	c5 ea 58 d6          	vaddss %xmm6,%xmm2,%xmm2
+  74:	c5 ea 58 d7          	vaddss %xmm7,%xmm2,%xmm2
+  78:	c5 aa 58 d2          	vaddss %xmm2,%xmm10,%xmm2
+  7c:	c5 ea 58 c9          	vaddss %xmm1,%xmm2,%xmm1
+  80:	c5 f2 58 c0          	vaddss %xmm0,%xmm1,%xmm0
+  84:	c5 fa 11 00          	vmovss %xmm0,(%rax)
+  88:	c5 7a 10 51 20       	vmovss 0x20(%rcx),%xmm10
+  8d:	c5 fa 10 49 24       	vmovss 0x24(%rcx),%xmm1
+  92:	c5 fa 10 51 28       	vmovss 0x28(%rcx),%xmm2
+  97:	c5 fa 10 59 2c       	vmovss 0x2c(%rcx),%xmm3
+  9c:	c5 fa 10 61 30       	vmovss 0x30(%rcx),%xmm4
+  a1:	c5 fa 10 69 34       	vmovss 0x34(%rcx),%xmm5
+  a6:	c5 fa 10 71 38       	vmovss 0x38(%rcx),%xmm6
+  ab:	c5 fa 10 79 3c       	vmovss 0x3c(%rcx),%xmm7
+  b0:	c4 c1 2a 5f c0       	vmaxss %xmm8,%xmm10,%xmm0
+  b5:	c5 f2 5f c0          	vmaxss %xmm0,%xmm1,%xmm0
+  b9:	c5 ea 5f c0          	vmaxss %xmm0,%xmm2,%xmm0
+  bd:	c5 e2 5f c0          	vmaxss %xmm0,%xmm3,%xmm0
+  c1:	c5 da 5f c0          	vmaxss %xmm0,%xmm4,%xmm0
+  c5:	c5 d2 5f c0          	vmaxss %xmm0,%xmm5,%xmm0
+  c9:	c5 ca 5f c0          	vmaxss %xmm0,%xmm6,%xmm0
+  cd:	c5 42 5f d8          	vmaxss %xmm0,%xmm7,%xmm11
+  d1:	c4 c1 2a 58 c1       	vaddss %xmm9,%xmm10,%xmm0
+  d6:	c5 fa 58 c1          	vaddss %xmm1,%xmm0,%xmm0
+  da:	c5 fa 58 c2          	vaddss %xmm2,%xmm0,%xmm0
+  de:	c5 fa 58 c3          	vaddss %xmm3,%xmm0,%xmm0
+  e2:	c5 fa 58 c4          	vaddss %xmm4,%xmm0,%xmm0
+  e6:	c5 fa 58 c5          	vaddss %xmm5,%xmm0,%xmm0
+  ea:	c5 fa 58 c6          	vaddss %xmm6,%xmm0,%xmm0
+  ee:	c5 fa 58 c7          	vaddss %xmm7,%xmm0,%xmm0
+  f2:	c5 a2 58 c0          	vaddss %xmm0,%xmm11,%xmm0
+  f6:	c5 fa 11 40 04       	vmovss %xmm0,0x4(%rax)
+  fb:	c5 7a 10 51 40       	vmovss 0x40(%rcx),%xmm10
+ 100:	c5 fa 10 49 44       	vmovss 0x44(%rcx),%xmm1
+ 105:	c5 fa 10 51 48       	vmovss 0x48(%rcx),%xmm2
+ 10a:	c5 fa 10 59 4c       	vmovss 0x4c(%rcx),%xmm3
+ 10f:	c5 fa 10 61 50       	vmovss 0x50(%rcx),%xmm4
+ 114:	c5 fa 10 69 54       	vmovss 0x54(%rcx),%xmm5
+ 119:	c5 fa 10 71 58       	vmovss 0x58(%rcx),%xmm6
+ 11e:	c5 fa 10 79 5c       	vmovss 0x5c(%rcx),%xmm7
+ 123:	c4 c1 2a 5f c0       	vmaxss %xmm8,%xmm10,%xmm0
+ 128:	c5 f2 5f c0          	vmaxss %xmm0,%xmm1,%xmm0
+ 12c:	c5 ea 5f c0          	vmaxss %xmm0,%xmm2,%xmm0
+ 130:	c5 e2 5f c0          	vmaxss %xmm0,%xmm3,%xmm0
+ 134:	c5 da 5f c0          	vmaxss %xmm0,%xmm4,%xmm0
+ 138:	c5 d2 5f c0          	vmaxss %xmm0,%xmm5,%xmm0
+ 13c:	c5 ca 5f c0          	vmaxss %xmm0,%xmm6,%xmm0
+ 140:	c5 42 5f d8          	vmaxss %xmm0,%xmm7,%xmm11
+ 144:	c4 c1 2a 58 c1       	vaddss %xmm9,%xmm10,%xmm0
+ 149:	c5 fa 58 c1          	vaddss %xmm1,%xmm0,%xmm0
+ 14d:	c5 fa 58 c2          	vaddss %xmm2,%xmm0,%xmm0
+ 151:	c5 fa 58 c3          	vaddss %xmm3,%xmm0,%xmm0
+ 155:	c5 fa 58 c4          	vaddss %xmm4,%xmm0,%xmm0
+ 159:	c5 fa 58 c5          	vaddss %xmm5,%xmm0,%xmm0
+ 15d:	c5 fa 58 c6          	vaddss %xmm6,%xmm0,%xmm0
+ 161:	c5 fa 58 c7          	vaddss %xmm7,%xmm0,%xmm0
+ 165:	c5 a2 58 c0          	vaddss %xmm0,%xmm11,%xmm0
+ 169:	c5 fa 11 40 08       	vmovss %xmm0,0x8(%rax)
+ 16e:	c5 7a 10 51 60       	vmovss 0x60(%rcx),%xmm10
+ 173:	c5 fa 10 49 64       	vmovss 0x64(%rcx),%xmm1
+ 178:	c5 fa 10 51 68       	vmovss 0x68(%rcx),%xmm2
+ 17d:	c5 fa 10 59 6c       	vmovss 0x6c(%rcx),%xmm3
+ 182:	c5 fa 10 61 70       	vmovss 0x70(%rcx),%xmm4
+ 187:	c5 fa 10 69 74       	vmovss 0x74(%rcx),%xmm5
+ 18c:	c5 fa 10 71 78       	vmovss 0x78(%rcx),%xmm6
+ 191:	c5 fa 10 79 7c       	vmovss 0x7c(%rcx),%xmm7
+ 196:	c4 c1 2a 5f c0       	vmaxss %xmm8,%xmm10,%xmm0
+ 19b:	c5 f2 5f c0          	vmaxss %xmm0,%xmm1,%xmm0
+ 19f:	c5 ea 5f c0          	vmaxss %xmm0,%xmm2,%xmm0
+ 1a3:	c5 e2 5f c0          	vmaxss %xmm0,%xmm3,%xmm0
+ 1a7:	c5 da 5f c0          	vmaxss %xmm0,%xmm4,%xmm0
+ 1ab:	c5 d2 5f c0          	vmaxss %xmm0,%xmm5,%xmm0
+ 1af:	c5 ca 5f c0          	vmaxss %xmm0,%xmm6,%xmm0
+ 1b3:	c5 42 5f c0          	vmaxss %xmm0,%xmm7,%xmm8
+ 1b7:	c4 c1 2a 58 c1       	vaddss %xmm9,%xmm10,%xmm0
+ 1bc:	c5 fa 58 c1          	vaddss %xmm1,%xmm0,%xmm0
+ 1c0:	c5 fa 58 c2          	vaddss %xmm2,%xmm0,%xmm0
+ 1c4:	c5 fa 58 c3          	vaddss %xmm3,%xmm0,%xmm0
+ 1c8:	c5 fa 58 c4          	vaddss %xmm4,%xmm0,%xmm0
+ 1cc:	c5 fa 58 c5          	vaddss %xmm5,%xmm0,%xmm0
+ 1d0:	c5 fa 58 c6          	vaddss %xmm6,%xmm0,%xmm0
+ 1d4:	c5 fa 58 c7          	vaddss %xmm7,%xmm0,%xmm0
+ 1d8:	c5 ba 58 c0          	vaddss %xmm0,%xmm8,%xmm0
+ 1dc:	c5 fa 11 40 0c       	vmovss %xmm0,0xc(%rax)
+ 1e1:	5d                   	pop    %rbp
+ 1e2:	c3                   	ret
+tinygrad: [0.0, 1.0, 2.0, 3.0]
+python  : [0.0, 1.0, 2.0, 3.0] -&gt; match</code></pre>
+  <p>Compare this to the x86 renderer's output in §16.13: clang (<code>-O2</code>, <code>-march=native</code>) fully unrolled both
+  8-long inner loops and the 4-long outer loop (four copies of 8 <code>vmovss</code> loads + 8 <code>vmaxss</code> + 8
+  <code>vaddss</code>), turned <code>(a&lt;b)?b:a</code> into <code>vmaxss</code>, and kept the accumulators in registers. The
+  buffer <code>float buf0[1]</code> vanished. tinygrad's x86 backend keeps the loops exactly as linearized: 233 bytes of code
+  versus clang's 483, at the price of doing no optimization of its own beyond what the UOp graph already encodes. That is the
+  trade-off: an ISA backend removes the dependency on a C compiler (and its compile time) and gives tinygrad full control; a C
+  backend gets decades of compiler optimizations for free.</p>
+
+  <!-- ============================================================== -->
+  <h2 id="hammer"><span class="sec">16.15</span>Hammer it again: the same ideas from other angles</h2>
+  <ul>
+    <li><b>The linearizer only orders.</b> It never adds or removes computation, except IF/ENDIF and ALLOC→BUFFER in
+    <code>line_rewrite</code>. Every decision about <em>what</em> to compute was made in Chapters 13–15. If generated code looks
+    wrong, the bug is almost always upstream; <code>DEBUG_LINEARIZE=1</code> prints the list with ranges and priorities to check.</li>
+    <li><b>Correct nesting is a graph property.</b> CFGContext puts the loop structure <em>into the graph</em> as AFTER edges, so
+    the linearizer stays a generic priority toposort. The three-sibling example shows that without those edges a perfectly valid
+    toposort is an invalid program.</li>
+    <li><b>Hoisting comes free from run_count.</b> Anything that depends on fewer ranges executes fewer times and sorts earlier.
+    No separate loop-invariant code motion pass.</li>
+    <li><b>Renderers are mostly tables.</b> <code>code_for_op</code>, <code>type_map</code>, prefixes, and a string PatternMatcher.
+    The heavy lifting (vectorization, decompositions, launch dims) was done by lowering, <em>parameterized by</em> those tables.
+    That's why tinygrad can support ten backends in a few thousand lines.</li>
+    <li><b>Same UOps, different contracts.</b> A RANGE is a <code>for</code> in C, four basic blocks and a phi in LLVM,
+    <code>mov/cmp/jge…add/jmp</code> on x86; SPECIAL is <code>get_group_id</code>, <code>blockIdx.x</code>, <code>%ctaid.x</code>
+    or a workgroup builtin. Switch the tabs in §16.12 with that in mind.</li>
+  </ul>
+  <div class="quiz" data-answer="3">
+    <div class="q">You write a new GPU renderer for a C-like language that has <code>exp2</code> but no <code>sin</code>, and whose
+    work-group id is <code>wg_id(0)</code>. What is the minimum you must provide?</div>
+    <button class="opt">A new linearizer, since control flow differs</button>
+    <button class="opt">A sin polynomial in the renderer's string_rewrite</button>
+    <button class="opt">A new graph_rewrite stage in full_rewrite_to_sink</button>
+    <button class="opt">A CStyleLanguage subclass: code_for_op without SIN (lowering then decomposes it), code_for_workitem
+    <code>{"g": lambda x: f"wg_id({x})", …}</code>, the strings/type_map, global_max/local_max, and a Compiler</button>
+    <div class="explain">Everything else is generic. Leaving SIN out of <code>code_for_op</code> is enough for
+    <code>get_transcendental_patterns</code> to replace it with <code>xsin</code> (Chapter 15). The linearizer and CFGContext don't
+    care about the target language at all.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">What is in a fully built PROGRAM UOp for the Clang renderer?</div>
+    <button class="opt">PROGRAM(SOURCE, BINARY), arg = function name</button>
+    <button class="opt">PROGRAM(SINK, LINEAR, SOURCE, BINARY), arg = ProgramInfo(global_size, local_size, params, globals, outs, ins, target)</button>
+    <button class="opt">PROGRAM(LINEAR), arg = Estimates</button>
+    <button class="opt">A CALL with the kernel as body</button>
+    <div class="explain">pm_to_program appends one source per step: LINEAR (do_linearize), then estimates are written into the
+    SINK's KernelInfo, then SOURCE (do_render), then BINARY (do_compile). ProgramInfo is computed from the final sink in
+    do_to_program. The CALL that <em>uses</em> the PROGRAM is the schedule's business (Chapters 12 and 17).</div>
+  </div>
+
+  <div class="summary-box"><h3>Chapter summary</h3><ul>
+    <li><b>add control flow</b> (end of full_rewrite_to_sink): <code>CFGContext</code> finds each END's parent loop and chains
+    sibling loops; <code>pm_add_control_flow</code> wraps a RANGE's bound in <code>AFTER(bound, prev)</code>. Now every toposort
+    is properly nested. <b>pm_split_ends</b> makes every END close exactly one RANGE.</li>
+    <li><b>linearize</b>: priority key <code>(run_count, #ranges, op_priority, extra)</code> → ideal numbering → bottom-up heap
+    toposort that stays as close to ideal as dependencies allow. Hoisting, loads-early, stores-late fall out of the key.</li>
+    <li><b>pm_to_program</b> grows <code>PROGRAM(SINK)</code> → <code>+LINEAR</code> (do_linearize: line_rewrite with IF/ENDIF and
+    ALLOC→BUFFER; regalloc for ISA) → estimates → <code>+SOURCE</code> (render) → <code>+BINARY</code> (compile), or SOURCE+BINARY
+    at once via do_assemble. <code>ProgramInfo</code> = launch dims + params + outs/ins; <code>Estimates</code> = ops/lds/mem.</li>
+    <li><b>Renderer</b> = capability tables (code_for_op, extra_matcher, float4, locals, dims, dtypes, tensor cores) + a generator
+    + a compiler. <b>CStyleLanguage</b>: a string PatternMatcher, naming (<code>data0_4</code>, <code>Lidx0</code>, <code>val0</code>,
+    <code>alu0</code>), inline-if-single-use, indentation by RANGE/END depth; six languages are subclasses.</li>
+    <li>LLVM IR (phi loops), PTX (typed virtual registers), NIR (Mesa via ctypes), and the <b>x86 ISA backend</b>: isel to INS with
+    virtual registers → linearize → lower RANGE/END to jumps → linear-scan regalloc (furthest-next-use eviction, loop-aware live
+    ranges) → encode bytes.</li>
+  </ul></div>
+</main>
+</div>
+<script>
+const $ = (s) => document.querySelector(s);
+const E = Guide.el;
+const esc = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+// ======================= pipeline strip (16.2) =======================
+(function () {
+  const ST = [
+    { name: "full_rewrite_to_sink", sub: "ch.15", html: "<b>SINK in, SINK out.</b> ~30 graph_rewrite stages; the last ones (final rewrite with <code>pm_split_ends</code>, add control flow) prepare for linearization. <code>ProgramInfo.from_sink</code> is computed right after." },
+    { name: "instruction selection", sub: "ISA only", html: "<b>Only for ISARenderer (x86).</b> Estimates are computed first (while LOAD/STORE/ALU still exist), then <code>pre_isel_matcher</code> and <code>isel_matcher</code> turn them into <code>Ops.INS</code> with virtual registers." },
+    { name: "do_linearize", sub: "+LINEAR", html: "<b>PROGRAM(SINK) → PROGRAM(SINK, LINEAR).</b> <code>linearize(sink)</code> then <code>line_rewrite(…, pm_linearize_cleanups+pm_alloc_to_buf)</code>. For ISA renderers also pre-regalloc, <code>LinearScanRegallocContext</code>, <code>insert_linearized</code>, post-regalloc." },
+    { name: "do_estimates", sub: "KernelInfo", html: "<b>Rewrites the SINK's KernelInfo</b> with <code>Estimates.from_uops(lin.src, ignore_indexing=True)</code>; returns None if estimates are already set (so it fires once)." },
+    { name: "do_render / do_assemble", sub: "+SOURCE", html: "<b>Text renderers:</b> <code>ctx.render(list(lin.src))</code> → SOURCE. <b>ISA renderers</b> (LINEAR of INS): <code>do_assemble</code> makes SOURCE (the asm text) and BINARY (<code>ctx.asm</code>) at once." },
+    { name: "do_compile", sub: "+BINARY", html: "<b>PROGRAM(SINK, LINEAR, SOURCE) → +BINARY</b> via <code>compiler.compile_cached(source)</code>; DEBUG≥7 disassembles. The base <code>Compiler</code> returns the source bytes." },
+  ];
+  const info = $("#pipe16-info");
+  const p = Guide.pipeline("#pipe16", ST, (i, s) => (info.innerHTML = s.html));
+  p.select(2);
+})();
+
+// ======================= shared: graph of the linear list =======================
+function scrollToNode(container, id) {
+  const wrap = container.querySelector(".uopgraph"), n = container.querySelector(`.node[data-id="${id}"]`);
+  if (!wrap || !n) return;
+  const wb = wrap.getBoundingClientRect(), nb = n.getBoundingClientRect();
+  wrap.scrollTo({ left: wrap.scrollLeft + nb.left - wb.left - wb.width / 2 + nb.width / 2,
+                  top: wrap.scrollTop + nb.top - wb.top - wb.height / 2 + nb.height / 2, behavior: "smooth" });
+}
+function linGraph(d, extraLabel) {
+  return {
+    nodes: d.nodes.map((n) => ({ id: "n" + n.i, op: n.op, label: `%${n.i} ${n.label}`, dtype: n.dtype,
+      arg: n.op === "CONST" || n.op === "RANGE" ? n.arg : undefined, note: extraLabel ? extraLabel(n) : undefined })),
+    edges: d.nodes.flatMap((n) => n.src.map((s, k) => ["n" + s, "n" + n.i, k])),
+  };
+}
+
+Guide.loadJSON("../data/ch16_linear.json").then((d) => {
+  const N = d.nodes.length;
+  // ======================= Demo: linearizer animation =======================
+  // JS port of linearize()'s heap repair (linearizer.py:38-46), driven by the real nkey
+  const outdeg = new Array(N).fill(0);
+  d.nodes.forEach((n) => n.src.forEach((s) => outdeg[s]++));
+  const heap = [N - 1], steps = [{ placed: [], heap: [N - 1], cur: null, fresh: [N - 1] }];
+  const placed = [];
+  while (heap.length) {
+    heap.sort((a, b) => d.nkey[b] - d.nkey[a]);      // max nkey first (python pushes -nkey into a min-heap)
+    const u = heap.shift(); placed.push(u);
+    const fresh = [];
+    for (const s of d.nodes[u].src) { if (--outdeg[s] === 0) { heap.push(s); fresh.push(s); } }
+    steps.push({ placed: placed.slice(), heap: heap.slice(), cur: u, fresh });
+  }
+  const result = placed.slice().reverse();
+  const ok = result.every((v, i) => v === i);
+  const chk = $("#lin-check");
+  chk.textContent = ok ? `JS port == tinygrad's linearize(): all ${N} positions identical` : "JS port differs from tinygrad!";
+  chk.className = "ch16-badge " + (ok ? "ok" : "bad");
+  steps.forEach((s, k) => {
+    if (k === 0) s.caption = `Start: the heap holds only the <b>SINK</b> (%${N - 1}). The program is built from the bottom up.`;
+    else {
+      const n = d.nodes[s.cur];
+      s.caption = `Pop <b>%${n.i} ${esc(n.label)}</b> (nkey ${d.nkey[n.i]}, prio (${n.prio.map((x) => x === null ? "None" : x).join(", ")})) and place it at position ${N - k}.` +
+        (s.fresh.length ? ` Now ready: ${s.fresh.map((f) => `%${f} ${esc(d.nodes[f].label)}`).join(", ")}.` : " No source became ready.");
+    }
+  });
+  const g = Guide.uopGraph("#lin-graph", linGraph(d), { compact: true, legend: false });
+  const list = $("#lin-list"), heapEl = $("#lin-heap");
+  function drawList(k) {
+    const s = steps[k], set = new Set(s.placed);
+    const ind = $("#lin-ind").checked, pr = $("#lin-prio").checked;
+    list.innerHTML = "";
+    for (let i = 0; i < N; i++) {
+      const n = d.nodes[i], on = set.has(i);
+      const cls = "ch16-row" + (on ? "" : " empty") + (i === s.cur ? " cur" : "") + (n.op === "RANGE" ? " rng" : n.op === "END" ? " end" : "");
+      const text = on ? (ind ? "  ".repeat(n.depth) : "") + n.label + (n.op === "CONST" ? " " + n.arg : "") : "·";
+      list.append(E("div", { class: cls }, E("span", { class: "i" }, String(i)), E("span", { class: "t" }, text),
+        E("span", { class: "p" }, on && pr ? `(${n.prio.map((x) => x === null ? "-" : x).join(",")}) k${d.nkey[i]}` : "")));
+    }
+    const cur = list.querySelector(".cur"); if (cur) cur.scrollIntoView({ block: "nearest" });
+    heapEl.innerHTML = "";
+    heapEl.append(E("span", { class: "ch16-badge" }, "heap:"));
+    const hs = s.heap.slice().sort((a, b) => d.nkey[b] - d.nkey[a]);
+    if (!hs.length) heapEl.append(E("span", { class: "ch16-badge" }, "(empty: done)"));
+    hs.forEach((h, j) => heapEl.append(E("span", { class: "ch16-chip" + (j === 0 ? " top" : "") + (s.fresh.includes(h) ? " new" : "") }, `%${h} ${d.nodes[h].label} k${d.nkey[h]}`)));
+    g.highlight(s.placed.map((p) => "n" + p).concat(s.heap.map((h) => "n" + h)));
+    scrollToNode($("#lin-graph"), "n" + (s.cur === null ? N - 1 : s.cur));
+  }
+  let cur = 0;
+  Guide.stepper("#lin-step", steps, (k) => { cur = k; drawList(k); }, { autoplayMs: 700 });
+  $("#lin-ind").onchange = $("#lin-prio").onchange = () => drawList(cur);
+
+  // ======================= Demo: UOp <-> source line =======================
+  const srcEl = $("#map-src"), infoEl = $("#map-info");
+  const mg = Guide.uopGraph("#map-graph", linGraph(d, (n) => `ctx.r = ${JSON.stringify(n.r)}`), { compact: true, legend: false,
+    onClick: (n) => { const i = +n.id.slice(1); const li = lineOf(i); if (li !== null) select(li); else { mg.highlight([n.id]); infoEl.innerHTML = `%${i} ${n.op} produces no line of its own and is not inlined into one (CONSTs are rendered by the CAST that wraps them; AFTER/SINK print nothing).`; } } });
+  const lu = d.line_uops;
+  function lineOf(i) {
+    let best = null;
+    for (const [l, us] of Object.entries(lu)) if (us.includes(i)) { if (Math.max(...us) === i) return +l; if (best === null) best = +l; }
+    return best;
+  }
+  const lineEls = d.source.map((t, i) => {
+    const e = E("div", { class: "ln" + (lu[i] ? "" : " nomap"), onclick: () => lu[i] && select(i) }, E("span", { class: "n" }, String(i + 1)), E("span", {}, t || " "));
+    srcEl.append(e); return e;
+  });
+  function select(li) {
+    lineEls.forEach((e, j) => e.classList.toggle("sel", j === li));
+    const us = lu[li];
+    mg.highlight(us.map((u) => "n" + u));
+    scrollToNode($("#map-graph"), "n" + Math.max(...us));
+    const emitted = Math.max(...us);
+    infoEl.innerHTML = `<b>line ${li + 1}</b> <code>${esc(d.source[li].trim())}</code> comes from ${us.length} UOp(s); the emitted one is <b>%${emitted} ${d.nodes[emitted].op}</b>, the rest were inlined into it.` +
+      "<table><tr><th>uop</th><th>op</th><th>ctx.r[u]</th></tr>" + us.map((u) => `<tr><td>%${u}</td><td>${d.nodes[u].op}</td><td class="r">${esc(d.nodes[u].r === null ? "(skipped: CONST)" : d.nodes[u].r)}</td></tr>`).join("") + "</table>";
+    lineEls[li].scrollIntoView({ block: "nearest" });
+  }
+  const first = Object.keys(lu).map(Number).find((l) => d.source[l].includes("val0"));
+  select(first);
+});
+
+// ======================= Demo: renderer comparison =======================
+Guide.loadJSON("../data/ch16_renderers.json").then((R) => {
+  let kernel = "reduce", tab = 0;
+  const kb = $("#ren-kernels"), tb = $("#ren-tabs"), panes = $("#ren-panes"), cmp = $("#ren-cmp"), other = $("#ren-other");
+  const names = R.reduce.renderers.map((r) => r.name);
+  names.forEach((n, i) => other.append(E("option", { value: i }, n)));
+  other.value = 3;
+  for (const k of Object.keys(R)) kb.append(E("button", { "data-k": k, onclick: () => { kernel = k; draw(); } }, `${k}: ${R[k].desc}`));
+  names.forEach((n, i) => tb.append(E("button", { onclick: () => { tab = i; draw(); } }, n)));
+  const isC = (cls) => /Clang|OpenCL|Metal|CUDA|HIP/.test(cls);
+  function pane(r) {
+    const b = (t, c) => `<span class="ch16-badge ${c || ""}">${t}</span>`;
+    const meta = E("div", { class: "ch16-meta" });
+    meta.innerHTML = `<b>${esc(r.name)}</b> <code>${r.cls}</code> fn=<code>${r.fn}</code><br>` +
+      b(`global ${JSON.stringify(r.global_size)}`) + b(`local ${JSON.stringify(r.local_size)}`) + b(`${r.nuops} linear uops`) +
+      b(`${r.lines} source lines`) + b(`BINARY ${r.binary_bytes} B`) +
+      (r.error ? b("compile FAILED", "bad") : r.real_compile ? b("compiled for real", "ok") : b("stub compiler: BINARY = source", "warn")) +
+      (r.opts.length ? b("opts: " + r.opts.map((o) => o.replace("Opt(op=OptOps.", "").replace(/AxisType\./g, "")).join(" ")) : b("no opts")) +
+      (r.error ? `<div class="ch15-bad" style="color:var(--red);font-family:var(--mono);font-size:12px">${esc(r.error)}</div>` : "");
+    const pre = E("pre", { class: "ch16-code" });
+    const code = E("code", {});
+    if (window.hljs && isC(r.cls)) { try { code.innerHTML = hljs.highlight(r.source, { language: "cpp" }).value; } catch (e) { code.textContent = r.source; } }
+    else code.textContent = r.source;
+    pre.append(code);
+    return E("div", {}, meta, pre);
+  }
+  function draw() {
+    Guide.$$("button", kb).forEach((b) => b.classList.toggle("active", b.dataset.k === kernel));
+    Guide.$$("button", tb).forEach((b, i) => b.classList.toggle("active", i === tab));
+    const rs = R[kernel].renderers;
+    panes.innerHTML = "";
+    panes.classList.toggle("split", cmp.checked);
+    panes.append(pane(rs[tab]));
+    if (cmp.checked) panes.append(pane(rs[+other.value]));
+  }
+  cmp.onchange = other.onchange = draw;
+  draw();
+});
+
+// ======================= Demo: register allocation =======================
+Guide.loadJSON("../data/ch16_regalloc.json").then((A) => {
+  const svg = $("#ra-svg"), pos = $("#ra-pos");
+  const NR = A.rows.length;
+  const vregs = A.vregs.slice().sort((a, b) => a.start - b.start || a.name.localeCompare(b.name));
+  const GPR = ["rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", ...Array.from({ length: 8 }, (_, i) => "r" + (i + 8))];
+  const XMM = Array.from({ length: 16 }, (_, i) => "xmm" + i);
+  const PAL = ["#58c4dd", "#ffd666", "#83c167", "#fc6255", "#5cd0b3", "#9a72ac", "#f0ac5f", "#e07a9b", "#a3d977", "#c39bd3", "#76b7f2", "#d8b26e"];
+  const ALL = [...GPR, ...XMM];
+  const color = (r) => PAL[Math.max(0, ALL.indexOf(r)) % PAL.length];
+  // loops from the linear list: 'range' ... 'end' rows, matched with a stack
+  const loops = [], st = [];
+  A.rows.forEach((r) => { if (r.text === "range") st.push(r.i); else if (r.text === "end") loops.push([st.pop(), r.i, st.length]); });
+  const L = 120, RW = 14, T = 22, W = 1100, H = T + vregs.length * RW + 10;
+  const x = (i) => L + (i / (NR - 1)) * (W - L - 20);
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  const s = (tag, a, ...k) => E(tag, a, ...k);
+  loops.forEach(([a, b, depth]) => svg.append(s("rect", { x: x(a), y: T - 4, width: x(b) - x(a), height: H - T, fill: depth ? "rgba(252,98,85,.10)" : "rgba(252,98,85,.06)" }),
+    s("text", { x: x(a) + 2, y: 12 }, depth ? "inner loop" : "outer loop")));
+  for (let i = 0; i < NR; i += 10) svg.append(s("text", { x: x(i), y: H - 1, "text-anchor": "middle" }, String(i)));
+  vregs.forEach((v, j) => {
+    const y = T + j * RW, c = color(v.real);
+    svg.append(s("text", { x: 4, y: y + 10, class: "vname" }, v.name), s("text", { x: 44, y: y + 10 }, `${v.real}${v.spilled ? " (spill)" : ""}`));
+    svg.append(s("rect", { x: x(v.start), y: y + 2, width: Math.max(2, x(v.end) - x(v.start)), height: RW - 5, rx: 3, fill: c + "55", stroke: c }));
+    v.uses.forEach((u) => svg.append(s("circle", { cx: x(u), cy: y + RW / 2 - 0.5, r: 2.4, fill: c })));
+  });
+  const cursor = s("line", { x1: 0, x2: 0, y1: T - 6, y2: H - 10, stroke: "#ffd666", "stroke-width": 1.5 });
+  svg.append(cursor);
+  const gpr = $("#ra-gpr"), xmm = $("#ra-xmm");
+  const cell = (r) => E("div", { class: "ch16-reg", "data-r": r }, E("b", {}, r), E("span", {}, "·"));
+  GPR.forEach((r) => gpr.append(cell(r))); XMM.forEach((r) => xmm.append(cell(r)));
+  const PSEUDO = /^(noop|stack|const|after|\(imm\)|label:|jge|sink)$/;
+  function show(p) {
+    p = Math.max(0, Math.min(NR - 1, p)); pos.value = p;
+    $("#ra-pnum").textContent = `position ${p} / ${NR - 1}`;
+    cursor.setAttribute("x1", x(p)); cursor.setAttribute("x2", x(p));
+    const incl = $("#ra-pseudo").checked;
+    const near = A.rows.filter((r) => Math.abs(r.i - p) <= 5 && (incl || r.i === p || !PSEUDO.test(r.text)));
+    $("#ra-insn").innerHTML = near.map((r) => {
+      const m = Object.entries(r.real).map(([v, q]) => `${v}→${q}`).join(" ");
+      const line = `${String(r.i).padStart(3)}  ${r.text.padEnd(32)} ${m}`;
+      return r.i === p ? `<b style="color:var(--yellow)">${esc(line)}</b>` : esc(line);
+    }).join("\n");
+    Guide.$$(".ch16-reg").forEach((e) => { e.classList.remove("on"); e.style.background = ""; e.lastChild.textContent = "·"; });
+    vregs.forEach((v) => {
+      if (v.start <= p && p <= v.end) {
+        const e = document.querySelector(`.ch16-reg[data-r="${v.real}"]`);
+        if (e) { e.classList.add("on"); e.style.background = color(v.real); e.lastChild.textContent = v.name; }
+      }
+    });
+  }
+  pos.oninput = () => show(+pos.value);
+  $("#ra-pseudo").onchange = () => show(+pos.value);
+  svg.addEventListener("mousemove", (ev) => {
+    const b = svg.getBoundingClientRect(), vx = ((ev.clientX - b.left) / b.width) * W;
+    if (vx >= L) show(Math.round(((vx - L) / (W - L - 20)) * (NR - 1)));
+  });
+  show(47);
+});
+
+</script>
+</body>
+</html>

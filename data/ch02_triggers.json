@@ -1,0 +1,90 @@
+[
+ {
+  "code": "c = a + b",
+  "kernels": 0
+ },
+ {
+  "code": "c = (a * b).sum()",
+  "kernels": 0
+ },
+ {
+  "code": "c = a + b; c.shape",
+  "kernels": 0
+ },
+ {
+  "code": "c = a + b; c.dtype",
+  "kernels": 0
+ },
+ {
+  "code": "c = a.reshape(2, 2).T",
+  "kernels": 0
+ },
+ {
+  "code": "c = a + b; c.realize()",
+  "kernels": 1
+ },
+ {
+  "code": "c = a + b; c.tolist()",
+  "kernels": 1
+ },
+ {
+  "code": "(a * b).sum().item()",
+  "kernels": 1
+ },
+ {
+  "code": "c = a + b; c.contiguous()",
+  "kernels": 0
+ },
+ {
+  "code": "c = a.exp(); str(c)  (repr)",
+  "kernels": 0
+ },
+ {
+  "code": "a.assign(a + 1)",
+  "kernels": 0
+ },
+ {
+  "code": "a.assign(a + 1).realize()",
+  "kernels": 1
+ },
+ {
+  "code": "a.realize()  (already a buffer)",
+  "kernels": 0
+ },
+ {
+  "code": "Tensor.ones(4)",
+  "kernels": 0
+ },
+ {
+  "code": "Tensor.ones(4).realize()",
+  "kernels": 1
+ },
+ {
+  "code": "Tensor.rand(4)",
+  "kernels": 0
+ },
+ {
+  "code": "Tensor.rand(4).realize()",
+  "kernels": 5
+ },
+ {
+  "code": "Tensor([1., 2.]).realize()",
+  "kernels": 1
+ },
+ {
+  "code": "c = (a + b)[1]",
+  "kernels": 0
+ },
+ {
+  "code": "(a + b)[1].item()",
+  "kernels": 1
+ },
+ {
+  "code": "Tensor(3) + 4  (no device)",
+  "kernels": 0
+ },
+ {
+  "code": "(Tensor(3) + 4).item()",
+  "kernels": 1
+ }
+]

@@ -1,0 +1,921 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>18. TinyJit &amp; functions — tinygrad internals</title>
+<link rel="stylesheet" href="../assets/vendor/hljs-dark.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/vendor/highlight.min.js"></script>
+<script src="../assets/vendor/dagre.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/chapters.js"></script>
+<script src="../assets/guide.js"></script>
+<style>
+.ch18-sm { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 14px; }
+@media (max-width: 1000px) { .ch18-sm { grid-template-columns: 1fr; } }
+.ch18-sm svg { width: 100%; height: auto; background: #0d0f12; border: 1px solid var(--line); border-radius: 8px; }
+.ch18-log { font-family: var(--mono); font-size: 12.5px; background: #0a0c0e; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; height: 330px; overflow-y: auto; white-space: pre-wrap; }
+.ch18-log .c1 { color: var(--blue); } .ch18-log .c2 { color: var(--yellow); } .ch18-log .c3 { color: var(--green); } .ch18-log .err { color: var(--red); } .ch18-log .dim { color: var(--dim); }
+.ch18-chart svg { width: 100%; height: auto; background: #0d0f12; border: 1px solid var(--line); border-radius: 8px; }
+.ch18-legend { display: flex; gap: 16px; font-size: 13px; color: var(--dim); margin: 6px 0; flex-wrap: wrap; }
+.ch18-legend span::before { content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; background: var(--c); }
+.ch18-baked { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.ch18-card { background: #0d0f12; border: 1px solid var(--line); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.ch18-card pre { margin: 0; font-size: 12px; padding: 8px 10px; }
+.ch18-card .btns { display: flex; gap: 6px; flex-wrap: wrap; }
+.ch18-card .btns button { font-size: 12.5px; padding: 3px 9px; }
+.ch18-card .btns button.right { border-color: var(--green); color: var(--green); }
+.ch18-card .btns button.wrong { border-color: var(--red); color: var(--red); }
+.ch18-card .ans { display: none; font-size: 13.5px; color: var(--dim); }
+.ch18-card.done .ans { display: block; }
+.ch18-card .ans code { font-size: 12px; }
+.ch18-score { font-family: var(--mono); color: var(--yellow); margin: 8px 0; }
+.ch18-lin { font-family: var(--mono); font-size: 12.5px; }
+.ch18-lin .row { display: grid; grid-template-columns: 120px repeat(4, minmax(0, 1fr)); gap: 6px; margin: 4px 0; align-items: center; }
+.ch18-lin .arg { border-radius: 5px; padding: 4px 6px; text-align: center; border: 1px solid var(--line); transition: all .3s; }
+.ch18-lin .arg.param { background: rgba(244,211,69,.18); border-color: var(--yellow); }
+.ch18-lin .arg.alloc { background: rgba(154,114,172,.22); border-color: var(--purple); }
+.ch18-lin .arg.buffer { background: rgba(240,172,95,.18); border-color: var(--gold); }
+.ch18-lin .arg.empty { border: none; }
+.ch18-lin .arg.flash { box-shadow: 0 0 10px var(--yellow); }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="sidebar" id="sidebar"></nav>
+<main>
+  <h1><span class="chnum">CHAPTER 18</span>TinyJit &amp; functions</h1>
+  <p class="lede">Every <code>realize()</code> re-runs the whole Python machine: build a lazy graph, rewrite it into a schedule, look things up in
+  caches, dispatch each kernel. For a small model that Python work is <em>most</em> of the step time. <code>TinyJit</code> records the
+  schedule once and replays it — a single <code>run_linear</code> of precompiled, memory-planned calls with only the input buffers swapped. This
+  chapter takes apart <a class="src" data-path="tinygrad/engine/jit.py" data-line="1">engine/jit.py</a> and the graph-level cousin
+  <a class="src" data-path="tinygrad/function.py" data-line="1">function.py</a>, and measures what the JIT buys on a CPU.</p>
+
+  <div class="callout note"><span class="title">Version note</span>In this version the JIT stores a <b>LINEAR UOp</b> (<code>CapturedJit._linear</code>),
+  not a list of <code>ExecItem</code>s/runners, and there are no <code>GraphRunner</code> classes (<code>CUDAGraph</code>, <code>MetalGraph</code>,
+  <code>HCQGraph</code>…). Batching kernels into one submission is now done for <em>every</em> schedule on HCQ devices by
+  <code>hcq_compile</code> (<a href="17-runtime.html">Chapter 17 §17.10</a>); the JIT just calls the same <code>compile_linear</code> once, ahead of time.</div>
+
+  <!-- ============================================================ -->
+  <h2 id="intuition"><span class="sec">18.1</span>Intuition: a macro recorder</h2>
+  <div class="callout analogy"><span class="title">Analogy</span>A spreadsheet macro recorder. The first time you do the task by hand (so you know it
+  works). The second time you press <em>record</em>: the recorder writes down every click, but it remembers <em>which cell</em> you clicked, not
+  <em>why</em>. From then on you press <em>play</em> and it repeats the clicks in a blink — on whatever data is in the input cells now. Anything you
+  decided in your head while recording (an <code>if</code>, a number you typed) is frozen into the macro.</div>
+  <p>TinyJit is exactly that, with three phases keyed by a call counter <code>cnt</code>:</p>
+  <table>
+    <tr><th>call</th><th><code>cnt</code></th><th>phase</th><th>what happens</th></tr>
+    <tr><td>1</td><td>0</td><td><b class="hl-blue">ignore</b> (warm-up)</td><td>run your function normally; realize the returned tensors. Compiles every kernel, fills caches, lazily-initialized state (e.g. weights) gets realized.</td></tr>
+    <tr><td>2</td><td>1</td><td><b class="hl-yellow">capture</b></td><td>run your function with the JIT registered in <code>capturing</code>: every schedule is <em>recorded instead of executed</em>. Then combine, parametrize inputs, memory-plan, compile, and run the result once.</td></tr>
+    <tr><td>3+</td><td>≥2</td><td><b class="hl-green">replay</b></td><td>don't call your function at all. Check the inputs match, then <code>run_linear(captured, input_uops=…, jit=True)</code>.</td></tr>
+  </table>
+  <div class="callout aha"><span class="title">The key idea</span>On replay, <b>your Python function is not executed</b>. No Tensor ops, no graph, no
+  scheduler, no cache lookups — just one loop over precompiled CALLs. Everything the function computed in Python during capture (shapes,
+  branches, scalar arguments, <code>.item()</code> values) is baked in.</div>
+
+  <!-- ============================================================ -->
+  <h2 id="call"><span class="sec">18.2</span><code>_TinyJit.__call__</code>, line by line</h2>
+  <div class="codecap"><b>tinygrad/engine/jit.py</b> — <a class="src" data-path="tinygrad/engine/jit.py" data-line="102">class _TinyJit</a></div>
+  <pre><code class="language-python" data-src="tinygrad/engine/jit.py:102-176">class _TinyJit(Generic[ReturnType]):
+  def __init__(self, fxn:Callable[..., ReturnType]|None, captured:CapturedJit|None=None, prune=False):
+    assert fxn or captured, "need either a function or a CapturedJit"
+    self.fxn = fxn
+    self.captured: CapturedJit|None = captured
+    self.cnt: int = 2 if self.fxn is None else 0
+    self.prune = prune
+
+  def add_linear(self, linear:UOp): self._linears.append(linear)
+
+  def reset(self):
+    assert self.fxn is not None, "can't reset without function"
+    self.cnt = 0
+    self.captured = None
+
+  def __reduce__(self):
+    assert self.captured is not None, "can't pickle an uncaptured JIT"
+    return self.__class__, (None, self.captured)
+
+  def __get__(self, obj, objtype): return functools.partial(self.__call__, obj) # add support for instance methods
+
+  @disable_gc()
+  def __call__(self, *args, **kwargs) -&gt; ReturnType:
+    input_buf_uops, var_vals, names, expected_input_info = _prepare_jit_inputs(args, kwargs)
+    if not JIT or self.cnt == 0:
+      # jit ignore
+      assert self.fxn is not None
+      with Context(BEAM=0 if getenv("IGNORE_JIT_FIRST_BEAM") else BEAM.value):
+        ret = self.fxn(*args, **kwargs)
+        if len(params:=get_parameters(ret)): Tensor.realize(*params)
+    elif self.cnt == 1:
+      # jit capture
+      assert self.fxn is not None
+      if capturing: raise RuntimeError(f"having TinyJit inside another TinyJit is not supported {len(capturing)=} {capturing=}")
+      self._linears: list[UOp] = []
+      capturing.append(self)
+      try:
+        ret = self.fxn(*args, **kwargs)
+        if len(params:=get_parameters(ret)): Tensor.realize(*params)
+      finally: capturing.clear()
+      if not len(self._linears): raise JitError("didn't JIT anything!")
+      _check_no_non_tensor_return(ret)
+      if DEBUG &gt;= 1: print(f"JIT captured {len(self._linears)} linears with {len(input_buf_uops)} inputs")
+
+      # combine all captured linears into one, memory plan, and compile
+      big_linear = UOp(Ops.LINEAR, src=tuple(flatten([l.src for l in self._linears])))
+      del self._linears
+
+      if self.prune:
+        big_linear, onetime_linear = prune_linear(big_linear, set(input_buf_uops))
+        if DEBUG &gt;= 1: print(f"pruned from {len(big_linear.src) + len(onetime_linear.src)} -&gt; {len(big_linear.src)} kernels")
+        run_linear(onetime_linear, var_vals)
+        del onetime_linear
+
+      # hold all buffers with real storage reachable from live Tensors (e.g. lazy .grad created during capture) and all buffers with
+      # allocated storage in the captured linear (e.g. constants baked in by copies): the memory planner can't suballocate those
+      def _buf_or_none(u:UOp) -&gt; Buffer|MultiBuffer|None: return u.arg.buffer if u.op is Ops.BUFFER else None
+      held_bufs = {u for tref in list(all_tensors) if (t:=tref()) is not None for u in t.uop.toposort() if _buf_or_none(u) is not None}
+      held_bufs |= {u for u in big_linear.toposort() if (b:=_buf_or_none(u)) is not None and b.is_allocated()}
+      linear = jit_lower(big_linear, held_bufs, input_buf_uops, var_vals)
+      # drop the pre-planning graph: it keeps the whole capture-time working set allocated (big_linear) or referenced (held_bufs).
+      # the planned linear only uses the arena/held buffers, so the intermediates must be freed before linking and first exec
+      del big_linear, held_bufs
+      self.captured = CapturedJit(ret, linear, names, expected_input_info)
+      ret = self.captured(input_buf_uops, var_vals)
+    elif self.cnt &gt;= 2:
+      # jit exec
+      assert self.captured is not None
+      if self.captured.expected_names != names: raise JitError(f"args mismatch in JIT: {self.captured.expected_names=} != {names}")
+      if self.captured.expected_input_info != expected_input_info:
+        raise JitError(f"args mismatch in JIT: {self.captured.expected_input_info=} != {expected_input_info=}")
+      ret = self.captured(input_buf_uops, var_vals)
+
+    self.cnt += 1
+    return ret</code></pre>
+  <p>Notes on the details:</p>
+  <ul>
+    <li><b><code>JIT=0</code></b> makes every call take the "ignore" branch — a quick way to check whether a bug is the JIT's fault.</li>
+    <li><b><code>@disable_gc()</code></b>: Python's GC is paused during the call; a GC pause in the middle of a step is jitter you don't want.</li>
+    <li><b>Nested JITs</b> are refused (<code>capturing</code> is a single global list).</li>
+    <li><b><code>__get__</code></b> makes <code>@TinyJit</code> work on methods (<code>self</code> becomes the first argument — it's not a Tensor so it's not an input).</li>
+    <li><b><code>prune=True</code></b> splits off the calls that don't depend on any input (e.g. weight preprocessing) and runs them once, so they're not replayed.</li>
+    <li>The returned object is the <em>same</em> Python object (and the same Buffers) every replay — <code>CapturedJit.ret</code>.</li>
+  </ul>
+
+  <div class="demo" id="demo-sm">
+    <div class="demo-title">JIT phase state machine</div>
+    <div class="demo-desc">Call the jitted function and watch the state machine and the log. Try changing the input shape after capture, passing the
+    same tensor twice, or <code>reset()</code>. The behaviour (and error texts) mirror <code>_TinyJit.__call__</code> and the real runs in §18.6.</div>
+    <div class="controls">
+      <button class="primary" id="sm-call">call step(x)  [x: (2,8)]</button>
+      <button id="sm-shape">call step(x)  [x: (3,8)]</button>
+      <button id="sm-dup">call f(t, t)</button>
+      <button id="sm-reset">step.reset()</button>
+      <label><input type="checkbox" id="sm-jit0"> JIT=0</label>
+    </div>
+    <div class="ch18-sm"><div id="sm-svg"></div><div class="ch18-log" id="sm-log"></div></div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="capture"><span class="sec">18.3</span>Capture: recording schedules instead of running them</h2>
+  <p>How can the JIT see the kernels your function launches? The hook is at the very end of scheduling. When the global
+  <code>capturing</code> list (in <a class="src" data-path="tinygrad/engine/realize.py" data-line="116">realize.py</a>) is non-empty,
+  <code>create_linear_with_vars</code> hands the finished LINEAR to the JIT and returns an <em>empty</em> LINEAR, so <code>run_linear</code> has
+  nothing to do:</p>
+  <div class="codecap"><b>tinygrad/schedule/__init__.py</b> — <a class="src" data-path="tinygrad/schedule/__init__.py" data-line="290">the capture hook</a></div>
+  <pre><code class="language-python" data-src="tinygrad/schedule/__init__.py:290-295">  # jit captures this schedule, no need to execute.
+  if len(capturing) and CAPTURING:
+    capturing[0].add_linear(linear)
+    return UOp(Ops.LINEAR, src=()), var_vals
+
+  held_bufs = {b for b in linear_call.src[1:] if b.op is Ops.BUFFER}</code></pre>
+  <p>So during capture, every <code>realize()</code> inside your function (explicit, or implicit via the returned tensors) appends one LINEAR to
+  <code>self._linears</code>, and nothing executes. Which immediately explains the most important restriction — reading data during capture
+  is impossible, because the data doesn't exist yet:</p>
+  <div class="codecap"><b>tinygrad/tensor.py</b> — <a class="src" data-path="tinygrad/tensor.py" data-line="273">Tensor._buffer</a> (used by <code>.item()</code>, <code>.tolist()</code>, <code>.numpy()</code>, <code>.data()</code>)</div>
+  <pre><code class="language-python" data-src="tinygrad/tensor.py:273-280">  def _buffer(self) -&gt; Buffer:
+    from tinygrad.engine.realize import capturing
+    if capturing and not getenv("UNSAFE_ALLOW_JIT_BUFFER"):
+      from tinygrad.engine.jit import JitError
+      raise JitError("cannot access tensor data during JIT capture, the value will be baked in")
+    x = self.contiguous()
+    if self.uop.device is None or isinstance(self.device, tuple): x = x.clone("CPU")
+    return cast(Buffer, x.realize().uop.buffer).ensure_allocated()</code></pre>
+  <p>(Note the message: even if it could read, the value would be <em>baked in</em> — the replay never re-runs your Python.)</p>
+
+  <h3>From recorded LINEARs to a replayable program: <code>jit_lower</code></h3>
+  <div class="codecap"><b>tinygrad/engine/jit.py</b> — <a class="src" data-path="tinygrad/engine/jit.py" data-line="24">jit_lower</a></div>
+  <pre><code class="language-python" data-src="tinygrad/engine/jit.py:24-37">@rewrite_group(lambda linear,held_bufs,input_uops,input_vars,ret=(): f"JIT {pluralize('call', len(linear.src))}")
+def jit_lower(linear:UOp, held_bufs:set[UOp], input_uops:list[UOp], input_vars:dict[str, int]) -&gt; UOp:
+  if VIZ: graph_rewrite(linear, PatternMatcher([]), name="View captured linear")
+
+  # parametrize input buffers: map each input buffer UOp to a PARAM with the correct slot index
+  linear = linear.substitute({u: UOp.param(i, u.dtype, u.max_numel(), u.device) for i,u in enumerate(input_uops)}, walk=True)
+  # unbind input variables, they change every call and are read from var_vals. any other binding was fixed at capture and stays
+  linear = linear.substitute({v: v.unbound() for v in linear.toposort() if v.is_bound_var and v.expr in input_vars}, walk=True)
+  linear = memory_plan_rewrite(linear, held_bufs)
+  scratch = {u: UOp.alloc((u.max_numel(),), u.dtype, device=u.device) for u in linear.toposort() if u.op is Ops.BUFFER and u not in held_bufs}
+  linear = linear.substitute(scratch, walk=True)
+  linear = compile_linear(linear, beam=getenv("JITBEAM", BEAM.value), input_uops=input_uops, cache=False)
+  if VIZ: graph_rewrite(linear, PatternMatcher([]), name="View compiled linear")
+  return linear</code></pre>
+  <p>Inputs → transformation → output, step by step:</p>
+  <ol>
+    <li><b>Concatenate</b> all captured LINEARs into <code>big_linear</code> (in <code>__call__</code>).</li>
+    <li><b>Parametrize inputs</b>: every input buffer UOp (one per Tensor argument, found by <code>_prepare_jit_inputs</code>) is substituted by
+      <code>UOp.param(i, …)</code>. Slot <code>i</code> = position in the input list. This is the "input buffer replacement": the program now
+      reads input <em>i</em> through a parameter instead of a fixed buffer.</li>
+    <li><b>Unbind input Variables</b>: a <code>Variable("n").bind(5)</code> passed in becomes unbound, so its value is read from
+      <code>var_vals</code> at every replay. Bindings that were <em>not</em> inputs stay fixed.</li>
+    <li><b>Memory plan</b> (<a class="src" data-path="tinygrad/schedule/memory.py" data-line="19">memory_plan_rewrite</a>, <a href="12-schedule.html">Chapter 12</a>):
+      all intermediates that are not <code>held_bufs</code> get lifetimes and are suballocated into shared arenas. Held = anything reachable from a
+      live Tensor (weights, the returned outputs, a lazily created <code>.grad</code>) or already allocated (constants copied in).</li>
+    <li><b>Scratch → ALLOC</b>: remaining unplanned BUFFERs become <code>ALLOC</code> placeholders, bound to fresh storage at link time.</li>
+    <li><b>Compile</b> with <code>compile_linear</code> (BEAM taken from <code>JITBEAM</code>, falling back to <code>BEAM</code>). On HCQ devices this is also
+      where the whole step is batched into one host submit program.</li>
+  </ol>
+  <p>Then <code>CapturedJit(ret, linear, names, expected_input_info)</code> is built and immediately called with the capture's inputs — so call 2
+  does compute real outputs.</p>
+
+  <div class="codecap"><b>examples/18_jit_inside.py</b> — run with <code>DEV=CPU python3 examples/18_jit_inside.py</code></div>
+  <pre><code class="language-python" data-file="examples/18_jit_inside.py"># Chapter 18 — what TinyJit does on call 1, 2 and 3+, and what the captured LINEAR contains.
+# run: DEV=CPU python3 examples/18_jit_inside.py
+from tinygrad import Tensor, TinyJit, nn
+from tinygrad.uop.ops import Ops
+from tinygrad.engine.realize import get_call_arg_uops
+from tinygrad.helpers import GlobalCounters
+
+Tensor.manual_seed(0)
+l1, l2 = nn.Linear(8, 16), nn.Linear(16, 4)
+Tensor.realize(*nn.state.get_parameters([l1, l2]))   # realize the weights first, otherwise their (lazy, random) init is part of the graph
+@TinyJit
+def step(x): return l2(l1(x).relu()).softmax().realize()
+
+for i in range(4):
+  x = Tensor.randn(2, 8).realize()
+  GlobalCounters.reset()
+  phase = {0: "ignore (run normally)", 1: "capture", 2: "replay"}.get(step.cnt, "replay")
+  out = step(x)
+  print(f"call {i+1}: cnt was {i} -&gt; {phase:22s} kernels run: {GlobalCounters.kernel_count}  out[0]={[round(v, 4) for v in out.tolist()[0]]}")
+
+cap = step.captured
+lin = cap._linear
+print("\ncaptured:", type(cap).__name__, "| expected_names", cap.expected_names,
+      "| input info (view, vars, dtype, device):", [(v.op.name, vs, str(dt), d) for v, vs, dt, d in cap.expected_input_info])
+print("the captured LINEAR has", len(lin.src), "compiled CALLs:")
+for c in lin.src:
+  body = c.without_after.body
+  def kind(a):
+    a0 = a
+    while a.op in (Ops.SHRINK, Ops.BITCAST, Ops.RESHAPE): a = a.src[0]
+    if a.op is Ops.PARAM: return f"PARAM#{a.arg.slot}(jit input)"
+    if a.op is Ops.ALLOC: return "ALLOC(planned scratch)"
+    if a.op is Ops.BUFFER: return f"BUFFER({a.arg.buffer.nbytes}B, baked in)"
+    return a.op.name
+  name = body.src[0].arg.name if body.op is Ops.PROGRAM else body.op.name
+  print(f"  {name:20s} args: {[kind(a) for a in get_call_arg_uops(c.without_after)]}")
+
+ret_buf = out.uop.buffer
+print("\nreturned tensor is the SAME buffer every replay:", ret_buf is step(Tensor.randn(2, 8).realize()).uop.buffer)
+print("the weights are captured by reference (BUFFER), not copied: l1.weight buffer in linear?",
+      any(u.op is Ops.BUFFER and u.arg.buffer is l1.weight.uop.buffer for u in lin.toposort()))</code></pre>
+  <pre class="output"><code data-out="18_jit_inside">call 1: cnt was 0 -&gt; ignore (run normally)  kernels run: 5  out[0]=[0.2606, 0.2309, 0.3268, 0.1817]
+call 2: cnt was 1 -&gt; capture                kernels run: 5  out[0]=[0.1755, 0.1381, 0.2702, 0.4162]
+call 3: cnt was 2 -&gt; replay                 kernels run: 5  out[0]=[0.2112, 0.1976, 0.3149, 0.2763]
+call 4: cnt was 3 -&gt; replay                 kernels run: 5  out[0]=[0.2272, 0.2385, 0.2888, 0.2456]
+
+captured: CapturedJit | expected_names [0] | input info (view, vars, dtype, device): [('RESHAPE', (), 'dtypes.f32', 'CPU')]
+the captured LINEAR has 5 compiled CALLs:
+  r_2_16_8             args: ['ALLOC(planned scratch)', 'PARAM#0(jit input)', 'BUFFER(512B, baked in)', 'BUFFER(64B, baked in)']
+  r_2_4_16             args: ['ALLOC(planned scratch)', 'ALLOC(planned scratch)', 'BUFFER(256B, baked in)', 'BUFFER(16B, baked in)']
+  r_2_4                args: ['ALLOC(planned scratch)', 'ALLOC(planned scratch)']
+  r_2_4                args: ['ALLOC(planned scratch)', 'ALLOC(planned scratch)', 'ALLOC(planned scratch)']
+  E_2_4                args: ['BUFFER(32B, baked in)', 'ALLOC(planned scratch)', 'ALLOC(planned scratch)', 'ALLOC(planned scratch)']
+
+returned tensor is the SAME buffer every replay: True
+the weights are captured by reference (BUFFER), not copied: l1.weight buffer in linear? True</code></pre>
+
+  <div class="demo" id="demo-lin">
+    <div class="demo-title">What's inside the captured LINEAR</div>
+    <div class="demo-desc">The five CALLs from the run above, with each argument colored by what it became. Press <b>replay with a new x</b>: only the
+    yellow <code>PARAM#0</code> is resolved to a different buffer (by <code>_resolve</code> in <code>exec_kernel</code>); weights (orange) are the same
+    Buffers by reference; purple scratch lives in the planned arena and is reused every replay.</div>
+    <div class="controls"><button class="primary" id="lin-replay">replay with a new x</button> <span id="lin-note" style="font-family:var(--mono);font-size:13px;color:var(--dim)"></span></div>
+    <div class="ch18-lin" id="lin-rows"></div>
+    <div class="ch18-legend"><span style="--c:var(--yellow)">PARAM — JIT input, swapped per call</span><span style="--c:var(--gold)">BUFFER — baked-in reference (weights, output)</span><span style="--c:var(--purple)">ALLOC — planned scratch</span></div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="replay"><span class="sec">18.4</span>Replay: <code>CapturedJit.__call__</code></h2>
+  <div class="codecap"><b>tinygrad/engine/jit.py</b> — <a class="src" data-path="tinygrad/engine/jit.py" data-line="49">CapturedJit</a></div>
+  <pre><code class="language-python" data-src="tinygrad/engine/jit.py:49-80">@dataclass
+class CapturedJit(Generic[ReturnType]):
+  ret: Any  # includes the Tensors or any other returned object
+  _linear: UOp
+  expected_names: list[int|str]
+  expected_input_info: list[tuple[UOp, tuple[Variable, ...], DType, str]]  # (view, variables, dtype, device) per input
+  _linears: dict[tuple[UOp, ...], tuple[UOp, dict[UOp, UOp]]] = field(default_factory=dict)  # aliased inputs -&gt; (linked linear with copies, staging)
+
+  def __reduce__(self): return self.__class__, (self.ret, self._linear, self.expected_names, self.expected_input_info)
+
+  @functools.cached_property
+  def _jit_bufs(self) -&gt; set[UOp]: return {u for u in self._linear.toposort() if u.op is Ops.BUFFER}
+
+  @functools.cached_property
+  def _symbolic_ret(self) -&gt; list[tuple[Tensor, UOp, dict[Variable, int]]]:
+    return [(t, *ub) for t in get_parameters(self.ret) if (ub:=t.uop.unbind_all())[1]]
+
+  def __call__(self, input_uops:list[UOp], var_vals:dict[str, int]) -&gt; ReturnType:
+    # aliased inputs
+    if (aliased:=tuple(u for u in input_uops if u in self._jit_bufs)) not in self._linears:
+      if any(u.on_disk() for u in aliased): raise JitError("cannot make an independent copy of a written DISK input")
+      staging = {u: UOp.new_buffer(u.device, u.max_numel(), u.dtype) for u in aliased}
+      copies = compile_linear(UOp(Ops.LINEAR, src=tuple(s.store_call(u) for u,s in staging.items())))
+      self._linears[aliased] = (link_linear(self._linear.replace(src=copies.src+self._linear.src)), staging)
+
+    linear, staging = self._linears[aliased]
+    if DEBUG &gt;= 1 and len(linear.src) &gt;= 10: print(f"jit execs {len(linear.src)} calls")
+    run_linear(linear, var_vals, input_uops=[staging.get(u, u) for u in input_uops], jit=True)
+    for t,u,vals in self._symbolic_ret: t.uop = u.substitute({v:v.bind(var_vals.get(v.expr, i)) for v,i in vals.items()}, walk=True)
+    return self.ret
+
+  def free_intermediates(self): self._linears.clear()</code></pre>
+  <ul>
+    <li><b>Linking is done once per alias pattern.</b> <code>_linears</code> caches the <em>linked</em> program keyed by which inputs alias the JIT's
+      own buffers. Normally that tuple is empty, so <code>link_linear</code> runs on the first replay only.</li>
+    <li><b>Aliased inputs.</b> If you feed the JIT's own output back in as an input (common in RNNs/KV caches:
+      <code>x = step(x)</code>), the input would be overwritten while being read. The JIT detects this and prepends staging copies
+      (<code>staging[u] = new buffer</code>, copy <code>u → staging</code>) and passes the staging buffer instead.</li>
+    <li><b>The run.</b> <code>run_linear(linear, var_vals, input_uops, jit=True)</code>: with <code>jit=True</code> it skips compile and link and goes
+      straight to <code>pm_exec</code> for each CALL. <code>exec_kernel</code>'s <code>_resolve</code> maps <code>PARAM(slot)</code> → <code>input_uops[slot]</code>.</li>
+    <li><b>Symbolic outputs.</b> If a returned tensor has a symbolic shape, its UOp is re-bound to the new Variable values
+      (<code>_symbolic_ret</code>) so <code>out.shape</code> reflects this call.</li>
+  </ul>
+  <h3>The guard: <code>_prepare_jit_inputs</code></h3>
+  <pre><code class="language-python" data-src="tinygrad/engine/jit.py:82-100">def _prepare_jit_inputs(args, kwargs):
+  input_tensors: list[tuple[int|str, Tensor]] = [(name,t) for name,t in list(enumerate(args))+sorted(kwargs.items()) if t.__class__ is Tensor]
+  names, tensors = [name for name,_ in input_tensors], [t for _,t in input_tensors]
+  # extract tensors from containers (shallow, not recursive to avoid grabbing model weights)
+  for x in args + tuple(kwargs.values()):
+    it = x if isinstance(x, (tuple,list)) else x.values() if isinstance(x, dict) else []
+    tensors += [t for t in it if t.__class__ is Tensor and not any(t is y for y in tensors)]
+  def get_input_uops() -&gt; list[UOp]: return flatten([[t.uop.src[0]] if t.uop.op is Ops.UNSHARD else [t.uop] for t in tensors])
+  if any(u.is_virtual for u in get_input_uops()): raise JitError("JIT inputs must be real buffers; use .clone()")
+  if len(unrealized_tensors := [x for x in tensors if not x.uop.is_realized]): Tensor.realize(*unrealized_tensors)
+  input_uops = get_input_uops()
+  # collect buffer UOps (including MultiBuffer)
+  input_buf_uops: list[UOp] = [u.base for u in input_uops if u.base.realized is not None]
+  if len(set(input_buf_uops)) != len(input_buf_uops): raise JitError("duplicate inputs to JIT")
+  inputs = [(*(u.substitute({u.base:UOp(Ops.NOOP)}, extra_pm=mop_cleanup).unbind_all()), u.dtype, u.device) for u in input_uops]
+  _var_vals = merge_dicts([x[1] for x in inputs] + [dict(v.unbind() for v in (args + tuple(kwargs.values())) if isinstance(v, UOp))])
+  var_vals = {k.expr:v for k,v in _var_vals.items()}
+  expected_input_info = [(x[0], tuple(sorted(x[1].keys(), key=lambda v: v.expr)), x[2], x[3]) for x in inputs]
+  return input_buf_uops, var_vals, names, expected_input_info</code></pre>
+  <p>Inputs are Tensors in positional args and kwargs (plus Tensors directly inside a list/tuple/dict arg — <em>shallow</em>, so a model object
+  passed as an argument is not treated as inputs). They're realized first; then for each input the JIT records
+  <code>(view, variables, dtype, device)</code> — the view is the movement-op chain with the base replaced by <code>NOOP</code>. Replay compares
+  names and this info and raises <code>JitError("args mismatch in JIT…")</code> on any difference.</p>
+  <div class="callout warn"><span class="title">A sharp edge (verified)</span>The size of a plain contiguous 1-D input is <em>not</em> in its view (the
+  view is just <code>NOOP</code>), so calling a JIT captured on a 3-element vector with a 4-element vector raises nothing and silently runs the
+  3-element kernels (§18.6, "size change"). A 2-D input carries a <code>RESHAPE</code> in its view, so a shape change there <em>is</em> caught.
+  Treat "same shapes every call" as your responsibility, and use Variables for dimensions that change.</div>
+
+  <div class="quiz" data-answer="1">
+    <div class="q">During the capture call (call 2), how many kernels are executed and when?</div>
+    <button class="opt">None — capture only records; outputs appear on call 3.</button>
+    <button class="opt">All of them, once, after capture: the recorded linears are combined, lowered by <code>jit_lower</code>, and the new <code>CapturedJit</code> is called immediately.</button>
+    <button class="opt">All of them, twice: once while recording and once more from the captured program.</button>
+    <div class="explain">While recording, <code>create_linear_with_vars</code> returns an empty LINEAR, so nothing runs. Then
+    <code>ret = self.captured(input_buf_uops, var_vals)</code> executes the planned program once. The example shows 5 kernels on call 2.</div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="vars"><span class="sec">18.5</span>Symbolic variables in the JIT</h2>
+  <p>To JIT a function whose sizes change (sequence length, KV-cache position), pass the changing integer as a bound
+  <code>Variable</code>. It becomes a kernel <em>argument</em> instead of a constant: <code>jit_lower</code> unbinds it, the kernel reads it from
+  <code>var_vals</code>, and loop bounds/launch dims are symbolic (<code>ProgramInfo.launch_dims(var_vals)</code>, <a href="06-symbolic.html">Chapter 6</a>).</p>
+  <pre><code class="language-python">v = Variable("n", 1, 8)              # name, min, max — max sizes the buffers
+@TinyJit
+def f5(x, n): return x[:n].sum().realize()
+[f5(big, v.bind(n)).item() for n in (2, 3, 5, 8)]   # -> [3.0, 6.0, 15.0, 36.0]  (one capture, four sizes)</code></pre>
+  <p>Compare the plain Python <code>int</code> version: <code>f2(x, k)</code> captured with <code>k=2</code> returns <code>x*2</code> forever (next section).</p>
+
+  <!-- ============================================================ -->
+  <h2 id="rules"><span class="sec">18.6</span>What gets baked in — and what raises <code>JitError</code></h2>
+  <div class="codecap"><b>examples/18_jit_rules.py</b> — run with <code>DEV=CPU python3 examples/18_jit_rules.py</code></div>
+  <pre><code class="language-python" data-file="examples/18_jit_rules.py"># Chapter 18 — TinyJit's rules: what is baked in, what raises JitError, and what silently goes wrong.
+# run: DEV=CPU python3 examples/18_jit_rules.py
+from tinygrad import Tensor, TinyJit, Variable
+from tinygrad.engine.jit import JitError
+def attempt(name, fn):
+  try: print(f"{name}: OK -&gt;", fn())
+  except Exception as e: print(f"{name}: {type(e).__name__}: {str(e)[:150]}")
+
+# 1. item() inside the jit
+@TinyJit
+def f1(x): return (x*2).sum().item()
+attempt("item inside", lambda: [f1(Tensor([1.,2,3]).realize()) for _ in range(3)])
+
+# 2. python value baked in
+@TinyJit
+def f2(x, k): return (x*k).realize()
+attempt("python scalar baked", lambda: [f2(Tensor([1.,2,3]).realize(), k).tolist() for k in (1,2,3,4)])
+
+# 3a. shape change of a reshaped input: the input's view (RESHAPE) is part of expected_input_info -&gt; JitError
+@TinyJit
+def f3(x): return (x+1).realize()
+attempt("shape change (2-D view)", lambda: [f3(Tensor.ones(n, 2).contiguous().realize()).shape for n in (3,3,3,4)])
+
+# 3b. size change of a plain 1-D buffer: its view is a bare NOOP, nothing to compare -&gt; stale replay, no error!
+@TinyJit
+def f3b(x): return (x+1).realize()
+attempt("size change (plain 1-D buffer)", lambda: [f3b(Tensor([1.]*n).realize()).tolist() for n in (3,3,3,4)])
+
+# 4. duplicate inputs
+@TinyJit
+def f4(x, y): return (x+y).realize()
+t = Tensor([1.,2]).realize()
+attempt("duplicate", lambda: f4(t, t))
+
+# 5. variable
+@TinyJit
+def f5(x, n): return x[:n].sum().realize()
+big = Tensor([1.,2,3,4,5,6,7,8]).realize()
+v = Variable("n", 1, 8)
+attempt("variable", lambda: [f5(big, v.bind(n)).item() for n in (2,3,5,8)])
+
+# 6. nothing to jit
+@TinyJit
+def f6(x): return x
+attempt("nothing", lambda: [f6(Tensor([1.]).realize()) for _ in range(3)])
+
+# 7. random inside jit
+@TinyJit
+def f7(x): return (x + Tensor.rand(3)).realize()
+attempt("rand", lambda: [[round(v,3) for v in f7(Tensor.zeros(3).contiguous().realize()).tolist()] for _ in range(4)])</code></pre>
+  <pre class="output"><code data-out="18_jit_rules">item inside: JitError: cannot access tensor data during JIT capture, the value will be baked in
+python scalar baked: OK -&gt; [[1.0, 2.0, 3.0], [2.0, 4.0, 6.0], [2.0, 4.0, 6.0], [2.0, 4.0, 6.0]]
+shape change (2-D view): JitError: args mismatch in JIT: self.captured.expected_input_info=[(UOp(Ops.RESHAPE, arg=None, src=(
+  UOp(Ops.NOOP, arg=None, src=()),
+  UOp(Ops.STACK, arg=Non
+size change (plain 1-D buffer): OK -&gt; [[2.0, 2.0, 2.0], [2.0, 2.0, 2.0], [2.0, 2.0, 2.0], [2.0, 2.0, 2.0]]
+duplicate: JitError: duplicate inputs to JIT
+variable: OK -&gt; [3.0, 6.0, 15.0, 36.0]
+nothing: JitError: didn't JIT anything!
+rand: OK -&gt; [[0.946, 0.359, 0.389], [0.864, 0.811, 0.035], [0.741, 0.019, 0.564], [0.704, 0.336, 0.429]]</code></pre>
+  <p>Read each line against the mechanism:</p>
+  <ul>
+    <li><b>item inside</b> → <code>_buffer()</code> raises during capture.</li>
+    <li><b>python scalar baked</b> → call 1 used <code>k=1</code>, capture used <code>k=2</code>; the constant 2 is in the kernel. Calls 3 and 4 return ×2.</li>
+    <li><b>shape change (2-D)</b> → caught by <code>expected_input_info</code>. <b>size change (1-D)</b> → not caught (see the warning above).</li>
+    <li><b>duplicate</b> → the same buffer twice would get two PARAM slots aliasing each other; refused.</li>
+    <li><b>variable</b> → correct for every <code>n</code>.</li>
+    <li><b>nothing</b> → the function never realized anything new (it returned its input): <code>didn't JIT anything!</code></li>
+    <li><b>rand</b> → different numbers every replay. Random state is a <em>buffer</em> (a counter updated by a kernel), not a Python value, so it advances
+      inside the replayed program.</li>
+  </ul>
+
+  <div class="demo" id="demo-baked">
+    <div class="demo-title">Quiz: what gets baked in?</div>
+    <div class="demo-desc">For each jitted function, decide what happens on calls 3+. Answers are backed by the real runs above and by the code.</div>
+    <div class="ch18-score" id="baked-score"></div>
+    <div class="ch18-baked" id="baked"></div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="timing"><span class="sec">18.7</span>Measured: what the JIT saves on a CPU</h2>
+  <div class="codecap"><b>examples/18_jit_timing.py</b> — run with <code>DEV=CPU python3 examples/18_jit_timing.py</code> (writes <code>data/ch18_timings.json</code>)</div>
+  <pre><code class="language-python" data-file="examples/18_jit_timing.py"># Chapter 18 — measure the Python overhead the JIT removes, for a small MLP on the CPU.
+# run: DEV=CPU python3 examples/18_jit_timing.py      (writes data/ch18_timings.json)
+import time, json, pathlib
+from tinygrad import Tensor, TinyJit, nn
+from tinygrad.engine.realize import run_linear
+from tinygrad.helpers import GlobalCounters
+
+N = 40
+def med(xs): return sorted(xs)[len(xs)//2]
+
+def run_config(inp, hidden, out, batch):
+  Tensor.manual_seed(0)
+  l1, l2 = nn.Linear(inp, hidden), nn.Linear(hidden, out)
+  def forward(x): return l2(l1(x).relu()).log_softmax()
+  def step(x): return forward(x).realize()
+  jstep = TinyJit(step)
+  xs = [Tensor.randn(batch, inp).realize() for _ in range(N)]
+
+  def bench(f):
+    ts = []
+    for x in xs:
+      st = time.perf_counter(); f(x); ts.append((time.perf_counter() - st) * 1e3)
+    return ts
+  plain, jit = bench(step), bench(jstep)
+
+  # where does the non-JIT time go? build the lazy graph / schedule it / run it (compile+link+exec)
+  phases = {"build graph": [], "schedule (linear_with_vars)": [], "run_linear (compile+link+exec)": []}
+  for x in xs:
+    t0 = time.perf_counter(); y = forward(x)
+    t1 = time.perf_counter(); lin, vv = Tensor.linear_with_vars(y)
+    t2 = time.perf_counter(); run_linear(lin, vv)
+    t3 = time.perf_counter()
+    for k, d in zip(phases, (t1 - t0, t2 - t1, t3 - t2)): phases[k].append(d * 1e3)
+  ncalls = len(lin.src)
+
+  # how many kernels does one JIT replay launch?
+  GlobalCounters.reset(); jstep(xs[0]); kcount = GlobalCounters.kernel_count
+  return {"shape": f"{inp}-&gt;{hidden}-&gt;{out}, batch {batch}", "plain_ms": plain, "jit_ms": jit,
+          "phases_ms": {k: med(v[5:]) for k, v in phases.items()}, "calls": ncalls, "kernels_per_replay": kcount,
+          "plain_median": med(plain[5:]), "jit_median": med(jit[5:])}
+
+results = [run_config(64, 128, 10, 16), run_config(784, 1024, 10, 64)]
+for r in results:
+  print(f"MLP {r['shape']}: {r['calls']} CALLs per step")
+  print(f"  without JIT : first calls {[round(t, 2) for t in r['plain_ms'][:3]]} ms, median {r['plain_median']:.3f} ms")
+  print(f"  with TinyJit: first calls {[round(t, 2) for t in r['jit_ms'][:3]]} ms, median {r['jit_median']:.3f} ms"
+        f"  -&gt; {r['plain_median']/r['jit_median']:.1f}x faster")
+  print("  non-JIT breakdown (median):", {k: round(v, 3) for k, v in r["phases_ms"].items()})
+path = pathlib.Path(__file__).resolve().parent.parent / "data" / "ch18_timings.json"
+path.write_text(json.dumps(results))
+print("wrote", path.name)</code></pre>
+  <pre class="output"><code data-out="18_jit_timing">MLP 64-&gt;128-&gt;10, batch 16: 5 CALLs per step
+  without JIT : first calls [447.1, 29.94, 9.76] ms, median 9.367 ms
+  with TinyJit: first calls [9.55, 10.69, 0.87] ms, median 0.633 ms  -&gt; 14.8x faster
+  non-JIT breakdown (median): {'build graph': 1.504, 'schedule (linear_with_vars)': 4.447, 'run_linear (compile+link+exec)': 3.536}
+MLP 784-&gt;1024-&gt;10, batch 64: 5 CALLs per step
+  without JIT : first calls [666.92, 34.2, 16.2] ms, median 15.972 ms
+  with TinyJit: first calls [15.39, 15.82, 6.56] ms, median 6.554 ms  -&gt; 2.4x faster
+  non-JIT breakdown (median): {'build graph': 1.547, 'schedule (linear_with_vars)': 4.544, 'run_linear (compile+link+exec)': 9.538}
+wrote ch18_timings.json</code></pre>
+
+  <div class="demo ch18-chart" id="demo-chart">
+    <div class="demo-title">Per-call time, with and without TinyJit (real measurements)</div>
+    <div class="demo-desc">40 calls each, measured in this orb. Toggle the model size and the log scale; hover a bar for its value. The stacked bar
+    breaks the non-JIT median into the three phases measured separately.</div>
+    <div class="controls" id="chart-ctl"></div>
+    <div id="chart-svg"></div>
+    <div class="ch18-legend"><span style="--c:#FC6255">no JIT</span><span style="--c:#83C167">TinyJit</span><span style="--c:#58C4DD">build graph</span><span style="--c:#F4D345">schedule</span><span style="--c:#9A72AC">run_linear (compile+link+exec)</span></div>
+    <div id="chart-note" style="font-size:14px;color:var(--dim)"></div>
+  </div>
+  <p>What the numbers say:</p>
+  <ul>
+    <li><b>Only the very first call is ~0.5 s</b> — that's compilation (clang, plus the first schedule), paid by the non-JIT run that went first.
+      Non-JIT call 2 is still ~30 ms (likely because call 1 also realized the lazy weight initialization, so the graph differs), then ~9 ms
+      steady. The JIT run came second with warm caches: its calls 1 and 2 (warm-up and capture) cost about a normal non-JIT step, and from call 3
+      on it replays.</li>
+    <li><b>The small MLP is pure overhead.</b> Without the JIT ≈9.4 ms per step: ~1.5 ms building the lazy graph, ~4.4 ms scheduling (even with the
+      schedule cache hit, the graph must be hashed and rewritten), ~3.5 ms in <code>run_linear</code> (cache lookups, linking, dispatch of 5 kernels,
+      plus the kernels themselves). With the JIT ≈0.6 ms: ~15× faster.</li>
+    <li><b>Bigger model, smaller win.</b> At 784→1024→10, batch 64, the kernels themselves take ~6 ms, so the JIT's ~9 ms saving gives 2.4×. The JIT
+      removes overhead; it does not make kernels faster.</li>
+    <li>On GPUs the effect is larger still: replay goes through one batched HCQ submission, so the per-kernel cost is a few command words.</li>
+  </ul>
+
+  <div class="quiz" data-answer="2">
+    <div class="q">A model's kernels take 20 ms per step on the GPU, and Python overhead without the JIT is 8 ms. Roughly what does TinyJit give?</div>
+    <button class="opt">~15× like the small MLP.</button>
+    <button class="opt">Nothing — the JIT only helps on CPU.</button>
+    <button class="opt">At most ~28/20 = 1.4× (if the remaining overhead is near zero and execution isn't already overlapped with Python).</button>
+    <div class="explain">The JIT removes Python work, not kernel time. On a GPU, async launches can already overlap some Python with execution, so
+    the real gain may be smaller still.</div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="function"><span class="sec">18.8</span><code>@function</code>: capture at the graph level</h2>
+  <p>TinyJit captures <em>after</em> scheduling: a list of compiled kernels. <a class="src" data-path="tinygrad/function.py" data-line="39">@function</a>
+  captures <em>before</em> scheduling: it turns a Python function into a single <code>CALL</code> UOp in the lazy tensor graph, whose body is the
+  function's graph with every input replaced by a <code>PARAM</code>. Nothing runs when you call it, and it composes with autograd, other
+  functions, the JIT, and multi-device.</p>
+  <div class="codecap"><b>tinygrad/function.py</b> — <a class="src" data-path="tinygrad/function.py" data-line="50">_function.__call__</a></div>
+  <pre><code class="language-python" data-src="tinygrad/function.py:50-98">  def __call__(self, *args, **kwargs) -&gt; ReturnType:
+    st = time.perf_counter()
+
+    params = get_state_dict((args, kwargs), tensor_type=(Tensor, UOp)).values()
+
+    # deduplicate input_uops, keeping the first occurrence index for each unique uop
+    call_uops: list[UOp] = dedup([u for t in params if (u:=t._uop).device is not None])
+
+    # disable realize/schedule while this is running
+    # run it and do surgery later
+    alloc_start = next(UOp.unique_num)
+    with Context(ALLOW_DEVICE_USAGE=getenv("DEVICE_IN_FUNCTION_BUG", 0)):
+      _function.depth += 1
+      try:
+        ret = self.fxn(*args, **kwargs)
+      finally:
+        _function.depth -= 1
+    if isinstance(ret, Tensor):
+      uret = ret.uop
+    elif isinstance(ret, tuple) and all(isinstance(x, Tensor) for x in ret):
+      uret = UOp.sink(*[x.uop for x in ret])
+    else:
+      raise RuntimeError(f"function return type {type(ret)} not supported")
+
+    # replace the known inputs with params (using deduplicated slots)
+    subs = {x:x.param_like(i) for i,x in enumerate(call_uops)}
+    uret = uret.substitute(subs)
+
+    # caller-owned storage left in the graph becomes implicit inputs
+    num_explicit = len(call_uops)
+    uret = graph_rewrite(uret, pm_ctx, (call_uops, invalid_outputs(uret), alloc_start), bottom_up=True, name="get_implicit_inputs")
+    uret = renumber_invalid_outputs(uret)
+    name = getattr(self.fxn, '__qualname__', None) or type(self.fxn).__qualname__
+    if not self.allow_implicit:
+      implicit_buffers = [x for x in call_uops[num_explicit:] if x.op in {Ops.BUFFER, Ops.ALLOC}]
+      if implicit_buffers:
+        buf_strs = '\n  '.join(f"{i}: dtype={b.dtype}, size={b.max_numel()}, device={b.device}" for i,b in enumerate(implicit_buffers))
+        raise RuntimeError(f"function {name} has {len(implicit_buffers)} implicit buffer(s), but allow_implicit=False\n  {buf_strs}")
+
+    outs = UOp.call_with_outputs(uret.src if isinstance(ret, tuple) else (uret,), *call_uops, grad_fxn=self.grad_fxn, name=name,
+                                 precompile=self.precompile, precompile_backward=self.precompile_backward)
+
+    if DEBUG &gt;= 2:
+      print("  "*_function.depth+f"function {uret.key.hex()[:8]} in {(time.perf_counter()-st)*1000:8.2f} ms: {name}")
+
+    if isinstance(ret, tuple):
+      return cast(ReturnType, tuple(Tensor(o) for o in outs))
+    else:
+      return cast(ReturnType, Tensor(outs[0]))</code></pre>
+  <ol>
+    <li>Collect the Tensor/UOp arguments (via <code>get_state_dict</code>, so nested structures work) → <code>call_uops</code>.</li>
+    <li>Run the Python function with <code>ALLOW_DEVICE_USAGE=0</code>: building the graph is fine, realizing is not.</li>
+    <li>Replace each input by <code>x.param_like(i)</code>.</li>
+    <li><b>Implicit inputs</b> (<code>pm_ctx</code>): any caller-owned storage still in the graph — a global weight you closed over — becomes an extra
+      parameter. With the default <code>allow_implicit=False</code> this raises, listing the buffers.</li>
+    <li>Build the CALL with <code>UOp.call_with_outputs</code>: outputs become <code>ALLOC</code>s passed as extra args, and the returned Tensors are
+      <code>output.after(call)</code>.</li>
+  </ol>
+  <div class="codecap"><b>examples/18_function.py</b> — run with <code>DEV=CPU python3 examples/18_function.py</code></div>
+  <pre><code class="language-python" data-file="examples/18_function.py"># Chapter 18 — @function: capture a Python function as ONE reusable CALL in the tensor graph (graph-level capture).
+# run: DEV=CPU python3 examples/18_function.py
+from tinygrad import Tensor, function
+from tinygrad.uop.ops import Ops
+
+w = Tensor.randn(4, 4).realize()
+
+# 1) w is used inside but not passed in: it is an "implicit" input. The default refuses that.
+@function
+def strict(x: Tensor) -&gt; Tensor: return (x @ w).relu()
+try: strict(Tensor.randn(2, 4).realize())
+except RuntimeError as e: print("1 strict     :", str(e).replace("\n", " | "))
+
+# 2) allow_implicit=True turns w into an extra parameter of the CALL
+@function(allow_implicit=True)
+def layer(x: Tensor) -&gt; Tensor: return (x @ w).relu()
+
+x = Tensor.randn(2, 4).realize()
+y = layer(x)                                 # traces the Python function ONCE per call, but builds no kernels
+call = next(u for u in y.uop.toposort() if u.op is Ops.CALL)
+print("2 y.uop      :", y.uop.op.name, "of a", call.op.name, "| CallInfo:", call.arg)
+print("  CALL srcs  :", [s.op.name for s in call.src], " &lt;- (body, x, w, output ALLOC/BUFFER)")
+params = sorted({u for u in call.body.toposort() if u.op is Ops.PARAM}, key=lambda p: p.arg.slot)
+print("  body PARAMs:", [(p.arg.slot, p.max_numel()) for p in params], " slot 0 = x (8 elems), 1 = w (16), 2 = the output (8)")
+print("  is_inline_call:", call.is_inline_call, "(inlined into the caller's graph at schedule time)")
+
+# 3) a second call with a different x reuses the SAME body UOp (hash-consing), so the schedule cache hits
+y2 = layer(Tensor.randn(2, 4).realize())
+call2 = next(u for u in y2.uop.toposort() if u.op is Ops.CALL)
+print("3 same body object for a new input:", call2.body is call.body)
+print("  values:", [round(v, 3) for v in y.tolist()[0]], "| reference:", [round(v, 3) for v in (x @ w).relu().tolist()[0]])
+
+# 4) precompile=True: the body is scheduled once on its own (a CALL of a LINEAR) instead of being inlined
+@function(precompile=True, allow_implicit=True)
+def layer_pc(x: Tensor) -&gt; Tensor: return (x @ w).relu()
+z = layer_pc(x)
+callp = next(u for u in z.uop.toposort() if u.op is Ops.CALL)
+print("4 precompile :", callp.arg, "| is_inline_call:", callp.is_inline_call, "| result matches:", z.tolist() == y.tolist())</code></pre>
+  <pre class="output"><code data-out="18_function">1 strict     : function strict has 1 implicit buffer(s), but allow_implicit=False |   0: dtype=dtypes.f32, size=16, device=CPU
+2 y.uop      : AFTER of a CALL | CallInfo: CallInfo(None, 'layer', False, False)
+  CALL srcs  : ['SINK', 'RESHAPE', 'BUFFER', 'RESHAPE']  &lt;- (body, x, w, output ALLOC/BUFFER)
+  body PARAMs: [(0, 8), (1, 16), (2, 8)]  slot 0 = x (8 elems), 1 = w (16), 2 = the output (8)
+  is_inline_call: True (inlined into the caller's graph at schedule time)
+3 same body object for a new input: True
+  values: [0.563, 0.0, 0.0, 2.231] | reference: [0.563, 0.0, 0.0, 2.231]
+4 precompile : CallInfo(None, 'layer_pc', True, False) | is_inline_call: False | result matches: True</code></pre>
+  <p>Why bother, if the function is inlined anyway (<code>is_inline_call: True</code> — <code>pm_inline_calls</code> in
+  <a class="src" data-path="tinygrad/schedule/prepare.py" data-line="173">schedule/prepare.py</a> substitutes the body back in)?
+  Because of <b>hash-consing</b>: calling <code>layer</code> on a new input yields the <em>same body UOp</em> ("same body object: True"), so a model
+  that applies one layer 32 times has one body, not 32 copies — graph building, hashing and the schedule cache all get cheaper. With
+  <code>precompile=True</code> the body is scheduled once on its own (<code>lower_sink_to_linear</code>, keyed by the body) into a reusable LINEAR,
+  and calls only bind parameters — that's how the LLM in <code>tinygrad/llm/model.py</code> uses it. <code>grad_fxn</code> lets you supply a custom backward.</p>
+  <table>
+    <tr><th></th><th>TinyJit</th><th>@function</th></tr>
+    <tr><td>captures</td><td>compiled kernels (a LINEAR of PROGRAM CALLs)</td><td>a lazy graph (a CALL with a SINK body)</td></tr>
+    <tr><td>when</td><td>call 2, by executing your function</td><td>every call, by tracing (cheap; body is hash-consed)</td></tr>
+    <tr><td>Python on replay</td><td>none</td><td>your function still runs each call (to build the graph)</td></tr>
+    <tr><td>composes with autograd</td><td>no (it's opaque kernels)</td><td>yes (a CALL has a gradient; <code>grad_fxn</code>)</td></tr>
+    <tr><td>data-dependent Python</td><td>baked in</td><td>re-evaluated every call (but no realize allowed inside)</td></tr>
+  </table>
+
+  <div class="quiz" data-answer="0">
+    <div class="q">Inside an <code>@function</code> body you call <code>x.sum().item()</code>. What happens?</div>
+    <button class="opt">It fails: the body runs under <code>ALLOW_DEVICE_USAGE=0</code>, so realizing (which needs a device) is disallowed.</button>
+    <button class="opt">It works and the value is baked into the CALL.</button>
+    <button class="opt">It raises <code>JitError</code>.</button>
+    <div class="explain"><code>_function.__call__</code> wraps the function in <code>Context(ALLOW_DEVICE_USAGE=getenv("DEVICE_IN_FUNCTION_BUG", 0))</code>;
+    the <code>Device.__getitem__</code> assertion "usage of device … disallowed" fires. <code>JitError</code> is TinyJit's.</div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="again"><span class="sec">18.9</span>Hammer it again: a training step under the JIT</h2>
+  <p>The canonical use, from <a class="src" data-path="examples/beautiful_mnist.py" data-line="21">examples/beautiful_mnist.py</a> (see <a href="20-nn-training.html">Chapter 20</a>):</p>
+  <pre><code class="language-python" data-src="examples/beautiful_mnist.py:21-27">  @TinyJit
+  @Context(TRAINING=1)
+  def train_step(self, X_train:Tensor, Y_train:Tensor) -&gt; Tensor:
+    opt.zero_grad()
+    samples = Tensor.randint(getenv("BS", 512), high=X_train.shape[0])
+    loss = self(X_train[samples]).sparse_categorical_crossentropy(Y_train[samples]).backward()
+    return loss.realize(*opt.schedule_step())</code></pre>
+  <ul>
+    <li>Weights and optimizer state are <b>held buffers</b> (reachable from live Tensors), updated in place by the captured kernels via
+      <code>STORE</code>/<code>AFTER</code> — so the replay really trains.</li>
+    <li>The learning rate as a Python float would be baked in; tinygrad's optimizers keep <code>lr</code> as a <em>Tensor</em> so schedulers can change it.</li>
+    <li>Returning <code>loss</code> without realizing weight updates would capture only the loss kernels — the updates would never run. That's why
+      the step realizes them together.</li>
+    <li>Printing <code>loss.item()</code> <em>outside</em> the jitted function is fine (it's a normal read of the returned buffer).</li>
+    <li>Note the batch is sampled <em>inside</em> the step with <code>Tensor.randint</code>: the random indices come from the RNG buffer, so each replay
+      trains on a new batch while <code>X_train</code> (a JIT input) stays the same buffer.</li>
+    <li>Data loading must produce real buffers: <code>JitError("JIT inputs must be real buffers; use .clone()")</code> for virtual inputs (e.g. a
+      broadcast const).</li>
+  </ul>
+  <div class="quiz" data-answer="1">
+    <div class="q">You JIT <code>def step(x): return model(x) if x.shape[0] > 1 else model(x[0:1])</code> and always call it with batch 32. Problem?</div>
+    <button class="opt">Yes: the <code>if</code> raises JitError.</button>
+    <button class="opt">No: the branch is evaluated in Python during capture with batch 32 and the same branch is valid on every replay with batch 32.</button>
+    <button class="opt">Yes: shapes can't be read inside a JIT.</button>
+    <div class="explain">Branching on shapes is fine as long as the shapes don't change between calls — and with 2-D inputs a change is caught by the
+    input check. Branching on <em>data</em> (<code>.item()</code>) is what's forbidden.</div>
+  </div>
+
+  <div class="summary-box"><h3>Chapter summary</h3><ul>
+    <li>TinyJit phases: <code>cnt=0</code> run normally (warm-up), <code>cnt=1</code> capture, <code>cnt≥2</code> replay without running your Python.</li>
+    <li>Capture works by a hook in <code>create_linear_with_vars</code>: with <code>capturing</code> set, LINEARs are recorded and an empty LINEAR is returned. Reading data raises <code>JitError</code>.</li>
+    <li><code>jit_lower</code>: inputs → <code>PARAM(i)</code>, input Variables unbound, intermediates memory-planned, scratch → <code>ALLOC</code>, then <code>compile_linear</code> once.</li>
+    <li>Replay = <code>run_linear(linked, var_vals, input_uops, jit=True)</code>; linking is cached; aliased inputs get staging copies; symbolic output shapes are re-bound.</li>
+    <li>Baked in: Python scalars, branches, shapes, the returned objects. Live: input buffers, bound Variables, buffers updated in place (weights, RNG counter).</li>
+    <li>On a CPU the small MLP went from ~9.4 ms to ~0.6 ms per step (15×); a heavier one 2.4× — the JIT removes overhead, not kernel time.</li>
+    <li><code>@function</code> captures a graph-level CALL (PARAMs for inputs, implicit inputs opt-in, hash-consed body, optional <code>precompile</code>).</li>
+  </ul></div>
+</main>
+</div>
+<script>
+const G = Guide, el = G.el;
+
+// ---------------- demo 1: state machine ----------------
+(function () {
+  let cnt = 0, capturedShape = null, jit0 = false, active = null;
+  const log = G.$("#sm-log");
+  const states = [
+    { id: 0, x: 40, y: 110, t: "cnt = 0", s: "ignore / warm-up", c: "#58C4DD" },
+    { id: 1, x: 260, y: 110, t: "cnt = 1", s: "capture", c: "#F4D345" },
+    { id: 2, x: 480, y: 110, t: "cnt ≥ 2", s: "replay", c: "#83C167" },
+  ];
+  const work = {
+    0: ["fxn(*args) runs", "graph built", "schedule + run_linear", "compile (caches fill)", "realize returned tensors"],
+    1: ["capturing.append(self)", "fxn(*args): linears recorded", "jit_lower: PARAMs, plan", "compile_linear once", "CapturedJit(...)(inputs)"],
+    2: ["_prepare_jit_inputs", "check names + input info", "fxn NOT called", "run_linear(jit=True)", "return captured ret"],
+  };
+  function draw() {
+    const svg = el("svg", { viewBox: "0 0 680 330" });
+    svg.append(el("defs", {}, el("marker", { id: "a18", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: "auto-start-reverse" }, el("path", { d: "M0,0 L10,5 L0,10 z", fill: "#9aa3ad" }))));
+    const arrow = (d, lab, lx, ly) => { svg.append(el("path", { d, stroke: "#9aa3ad", fill: "none", "stroke-width": 1.5, "marker-end": "url(#a18)" })); svg.append(el("text", { x: lx, y: ly, fill: "#9aa3ad", "font-size": 11, "font-family": "monospace", "text-anchor": "middle" }, lab)); };
+    arrow("M200,135 L258,135", "call", 229, 127);
+    arrow("M420,135 L478,135", "call", 449, 127);
+    arrow("M600,110 C640,60 560,60 580,106", "call 3, 4, …", 610, 60);
+    arrow("M340,180 C300,250 140,250 110,182", "reset()", 225, 262);
+    for (const s of states) {
+      const on = active === s.id;
+      const g = el("g", {});
+      g.append(el("rect", { x: s.x, y: s.y, width: 160, height: 60, rx: 30, fill: s.c + (on ? "55" : "18"), stroke: s.c, "stroke-width": on ? 3.5 : 1.5 }));
+      g.append(el("text", { x: s.x + 80, y: s.y + 27, "text-anchor": "middle", fill: s.c, "font-size": 15, "font-weight": 700, "font-family": "monospace" }, s.t));
+      g.append(el("text", { x: s.x + 80, y: s.y + 45, "text-anchor": "middle", fill: "#c9d1d9", "font-size": 11.5, "font-family": "monospace" }, s.s));
+      svg.append(g);
+    }
+    const shown = active == null ? null : work[active];
+    svg.append(el("text", { x: 20, y: 30, fill: "#e6e6e6", "font-size": 13, "font-family": "monospace" }, `step.cnt = ${cnt}${capturedShape ? "   captured for x: (" + capturedShape + ")" : ""}${jit0 ? "   [JIT=0]" : ""}`));
+    if (shown) shown.forEach((w, i) => svg.append(el("text", { x: 40 + i * 0, y: 205 + i * 0, fill: "none" }, "")));
+    if (shown) { const col = states[active]; shown.forEach((w, i) => { const g = el("g", { opacity: 0 }); g.append(el("rect", { x: 20 + i * 132, y: 290, width: 124, height: 28, rx: 5, fill: col.c + "22", stroke: col.c })); g.append(el("text", { x: 82 + i * 132, y: 308, "text-anchor": "middle", fill: "#e6e6e6", "font-size": 9.5, "font-family": "monospace" }, w)); svg.append(g); setTimeout(() => g.setAttribute("opacity", 1), 120 * i); }); }
+    const host = G.$("#sm-svg"); host.innerHTML = ""; host.append(svg);
+  }
+  function say(html, cls) { log.innerHTML += `<span class="${cls || ""}">${html}</span>\n`; log.scrollTop = log.scrollHeight; }
+  function call(shape, dup) {
+    if (dup) { say(`f(t, t) → _prepare_jit_inputs: <b>JitError: duplicate inputs to JIT</b>  (cnt stays ${cnt})`, "err"); active = null; draw(); return; }
+    if (jit0) { active = 0; say(`call (cnt=${cnt}) with JIT=0 → always the ignore branch: fxn runs, schedule, run_linear. cnt → ${cnt + 1}`, "c1"); cnt++; draw(); return; }
+    if (cnt === 0) { active = 0; say(`call 1 (cnt=0): <b>ignore</b> — fxn runs normally, kernels compiled & run. cnt → 1`, "c1"); }
+    else if (cnt === 1) { active = 1; capturedShape = shape; say(`call 2 (cnt=1): <b>capture</b> — 1 linear recorded with 5 calls, jit_lower → 5 compiled CALLs; executed once. cnt → 2`, "c2"); }
+    else {
+      if (shape !== capturedShape) { active = 2; say(`call (cnt=${cnt}): x is (${shape}) but captured (${capturedShape}) → <b>JitError: args mismatch in JIT: expected_input_info…</b>  (cnt unchanged)`, "err"); draw(); return; }
+      active = 2; say(`call ${cnt + 1} (cnt=${cnt}): <b>replay</b> — inputs checked, run_linear(jit=True) of 5 CALLs; fxn not called. cnt → ${cnt + 1}`, "c3");
+    }
+    cnt++; draw();
+  }
+  G.$("#sm-call").onclick = () => call("2, 8");
+  G.$("#sm-shape").onclick = () => call("3, 8");
+  G.$("#sm-dup").onclick = () => call(null, true);
+  G.$("#sm-reset").onclick = () => { cnt = 0; capturedShape = null; active = null; say("step.reset() → cnt = 0, captured = None (next call is a warm-up again)", "dim"); draw(); };
+  G.$("#sm-jit0").onchange = (e) => { jit0 = e.target.checked; say(`JIT=${jit0 ? 0 : 1}`, "dim"); draw(); };
+  say("# click 'call step(x)' …", "dim");
+  draw();
+})();
+
+// ---------------- demo 2: captured linear ----------------
+(function () {
+  const out = G.$("[data-out='18_jit_inside']").textContent.split("\n").filter((l) => l.trim().startsWith("r_") || l.trim().startsWith("E_"));
+  const rows = G.$("#lin-rows");
+  const parsed = out.map((l) => { const name = l.trim().split(/\s+/)[0]; const args = JSON.parse(l.slice(l.indexOf("[")).replace(/'/g, '"')); return { name, args }; });
+  let xi = 0;
+  function render(flash) {
+    rows.innerHTML = "";
+    rows.append(el("div", { class: "row", style: "color:var(--dim)" }, el("div", {}, "CALL"), ...[0, 1, 2, 3].map((i) => el("div", {}, "arg " + i))));
+    for (const r of parsed) {
+      const cells = [0, 1, 2, 3].map((i) => {
+        const a = r.args[i];
+        if (!a) return el("div", { class: "arg empty" }, "");
+        const cls = a.startsWith("PARAM") ? "param" : a.startsWith("ALLOC") ? "alloc" : "buffer";
+        const txt = cls === "param" ? `PARAM#0 → x${xi}` : cls === "alloc" ? "ALLOC (arena)" : a.replace(", baked in", "");
+        return el("div", { class: "arg " + cls + (flash && cls === "param" ? " flash" : "") }, txt);
+      });
+      rows.append(el("div", { class: "row" }, el("div", {}, r.name), ...cells));
+    }
+    G.$("#lin-note").textContent = `input_uops = [x${xi}]  · everything else identical`;
+  }
+  G.$("#lin-replay").onclick = () => { xi++; render(true); setTimeout(() => render(false), 700); };
+  render(false);
+})();
+
+// ---------------- demo 3: baked-in quiz ----------------
+(function () {
+  const Q = [
+    { code: "@TinyJit\ndef f(x, k): return (x*k).realize()\nf(x, 1); f(x, 2); f(x, 3)", opts: ["uses k=3", "baked: uses k=2", "JitError"], a: 1, why: "k is a Python int, read while capturing (call 2, k=2). Real run: calls 3,4 returned [2,4,6]." },
+    { code: "@TinyJit\ndef f(x): return (x*2).sum().item()", opts: ["works, value baked", "JitError on call 2", "works, fresh each call"], a: 1, why: "Tensor._buffer raises JitError('cannot access tensor data during JIT capture…'). Call 1 (warm-up) succeeds, call 2 fails." },
+    { code: "@TinyJit\ndef f(x): return (x + Tensor.rand(3)).realize()", opts: ["same random numbers each replay", "new random numbers each replay", "JitError"], a: 1, why: "The RNG counter is a buffer updated by a captured kernel, so it advances on every replay (verified: 4 different rows)." },
+    { code: "v = Variable('n', 1, 8)\n@TinyJit\ndef f(x, n): return x[:n].sum().realize()\nf(big, v.bind(5))", opts: ["n baked at capture", "n read every call", "JitError: symbolic"], a: 1, why: "Input Variables are unbound by jit_lower and read from var_vals at each run: [3, 6, 15, 36] for n=2,3,5,8." },
+    { code: "w = Tensor.randn(4,4).realize()\n@TinyJit\ndef f(x): return (x @ w).realize()\nw.assign(w * 0).realize()\nf(x)  # replay", opts: ["uses old w values", "uses the new w values", "JitError"], a: 1, why: "w's Buffer is captured by reference (held buffer). An in-place assign writes the same Buffer, so the replay sees the new values." },
+    { code: "@TinyJit\ndef f(x): return (x+1).realize()\nf(ones(3)); f(ones(3)); f(ones(4))  # 1-D", opts: ["JitError: args mismatch", "runs, 4 elements", "runs the 3-element kernels silently"], a: 2, why: "A contiguous 1-D input's view is a bare NOOP, so expected_input_info matches. Verified: returned [2,2,2]." },
+    { code: "@TinyJit\ndef f(x): return (x+1).realize()\nf(ones(3,2)); f(ones(3,2)); f(ones(4,2))", opts: ["JitError: args mismatch", "runs, 4x2", "runs 3x2 silently"], a: 0, why: "The 2-D input's view includes a RESHAPE with the shape, so the comparison fails with JitError." },
+    { code: "@TinyJit\ndef f(x): return x", opts: ["returns x every call", "JitError: didn't JIT anything!", "returns a copy"], a: 1, why: "During capture nothing was scheduled, so self._linears is empty → JitError." },
+    { code: "@TinyJit\ndef f(x):\n  if x.shape[0] > 2: return (x*2).realize()\n  return (x*3).realize()\n# always called with shape (4,4)", opts: ["fine", "JitError", "only works with JIT=0"], a: 0, why: "Shapes are static Python values. The branch is evaluated during capture and is equally valid on every replay of the same shape." },
+  ];
+  const box = G.$("#baked"); let right = 0, done = 0;
+  const score = () => (G.$("#baked-score").textContent = `score: ${right} / ${done} answered (${Q.length} total)`);
+  Q.forEach((q) => {
+    const card = el("div", { class: "ch18-card" });
+    const pre = el("pre", {}, el("code", { class: "language-python" }, q.code));
+    const btns = el("div", { class: "btns" });
+    q.opts.forEach((o, i) => btns.append(el("button", { onclick: (e) => { if (card.classList.contains("done")) return; card.classList.add("done"); done++; if (i === q.a) right++; e.target.classList.add(i === q.a ? "right" : "wrong"); btns.children[q.a].classList.add("right"); score(); } }, o)));
+    card.append(pre, btns, el("div", { class: "ans" }, q.why));
+    box.append(card);
+    if (window.hljs) hljs.highlightElement(pre.firstChild);
+  });
+  score();
+})();
+
+// ---------------- demo 4: timing chart ----------------
+(async function () {
+  const data = await G.loadJSON("../data/ch18_timings.json");
+  let cfg = 0, log = true;
+  const ctl = G.$("#chart-ctl");
+  data.forEach((d, i) => ctl.append(el("button", { onclick: () => { cfg = i; draw(); }, "data-i": i }, "MLP " + d.shape)));
+  const logBtn = el("button", { onclick: () => { log = !log; draw(); } }, "log scale");
+  ctl.append(logBtn);
+  let tip = null;
+  function showTip(ev, t) { if (!tip) { tip = el("div", { class: "uop-tooltip" }); document.body.append(tip); } tip.textContent = t; tip.style.display = "block"; tip.style.left = ev.clientX + 12 + "px"; tip.style.top = ev.clientY + 12 + "px"; }
+  function hide() { if (tip) tip.style.display = "none"; }
+  function draw() {
+    G.$$("button", ctl).forEach((b) => b.dataset.i !== undefined && b.classList.toggle("active", +b.dataset.i === cfg));
+    logBtn.classList.toggle("active", log);
+    const d = data[cfg], W = 900, H = 360, L = 60, R = 190, T = 20, B = 40;
+    const n = d.plain_ms.length, maxv = Math.max(...d.plain_ms, ...d.jit_ms), minv = 0.1;
+    const y = (v) => log ? T + (H - T - B) * (1 - (Math.log10(Math.max(v, minv)) - Math.log10(minv)) / (Math.log10(maxv * 1.2) - Math.log10(minv))) : T + (H - T - B) * (1 - v / (maxv * 1.05));
+    const svg = el("svg", { viewBox: `0 0 ${W} ${H}` });
+    const ticks = log ? [0.1, 1, 10, 100, 1000].filter((t) => t <= maxv * 1.2) : [0, 100, 200, 300, 400, 500, 600, 700].filter((t) => t <= maxv * 1.05);
+    ticks.forEach((t) => { svg.append(el("line", { x1: L, x2: W - R, y1: y(t), y2: y(t), stroke: "#23272e" })); svg.append(el("text", { x: L - 6, y: y(t) + 4, "text-anchor": "end", fill: "#9aa3ad", "font-size": 11, "font-family": "monospace" }, t + " ms")); });
+    const bw = (W - L - R) / n;
+    for (let i = 0; i < n; i++) {
+      [[d.plain_ms[i], "#FC6255", 0, "no JIT"], [d.jit_ms[i], "#83C167", 1, "TinyJit"]].forEach(([v, c, k, lab]) => {
+        const x = L + i * bw + k * bw * 0.45 + bw * 0.05, yy = y(v);
+        const r = el("rect", { x, y: yy, width: bw * 0.42, height: Math.max(1, y(log ? minv : 0) - yy), fill: c, opacity: 0.85 });
+        r.addEventListener("mousemove", (ev) => showTip(ev, `call ${i + 1}, ${lab}: ${v.toFixed(3)} ms`)); r.addEventListener("mouseleave", hide);
+        svg.append(r);
+      });
+      if (i % 5 === 0 || i === n - 1) svg.append(el("text", { x: L + i * bw + bw / 2, y: H - B + 16, "text-anchor": "middle", fill: "#9aa3ad", "font-size": 10.5, "font-family": "monospace" }, i + 1));
+    }
+    svg.append(el("text", { x: (L + W - R) / 2, y: H - 6, "text-anchor": "middle", fill: "#9aa3ad", "font-size": 11.5 }, "call number"));
+    // stacked phases bar
+    const ph = Object.entries(d.phases_ms), total = ph.reduce((a, [, v]) => a + v, 0), sx = W - R + 50, cols = ["#58C4DD", "#F4D345", "#9A72AC"];
+    const lin = (v) => (H - T - B) * v / Math.max(total, d.plain_median) ;
+    let cy = H - B;
+    svg.append(el("text", { x: sx + 30, y: T + 4, "text-anchor": "middle", fill: "#e6e6e6", "font-size": 11, "font-family": "monospace" }, "no-JIT median"));
+    ph.forEach(([k, v], j) => { const h = lin(v) * 0.9; cy -= h; const r = el("rect", { x: sx, y: cy, width: 60, height: h, fill: cols[j] }); r.addEventListener("mousemove", (ev) => showTip(ev, `${k}: ${v.toFixed(3)} ms`)); r.addEventListener("mouseleave", hide); svg.append(r); svg.append(el("text", { x: sx + 66, y: cy + h / 2 + 4, fill: cols[j], "font-size": 10.5, "font-family": "monospace" }, v.toFixed(2))); });
+    const jh = lin(d.jit_median) * 0.9;
+    svg.append(el("rect", { x: sx - 40, y: H - B - jh, width: 30, height: Math.max(jh, 1), fill: "#83C167" }));
+    svg.append(el("text", { x: sx - 25, y: H - B - jh - 6, "text-anchor": "middle", fill: "#83C167", "font-size": 10.5, "font-family": "monospace" }, d.jit_median.toFixed(2)));
+    svg.append(el("text", { x: sx + 10, y: H - B + 16, "text-anchor": "middle", fill: "#9aa3ad", "font-size": 10.5, "font-family": "monospace" }, "JIT | no JIT"));
+    const host = G.$("#chart-svg"); host.innerHTML = ""; host.append(svg);
+    G.$("#chart-note").innerHTML = `${d.shape}: ${d.calls} CALLs per step · steady-state median <b style="color:#FC6255">${d.plain_median.toFixed(2)} ms</b> → <b style="color:#83C167">${d.jit_median.toFixed(2)} ms</b> = <b style="color:var(--yellow)">${(d.plain_median / d.jit_median).toFixed(1)}×</b>`;
+  }
+  draw();
+})();
+</script>
+</body>
+</html>

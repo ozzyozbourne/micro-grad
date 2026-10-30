@@ -1,0 +1,1532 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>10. Rangeify: from shapes to loops — tinygrad internals</title>
+<link rel="stylesheet" href="../assets/vendor/hljs-dark.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/vendor/highlight.min.js"></script>
+<script src="../assets/vendor/dagre.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/chapters.js"></script>
+<script src="../assets/guide.js"></script>
+<style>
+.ch10-passes { width: 100%; font-size: 13px; }
+.ch10-passes td:first-child { font-family: var(--mono); color: var(--dim); }
+.ch10-passes tr.ch10-me td { background: rgba(244,211,69,.08); }
+.ch10-passes td.ch10-pn { font-family: var(--mono); color: var(--yellow); white-space: nowrap; }
+.ch10-rtable { font-family: var(--mono); font-size: 11.5px; width: 100%; table-layout: auto; }
+.ch10-rtable td, .ch10-rtable th { padding: 3px 8px; }
+.ch10-rtable tr.cur td { background: rgba(244,211,69,.15); }
+.ch10-rtable tr.real td:first-child { color: var(--gold); font-weight: 700; }
+.ch10-rtable tr.todo td { opacity: .35; }
+.ch10-chip { display: inline-block; font-family: var(--mono); font-size: 12px; padding: 1px 7px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg3); margin: 2px 3px 2px 0; }
+.ch10-chip.y { border-color: var(--yellow); color: var(--yellow); }
+.ch10-chip.g { border-color: var(--green); color: var(--green); }
+.ch10-chip.r { border-color: var(--red); color: var(--red); }
+.ch10-chip.b { border-color: var(--blue); color: var(--blue); }
+.ch10-chain { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0; font-family: var(--mono); font-size: 12.5px; }
+.ch10-chain .op { background: rgba(92,208,179,.12); border: 1px solid var(--teal); border-radius: 6px; padding: 3px 8px; }
+.ch10-chain .op button { padding: 0 5px; font-size: 11px; margin-left: 6px; }
+.ch10-chain .shp { color: var(--dim); }
+.ch10-steps { font-family: var(--mono); font-size: 12.5px; width: 100%; }
+.ch10-steps td { padding: 3px 8px; }
+.ch10-expr { font-family: var(--mono); font-size: 14px; background: #0d0f12; border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; margin: 8px 0; color: var(--yellow); word-break: break-all; }
+.ch10-grids { display: flex; gap: 28px; flex-wrap: wrap; align-items: flex-start; }
+.ch10-grids h4 { margin: 4px 0 6px; font-size: 13px; }
+.grid-cells .cell.ch10-inv { background: rgba(252,98,85,.12); border-color: rgba(252,98,85,.5); color: var(--red); }
+.grid-cells .cell.ch10-src { background: rgba(131,193,103,.5); border-color: var(--green); color: #000; }
+.ch10-kcode { max-height: 340px; }
+.ch10-stagebtns button { margin: 2px; }
+.ch10-legend2 span { margin-right: 14px; font-size: 12px; color: var(--dim); }
+.ch10-legend2 b { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; }
+.ch10-loop { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 1000px) { .ch10-loop { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="sidebar" id="sidebar"></nav>
+<main>
+  <h1><span class="chnum">CHAPTER 10</span> Rangeify: from shapes to loops</h1>
+  <p class="lede">A tensor graph talks in <em>shapes</em>: "this is a (4, 3) view of that (3, 4) buffer, plus one, summed over axis 0".
+  A kernel talks in <em>loops</em>: "for r0 in 0..3, for r1 in 0..4, load <code>buf[r0*4+r1]</code>". Rangeify is the
+  translation between those two languages. After this chapter you will know exactly which UOps get their own loops (the
+  <b>realize map</b>), how loop variables (<code>RANGE</code> UOps) are handed from consumers down to producers, how every
+  movement op dissolves into index arithmetic, and what the <code>STAGE</code> (a.k.a. BUFFERIZE) marker means — all
+  against the real code in <a class="src" data-path="tinygrad/schedule/indexing.py" data-line="182">run_rangeify</a>.</p>
+
+  <div class="callout note">This is the first of three scheduling chapters. <b>10 (this one)</b>: shapes → ranges &amp; materialization candidates.
+  <a href="11-kernel-split.html"><b>11</b></a>: which candidates survive and how the graph is cut into kernels.
+  <a href="12-schedule.html"><b>12</b></a>: ordering the kernels into a <code>LINEAR</code> of <code>CALL</code>s, buffers, memory planning, caching.
+  Movement ops themselves are introduced in <a href="07-movement.html">Chapter 7</a>, the symbolic simplifier in <a href="06-symbolic.html">Chapter 6</a>.</div>
+
+  <!-- ===================================================================================== -->
+  <h2 id="intuition"><span class="sec">10.1</span> Intuition: every output element asks a question</h2>
+  <p>Take <code>out = (a.permute(1, 0) + 1).sum(0)</code> with <code>a</code> of shape (3, 4). In tensor-land this is a little
+  pipeline of whole arrays. But a kernel never manipulates whole arrays: it runs a loop, and in each iteration it asks
+  <em>"for output element <code>r0</code>, which input element(s) do I need?"</em>. Answering that question for every node of
+  the graph is rangeify.</p>
+
+  <div class="ch10-loop">
+  <div>
+  <div class="codecap"><b>tensor-land</b> (what you wrote)</div>
+<pre><code class="language-python">a   = Tensor.empty(3, 4)   # a buffer of 12 floats
+t   = a.permute(1, 0)      # (4, 3)  — a VIEW, no data moves
+u   = t + 1                # (4, 3)
+out = u.sum(0)             # (3,)    — reduce over the 4</code></pre>
+  </div>
+  <div>
+  <div class="codecap"><b>loop-land</b> (what rangeify produces, in pseudo-C)</div>
+<pre><code class="language-c">for (r0 = 0; r0 &lt; 3; r0++) {        // RANGE r0: one per output element
+  acc = 0;
+  for (r1 = 0; r1 &lt; 4; r1++)         // RANGE r1: created by the REDUCE
+    acc += a[r0*4 + r1] + 1;         // permute+reshape became r0*4+r1
+  out[r0] = acc;                     // STORE ... END(r0)
+}</code></pre>
+  </div>
+  </div>
+
+  <p>Read the right-hand side bottom-up and notice what happened to each tensor op:</p>
+  <ul>
+    <li>The output <code>(3,)</code> got one loop variable <code>r0</code> — a <code>RANGE</code> UOp.</li>
+    <li>The <code>sum(0)</code> needed a loop over the reduced axis: it <em>created</em> a fresh range <code>r1</code>.</li>
+    <li>The <code>+ 1</code> just passed the ranges <code>(r1, r0)</code> through — elementwise ops don't care.</li>
+    <li>The <code>permute(1, 0)</code> <em>swapped</em> them: the element at <code>t[r1, r0]</code> is <code>a[r0, r1]</code>.</li>
+    <li>The hidden reshape from the flat 12-float buffer to (3, 4) turned the pair into one flat offset <code>r0*4 + r1</code>.</li>
+  </ul>
+  <p>The movement ops are <b>gone</b>. They didn't move data, they only changed <em>which address is read</em>. That is the whole
+  trick: a view is an index function, and composing views is composing index functions.</p>
+
+  <div class="callout aha"><span class="title">The key idea</span> Ranges flow <b>from consumers down to producers</b>. Each UOp
+  receives the loop variables of whoever reads it, transforms them (movement ops rewrite them, reduces add new ones), and
+  passes them on to its own sources. When a UOp <em>can't</em> simply take its consumer's ranges — because two consumers want
+  it at different positions, or because a consumer needs it complete before it can broadcast it — it gets <b>fresh</b> ranges
+  and is marked to be <b>materialized</b> into a buffer. That set of UOps is the <b>realize map</b>, and it is the seed of every
+  kernel boundary in <a href="11-kernel-split.html">Chapter 11</a>.</div>
+
+  <div class="callout analogy"><span class="title">Analogy</span> Think of a big spreadsheet where every cell of the output has a
+  formula. Rangeify writes the formula for one generic cell <code>out[r0]</code>, with <code>r0</code> as a symbol, by
+  substituting definitions all the way down to raw input cells. A movement op is like a cell reference with arithmetic in it
+  (<code>=A!B(r0*4+r1)</code>). A "realized" intermediate is a helper column you decided to actually fill in, because inlining its
+  formula everywhere would be wrong or too expensive.</div>
+
+  <!-- ===================================================================================== -->
+  <h2 id="where"><span class="sec">10.2</span> Where rangeify sits: every scheduler pass, by name</h2>
+  <p>The scheduler is not one function, it is a sequence of named <code>graph_rewrite</code> calls (each one a
+  <code>PatternMatcher</code> applied to the whole graph, see <a href="05-pattern-matching.html">Chapter 5</a>). Their
+  <code>name=</code> strings are what <code>VIZ</code> and <code>python -m tinygrad.viz.cli</code> show. To see them all with
+  their inputs and outputs, the helper below monkey-patches <code>graph_rewrite</code> inside <code>tinygrad.tensor</code> and
+  the four <code>tinygrad.schedule</code> modules and records every call. Chapters 10–12 reuse it for all their captured data.</p>
+
+  <div class="codecap"><b>examples/10_sched_capture.py</b> — run with <code>DEV=CPU python3 examples/10_sched_capture.py</code></div>
+<pre><code class="language-python">&quot;&quot;&quot;examples/10_sched_capture.py — watch EVERY named graph_rewrite pass of the scheduler.
+
+Run:  DEV=CPU python3 examples/10_sched_capture.py
+
+The scheduler (tinygrad/schedule/*) is a sequence of named graph_rewrite calls. This file wraps `graph_rewrite`
+inside the four scheduler modules so that every call is recorded as (pass name, input graph, output graph).
+It also records the IndexingContext that run_rangeify builds (realize_map + range_map), which is the core data
+structure of chapter 10.
+
+Chapters 10-12 import this file (via importlib) to generate the JSON data used by the interactive demos, so it also
+contains a small UOp -&gt; {nodes, edges} converter that hides &quot;shape argument&quot; sources (the STACK of CONSTs that
+movement ops carry, the size CONST of a PARAM/RANGE) to keep graphs readable.
+&quot;&quot;&quot;
+import contextlib
+from tinygrad import Tensor
+from tinygrad.helpers import Context
+from tinygrad.uop.ops import Ops, UOp, GroupOp
+import tinygrad.schedule as S
+import tinygrad.schedule.prepare as P
+import tinygrad.schedule.indexing as I
+import tinygrad.schedule.rangeify as R
+import tinygrad.tensor as T
+from tinygrad.engine.realize import compile_linear, run_linear
+
+# ---------------------------------------------------------------- hooking
+@contextlib.contextmanager
+def hooked():
+  &quot;&quot;&quot;records every graph_rewrite done by the scheduler + the IndexingContext of run_rangeify&quot;&quot;&quot;
+  log = {&quot;passes&quot;: [], &quot;rctx&quot;: [], &quot;realize_map&quot;: {}}
+  saved = {}
+  for mod in (T, S, P, I, R):
+    orig = mod.graph_rewrite
+    saved[mod] = orig
+    def gr(sink, *a, _orig=orig, **k):
+      # snapshot the realize_map before &quot;apply rangeify&quot; consumes (deletes) the STORE entries
+      if k.get(&quot;name&quot;) == &quot;apply rangeify&quot;: log[&quot;realize_map&quot;] = dict(k[&quot;ctx&quot;].realize_map)
+      out = _orig(sink, *a, **k)
+      log[&quot;passes&quot;].append((k.get(&quot;name&quot;) or &quot;graph_rewrite (unnamed)&quot;, sink, out))
+      return out
+    mod.graph_rewrite = gr
+  orig_ctx = I.IndexingContext
+  class RecordingIndexingContext(orig_ctx):
+    def __init__(self, *a, **k):
+      super().__init__(*a, **k)
+      log[&quot;rctx&quot;].append(self)
+  I.IndexingContext = RecordingIndexingContext
+  try:
+    yield log
+  finally:
+    for mod, orig in saved.items(): mod.graph_rewrite = orig
+    I.IndexingContext = orig_ctx
+
+def schedule(*tensors:Tensor, run=True):
+  &quot;&quot;&quot;schedule (and optionally run) tensors, returning (log, linear, compiled_linear)&quot;&quot;&quot;
+  # SCACHE=0: a schedule-cache hit would skip all passes (see chapter 12)
+  with Context(SCACHE=0), hooked() as log:
+    linear, var_vals = Tensor.linear_with_vars(*tensors)
+  compiled = compile_linear(linear)
+  if run: run_linear(linear, var_vals)
+  return log, linear, compiled
+
+def kernel_sources(compiled:UOp) -&gt; list[tuple[str, str]]:
+  &quot;&quot;&quot;(name, source code) for every CALL in a compiled LINEAR&quot;&quot;&quot;
+  out = []
+  for call in compiled.src:
+    body = call.body
+    if body.op is Ops.PROGRAM:
+      srcs = [u.arg for u in body.toposort() if u.op is Ops.SOURCE]
+      out.append((body.src[0].arg.name, srcs[0] if srcs else &quot;&quot;))
+    elif body.op is Ops.STORE: out.append((&quot;copy&quot;, &quot;// bulk copy: CALL(STORE(dst, src)) -&gt; exec_copy, no kernel is compiled&quot;))
+    else: out.append((str(body.op), &quot;&quot;))
+  return out
+
+# ---------------------------------------------------------------- UOp -&gt; JSON graph
+def _arg_label(u:UOp) -&gt; str:
+  if u.op in GroupOp.Movement:
+    try: return str(u.marg).replace(&quot; &quot;, &quot;&quot;)
+    except Exception: return &quot;&quot;
+  if u.op is Ops.RANGE: return f&quot;r{u.arg[1]} &lt;{u.src[0].render() if u.src[0].op is not Ops.CONST else u.src[0].arg}&quot;
+  if u.op in {Ops.PARAM, Ops.BUFFER, Ops.ALLOC}:
+    a = u.arg
+    kind = {Ops.PARAM: &quot;slot&quot;, Ops.BUFFER: &quot;buf&quot;, Ops.ALLOC: &quot;slot&quot;}[u.op]
+    try: return f&quot;{kind} {a.slot} · {u.max_numel()}×{str(a.dtype).replace(&#x27;dtypes.&#x27;, &#x27;&#x27;)}&quot;
+    except Exception: return str(a)[:40]
+  if u.op is Ops.CONST: return str(u.arg).replace(&quot;ConstFloat(&quot;, &quot;&quot;).rstrip(&quot;)&quot;) if &quot;ConstFloat&quot; in str(u.arg) else str(u.arg)
+  if u.op is Ops.REDUCE: return f&quot;{u.arg[0].name}&quot; + (f&quot;, {u.arg[1]} axes&quot; if u.arg[1] else &quot;&quot;)
+  if u.op is Ops.STAGE: return &quot;&quot; if u.arg is None else (&quot;BUFFERIZE&quot; + (&quot;&quot; if u.arg.removable else &quot; (keep)&quot;))
+  if u.op is Ops.SINK and u.arg is not None: return &quot;kernel&quot;
+  if u.op is Ops.CALL: return &quot;&quot;
+  if u.arg is None: return &quot;&quot;
+  return str(u.arg)[:40]
+
+def hidden_srcs(u:UOp) -&gt; set[int]:
+  &quot;&quot;&quot;indices of srcs that are &#x27;shape arguments&#x27;, not data&quot;&quot;&quot;
+  if u.op in GroupOp.Movement: return set(range(1, len(u.src)))
+  if u.op in {Ops.PARAM, Ops.BUFFER, Ops.ALLOC, Ops.RANGE}: return set(range(len(u.src)))
+  return set()
+
+def graph_json(root:UOp, ids:dict|None=None, notes:dict|None=None, max_nodes=260) -&gt; dict:
+  ids = {} if ids is None else ids
+  keep: list[UOp] = []
+  seen = set()
+  def visit(u:UOp):
+    if u in seen: return
+    seen.add(u)
+    for i, s in enumerate(u.src):
+      if i not in hidden_srcs(u): visit(s)
+    keep.append(u)
+  visit(root)
+  keep = keep[-max_nodes:]
+  present = set(keep)
+  nodes, edges = [], []
+  for u in keep:
+    nid = ids.setdefault(u, f&quot;n{len(ids)}&quot;)
+    try: shape = str(u._shape) if u._shape is not None else &quot;&quot;
+    except Exception: shape = &quot;&quot;
+    try: dt = str(u.dtype).replace(&quot;dtypes.&quot;, &quot;&quot;)
+    except Exception: dt = &quot;&quot;
+    n = {&quot;id&quot;: nid, &quot;op&quot;: u.op.name, &quot;arg&quot;: _arg_label(u), &quot;dtype&quot;: dt if dt not in (&quot;void&quot;,) else &quot;&quot;, &quot;shape&quot;: shape.replace(&quot; &quot;, &quot;&quot;)}
+    if notes and u in notes: n[&quot;note&quot;] = notes[u]
+    nodes.append(n)
+    for i, s in enumerate(u.src):
+      if i in hidden_srcs(u) or s not in present: continue
+      edges.append([ids.setdefault(s, f&quot;n{len(ids)}&quot;), nid, i])
+  return {&quot;nodes&quot;: nodes, &quot;edges&quot;: edges}
+
+def pass_by_name(log, name, nth=0):
+  hits = [p for p in log[&quot;passes&quot;] if p[0] == name]
+  return hits[nth] if nth &lt; len(hits) else None
+
+# ---------------------------------------------------------------- demo
+if __name__ == &quot;__main__&quot;:
+  a = Tensor.empty(3, 4)
+  out = (a.permute(1, 0) + 1).sum(0)        # a (3,4) -&gt; (4,3) -&gt; +1 -&gt; sum over the 4 -&gt; (3,)
+  log, linear, compiled = schedule(out)
+  print(&quot;every named graph_rewrite the scheduler ran, in order:&quot;)
+  for i, (name, src, dst) in enumerate(log[&quot;passes&quot;]):
+    print(f&quot;  {i:2d}. {name:38s} {len(src.toposort()):3d} uops -&gt; {len(dst.toposort()):3d} uops&quot;)
+  print(&quot;\nrealize_map (UOps that get their own fresh output ranges):&quot;)
+  for u, axes in log[&quot;realize_map&quot;].items(): print(f&quot;  {u.op.name:8s} shape={u.shape}  realized axes={axes}&quot;)
+  rctx = log[&quot;rctx&quot;][0]
+  print(&quot;\nrange_map: (input ranges, output ranges) of every UOp, in the order run_rangeify visits them:&quot;)
+  for u, (rin, rout) in rctx.range_map.items():
+    print(f&quot;  {u.op.name:8s} {str(u.shape):8s} in={[r.render() for r in rin]}  out={[r.render() for r in rout]}&quot;)
+  print(f&quot;\nfinal schedule: {linear.op.name} with {len(linear.src)} CALL(s)&quot;)
+  for name, src in kernel_sources(compiled): print(f&quot;--- {name}\n{src}&quot;)</code></pre>
+<pre class="output"><code>every named graph_rewrite the scheduler ran, in order:
+   0. drop after                              17 uops -&gt;   3 uops
+   1. early transform tensor graph            17 uops -&gt;  17 uops
+   2. replace bufs                            17 uops -&gt;  17 uops
+   3. multi_pm                                17 uops -&gt;  17 uops
+   4. inline calls                            17 uops -&gt;  17 uops
+   5. earliest rewrites                       17 uops -&gt;  17 uops
+   6. get realize                             17 uops -&gt;  17 uops
+   7. reshape                                 13 uops -&gt;   7 uops
+   8. apply rangeify                          17 uops -&gt;  18 uops
+   9. add device to deviceless                18 uops -&gt;  18 uops
+  10. symbolic+reduce_collapse+debuf          18 uops -&gt;  18 uops
+  11. limit buffers                           18 uops -&gt;  18 uops
+  12. stage to store                          18 uops -&gt;  18 uops
+  13. remove indexing from call args          18 uops -&gt;  18 uops
+  14. kernel split                            16 uops -&gt;  16 uops
+  15. graph_rewrite (unnamed)                 16 uops -&gt;  16 uops
+  16. split kernels                           18 uops -&gt;   7 uops
+  17. remove views from the kernel graph       7 uops -&gt;   7 uops
+  18. schedule to linear                       5 uops -&gt;   5 uops
+  19. params to buffers                        6 uops -&gt;   6 uops
+  20. resolve linear call                      5 uops -&gt;   6 uops
+  21. lower copy kernels to STORE calls        6 uops -&gt;   6 uops
+
+realize_map (UOps that get their own fresh output ranges):
+  STORE    shape=(3,)  realized axes=[0]
+
+range_map: (input ranges, output ranges) of every UOp, in the order run_rangeify visits them:
+  STORE    (3,)     in=[&#x27;r0&#x27;]  out=[&#x27;r0&#x27;]
+  REDUCE   (3,)     in=[&#x27;r1&#x27;, &#x27;r0&#x27;]  out=[&#x27;r0&#x27;]
+  ADD      (4, 3)   in=[&#x27;r1&#x27;, &#x27;r0&#x27;]  out=[&#x27;r1&#x27;, &#x27;r0&#x27;]
+  CONST    ()       in=[]  out=[]
+  PERMUTE  (4, 3)   in=[&#x27;r0&#x27;, &#x27;r1&#x27;]  out=[&#x27;r1&#x27;, &#x27;r0&#x27;]
+  RESHAPE  (3, 4)   in=[&#x27;(r0*4+r1)&#x27;]  out=[&#x27;r0&#x27;, &#x27;r1&#x27;]
+  PARAM    (12,)    in=[&#x27;(r0*4+r1)&#x27;]  out=[&#x27;(r0*4+r1)&#x27;]
+  PARAM    (3,)     in=[&#x27;r0&#x27;]  out=[&#x27;r0&#x27;]
+
+final schedule: LINEAR with 1 CALL(s)
+--- r_3_4
+typedef float float4 __attribute__((aligned(4),ext_vector_type(4)));
+struct r_3_4_args { float* arg0; float* arg1; };
+void r_3_4(const struct r_3_4_args* args) {
+  float* data0_3 = args-&gt;arg0;
+  float* data1_12 = args-&gt;arg1;
+  for (int Lidx1 = 0; Lidx1 &lt; 3; Lidx1++) {
+    float4 val0 = (*((float4*)((data1_12+(Lidx1&lt;&lt;2)))));
+    *(data0_3+Lidx1) = (val0[3]+val0[2]+val0[1]+val0[0]+4.0f);
+  }
+}</code></pre>
+
+  <p>Click a pass below to see what it does. The pass names are exact; the yellow ones are this chapter.</p>
+
+  <div class="demo" id="demo-passes">
+    <div class="demo-title">The scheduler, pass by pass</div>
+    <div class="demo-desc">The real sequence of named rewrites for one <code>realize()</code> (from the output above). Click any row.</div>
+    <div class="row"><div class="col" style="flex:1 1 420px"><table class="ch10-passes" id="passtable"></table></div>
+    <div class="col" id="passdesc" style="flex:1 1 300px; font-size:14px"></div></div>
+  </div>
+
+  <p>The same list from the official trace tool (run with <code>VIZ=-1</code>, then <code>python -m tinygrad.viz.cli</code>) also
+  shows the <em>group</em> names created by <code>@rewrite_group</code>: <code>Schedule 1 -&gt; 1</code> (the whole
+  <a class="src" data-path="tinygrad/tensor.py" data-line="166">Tensor.linear_with_vars</a>), <code>prepare_rangeify</code>,
+  <code>get_kernel_graph</code> and <code>run_rangeify</code>, plus <code>View Tensor Graph</code> / <code>View Graph</code> /
+  <code>View Call</code> / <code>View Rangeify</code> / <code>View Kernel Graph</code> snapshots that exist only for the VIZ UI,
+  and <code>bufferize</code> / <code>substitute bufferize</code>: the step in <code>linear_with_vars</code> that re-points your
+  <code>Tensor</code> objects at their new buffers (<a class="src" data-path="tinygrad/tensor.py" data-line="18">_apply_map_to_tensors</a>).
+  Each <code>reshape</code> line is the small simplification rewrite inside <a class="src" data-path="tinygrad/schedule/indexing.py" data-line="148">_apply_reshape</a>,
+  and <code>pad</code> the one inside <code>apply_movement_op</code>'s PAD case.</p>
+
+  <!-- ===================================================================================== -->
+  <h2 id="input"><span class="sec">10.3</span> The input: what the graph looks like when rangeify starts</h2>
+  <p>By the time <code>run_rangeify</code> sees the graph, three things have already happened to your tensor graph
+  (<a href="02-tensor-laziness.html">Chapter 2</a> showed you its raw form):</p>
+  <ol>
+    <li><b><a class="src" data-path="tinygrad/tensor.py" data-line="166">Tensor.linear_with_vars</a></b> gave each output storage:
+      an output that is not already a buffer becomes <code>buf.after(buf.store(compute))</code>, i.e.
+      <code>AFTER(BUFFER, STORE(BUFFER, compute))</code>. "<code>AFTER</code>" means: <em>this buffer, but only after these effects
+      ran</em> (see <code>Ops.AFTER</code>'s comment in <code>tinygrad/uop/__init__.py</code>).</li>
+    <li><b><a class="src" data-path="tinygrad/schedule/__init__.py" data-line="257">transform_to_call</a></b> collected those stores
+      ("early transform tensor graph") and replaced every real input <code>BUFFER</code> with a positional
+      <code>PARAM(slot)</code> ("replace bufs"), producing <code>CALL(SINK(...), *buffers)</code>. The body no longer mentions any
+      concrete memory — that's what makes the schedule cacheable (<a href="12-schedule.html">Chapter 12</a>).</li>
+    <li><b><a class="src" data-path="tinygrad/schedule/prepare.py" data-line="255">prepare_rangeify</a></b> ran
+      <code>multi_pm</code>, "inline calls" and "earliest rewrites". The important rewrites for us
+      (<a class="src" data-path="tinygrad/schedule/prepare.py" data-line="188">earliest_rewrites</a>):
+      <ul>
+        <li><code>.contiguous()</code> (which is an <code>Ops.STAGE</code> on the tensor side,
+        <a class="src" data-path="tinygrad/mixin/elementwise.py" data-line="59">contiguous</a>) becomes a STORE into a fresh call-local
+        <code>ALLOC</code>: <a class="src" data-path="tinygrad/schedule/prepare.py" data-line="162">stage_to_anon_store</a>.</li>
+        <li>a cross-device <code>COPY</code> becomes a STORE into a fresh <code>ALLOC</code> on the destination device:
+        <a class="src" data-path="tinygrad/schedule/prepare.py" data-line="154">copy_to_anon_store</a>.</li>
+        <li>big reductions into few outputs are split in two: <a class="src" data-path="tinygrad/schedule/prepare.py" data-line="93">split_reduceop</a> (Chapter 11).</li>
+        <li><code>DETACH</code> / <code>CONTIGUOUS_BACKWARD</code> vanish, size-0 tensors become constants.</li>
+      </ul></li>
+  </ol>
+  <p>So the graph that reaches rangeify is: a <code>SINK</code> of <code>AFTER(PARAM, STORE(PARAM-view, compute))</code>, where
+  <code>compute</code> is still in tensor form — shapes, <code>RESHAPE</code>/<code>PERMUTE</code>/<code>EXPAND</code>/<code>PAD</code>/<code>SHRINK</code>,
+  and <code>REDUCE(op, n_axes)</code> whose reduced axes have been permuted to the front
+  (<a class="src" data-path="tinygrad/uop/ops.py" data-line="624">UOp._rop</a>). The output of
+  <code>examples/10_apply_rangeify.py</code> in §10.8 shows such a graph verbatim.</p>
+
+  <div class="callout warn">There is no <code>ShapeTracker</code>, no <code>LazyBuffer</code>, no <code>ScheduleItem</code> in this
+  version. Older tinygrad tracked views with a ShapeTracker object and merged views symbolically; today movement ops are ordinary
+  UOps until rangeify turns them into index expressions, and "view merging" is just the symbolic simplifier working on those
+  expressions (see the comment in <code>_apply_reshape</code>: <em>"this is the replacement for the reshape view merging code"</em>).</div>
+
+  <!-- ===================================================================================== -->
+  <h2 id="vocab"><span class="sec">10.4</span> The vocabulary: RANGE, INDEX, STAGE, END</h2>
+  <table>
+    <tr><th>UOp</th><th>form</th><th>meaning</th></tr>
+    <tr><td><code>RANGE</code></td><td><code>RANGE(size) arg=(AxisType, id)</code></td><td>A loop variable taking values <code>0..size-1</code>. Printed as <code>r0</code>, <code>r1</code>…
+      Created by <a class="src" data-path="tinygrad/schedule/indexing.py" data-line="18">IndexingContext.new_range</a> with <code>AxisType.WEAK</code>
+      (later passes decide whether it becomes a GLOBAL, LOCAL, LOOP, … axis). A size-1 axis gets <code>CONST 0</code> instead of a range.</td></tr>
+    <tr><td><code>INDEX</code></td><td><code>INDEX(buf, idx…)</code></td><td>"Element <code>idx</code> of <code>buf</code>". After rangeify every read of a buffer is an INDEX whose index is an expression in RANGEs.</td></tr>
+    <tr><td><code>STAGE</code></td><td><code>STAGE(value, r…) arg=BufferizeOpts</code></td><td><b>BUFFERIZE</b>: "materialize <code>value</code> into a buffer, iterating the ranges <code>r…</code>". It <em>closes</em> those ranges
+      (<code>range_start[Ops.STAGE] = 1</code>: srcs from index 1 on are ranges it ends). Its shape is <code>(r.vmax+1 for r in ranges)</code>. Readers wrap it in an INDEX with their own ranges.
+      <a class="src" data-path="tinygrad/schedule/indexing.py" data-line="55">BufferizeOpts</a> carries <code>device</code>, <code>addrspace</code> and <code>removable</code>.</td></tr>
+    <tr><td><code>END</code></td><td><code>END(STORE, r…)</code></td><td>Closes the loops of a STORE: "everything above runs once per (r…)". A STORE + END with no open ranges left is a complete kernel (Chapter 11).</td></tr>
+    <tr><td><code>REDUCE</code></td><td><code>REDUCE(x, r…) arg=(op, 0)</code></td><td>After rangeify: accumulate <code>x</code> with <code>op</code> over the ranges listed in its srcs (the ones it created). Before rangeify it was <code>REDUCE(x) arg=(op, n_axes)</code>.</td></tr>
+  </table>
+  <p><code>STAGE</code> has a double life, which is confusing at first: on the <em>tensor</em> side it is what
+  <code>.contiguous()</code> creates (<code>arg=None</code>, a request for a contiguous materialization). Inside rangeify it is the
+  BUFFERIZE marker with <code>BufferizeOpts</code> and range srcs. <code>UOp.bufferize(*ranges, arg=...)</code>
+  (<a class="src" data-path="tinygrad/uop/ops.py" data-line="648">ops.py:648</a>) literally builds <code>UOp(Ops.STAGE, ...)</code>.
+  The VIZ labels and comments still say "bufferize", the enum says STAGE.</p>
+
+  <!-- ===================================================================================== -->
+  <h2 id="realize-map"><span class="sec">10.5</span> The realize map: who must be materialized, and why</h2>
+  <p><a class="src" data-path="tinygrad/schedule/indexing.py" data-line="11">IndexingContext</a> holds the state of the whole
+  algorithm:</p>
+<pre><code class="language-python">@dataclass
+class IndexingContext:
+  realize_map: dict[UOp, None|list[int]] = field(default_factory=dict)   # UOp -> which axes get fresh ranges
+  non_removable: dict[UOp, None] = field(default_factory=dict)
+  range_map: dict[UOp, tuple[tuple[UOp, ...], tuple[UOp, ...]]] = field(default_factory=dict)  # UOp -> (input rngs, output rngs)
+  range_idx: Iterator[int] = field(default_factory=itertools.count)
+  def new_range(self, s:sint) -> UOp:
+    if isinstance(s, UOp) and s.op is Ops.RANGE: return s
+    # if a range has a 1 src, it's the same as UOp.const(0)
+    return UOp.range(s, next(self.range_idx)) if resolve(s!=1) else UOp.const(0)</code></pre>
+
+  <p>The realize map is filled in <b>two phases</b>.</p>
+  <h3>Phase 1 — structural: <code>pm_generate_realize_map</code> (pass "get realize")</h3>
+<pre><code class="language-python">ALWAYS_CONTIGUOUS: set[Ops] = GroupOp.Defines|{Ops.AFTER, Ops.CONST, Ops.MSELECT, Ops.MSTACK, Ops.LOAD, Ops.CALL}
+
+pm_generate_realize_map = PatternMatcher([
+  # realize the inputs of custom kernel calls
+  (UPat(Ops.CALL, src=(UPat((Ops.SINK, Ops.PROGRAM)),), name="c", allow_any_len=True), realize_custom_kernel_srcs),
+  # always realize
+  (UPat(Ops.STORE, name="tr"), realize),
+  # realize srcs of these
+  (UPat((Ops.MSELECT, Ops.MSTACK), name="rb"), realize_srcs),
+  # sometimes we need to realize the src of STORE if there's a self-access, or if it's a cross device store
+  (UPat(Ops.STORE, src=(UPat.var("dest"), UPat.var("src"))), realize_store_after_src),
+])</code></pre>
+  <p><a class="src" data-path="tinygrad/schedule/indexing.py" data-line="43">indexing.py:43</a>. In words:</p>
+  <table>
+    <tr><th>rule</th><th>why</th></tr>
+    <tr><td>every <b>STORE</b></td><td>A STORE is the definition of a kernel output — your realized tensors, <code>.contiguous()</code> (turned into a STORE in prepare), <code>assign</code>, copies. Always gets its own loop nest.</td></tr>
+    <tr><td>srcs of <b>MSELECT / MSTACK</b></td><td>Multi-device selection/stacking needs real per-device buffers to point at (<a href="19-multi.html">Chapter 19</a>).</td></tr>
+    <tr><td>non-trivial srcs of a <b>custom kernel CALL</b></td><td>A hand-written kernel takes buffers, not expressions. Marked <code>non_removable</code> too.</td></tr>
+    <tr><td>src of <code>STORE(dest, src)</code> if <b>dest appears inside src</b></td><td>A write-after-read hazard: <code>c.assign(c.flip(0)+1)</code> would overwrite elements it still needs to read. The source is computed into a temporary first (Chapter 11 case study).</td></tr>
+  </table>
+
+  <h3>Phase 2 — dataflow: decided during the walk in <code>run_rangeify</code></h3>
+  <p>While walking the graph (next section), two situations add a UOp to the realize map:</p>
+  <ul>
+    <li><b>Disagreeing consumers.</b> A UOp with 2+ consumers whose ranges are <em>not</em> identical (e.g. <code>y + y.T</code>:
+    one reader wants <code>y[r0, r1]</code>, the other <code>y[r1, r0]</code>). It can't inherit a single set of loop variables, so
+    the axes where they differ get fresh ranges and it is (partially) realized.</li>
+    <li><b>Ending ranges.</b> When a consumer <em>broadcasts</em> a value (an EXPAND, or a binary op whose input has a size-1 axis
+    where the output doesn't), the ranges it iterates over that axis "end" there: the value must be complete for every
+    position of that axis before it can be reused. If an elementwise op or a REDUCE has pending ending ranges, it is realized.
+    This is why <code>x - x.max(1, keepdim=True)</code> needs the row maximum in a buffer.</li>
+  </ul>
+  <div class="callout warn"><span class="title">Candidates, not kernels</span> The realize map is a list of <b>candidates</b>.
+  Everything except STOREs (and <code>removable=False</code> stages) may still be <em>un</em>-realized by
+  <code>pm_remove_bufferize</code> in <a href="11-kernel-split.html">Chapter 11</a> if recomputing is cheaper than storing.
+  E.g. softmax has 4 candidates + 1 STORE, but ends up as 3 kernels.</div>
+
+  <!-- ===================================================================================== -->
+  <h2 id="walk"><span class="sec">10.6</span> The walk: run_rangeify, line by line</h2>
+  <p><a class="src" data-path="tinygrad/schedule/indexing.py" data-line="182">run_rangeify</a> visits the graph in
+  <b>reverse topological order</b> — outputs first, buffers last — so that when it reaches a UOp, all of that UOp's consumers have
+  already been assigned ranges. Here's the core (lightly trimmed):</p>
+<pre><code class="language-python">for x in reversed(tsink_toposort):
+  if x.op in {Ops.CALL, Ops.AFTER, Ops.MSTACK, Ops.MSELECT}: continue     # no ranges on these
+  ending_ranges[x] = sum([ending_ranges.get(u, []) for u in consumer_map[x]], [])
+  # ranges the consumers iterate that this node broadcasts over
+  ended = [rctx.range_map[c][0][i] for c in consumer_map[x] if c in rctx.range_map and c.op in GroupOp.Broadcastable
+           for i in broadcast_axes(x.shape, c.shape)]
+  broadcast_ending_ranges = list(UOp.sink(*ended).ranges)
+  if x.op is Ops.REDUCE: ending_ranges[x] += broadcast_ending_ranges     # fusion decision: REDUCE before the broadcast
+
+  # *** the ranges on the output are
+  #  1. new if this op is realized
+  #  2. from the single consumer if this op only has one consumer
+  #  3. potentially new if this op has 2+ consumers
+  consumer_rngs = [broadcast_rngs(c, x, rctx.range_map[c][0]) for c in consumer_map[x] if c in rctx.range_map]
+  if x in rctx.realize_map:
+    out_rngs = tuple(rctx.new_range(s) for s in x.shape)                # 1. fresh ranges
+    ending_ranges[x] = []
+    rctx.realize_map[x] = list(range(len(x.shape)))
+  elif len(consumer_rngs) == 0: continue                                  # nobody needs it with ranges
+  elif len(consumer_rngs) == 1: out_rngs = consumer_rngs[0]               # 2. inherit
+  elif len(consumer_rngs) > 1:                                            # 3. merge or realize
+    ...  # if all consumers agree (ignoring validity): OR their valids together
+         # otherwise: new range on every axis, and realize_map[x] = those axes
+
+  if len(ending_ranges[x]) and x.op in GroupOp.Elementwise.union({Ops.REDUCE}):
+    rctx.realize_map[x] = list(range(len(out_rngs)))                     # ending ranges: realize
+    out_rngs = tuple(rctx.new_range(x.shape[i]) for i in range(len(out_rngs)))
+    ending_ranges[x] = []
+  ending_ranges[x] += broadcast_ending_ranges
+
+  # *** the ranges on the inputs are
+  #  1. swizzled for MovementOps   2. newly created for REDUCE   3. passed through for everything else
+  rngs = out_rngs
+  if x.op in GroupOp.Movement: rngs = apply_movement_op(x.op, x.src[0].shape, x.marg, rngs)
+  if x.op is Ops.REDUCE: rngs = tuple(rctx.new_range(s) for s in x.src[0].shape[:x.arg[1]]) + out_rngs
+  rctx.range_map[x] = (rngs, out_rngs)</code></pre>
+
+  <p>Two numbers per UOp come out of this: <code>out_rngs</code> (the ranges at which the UOp's <em>value</em> is indexed) and
+  <code>rngs</code> (the ranges handed down to its <em>sources</em>). For an elementwise op they are equal; for a movement op
+  <code>rngs</code> is <code>out_rngs</code> transformed by <code>apply_movement_op</code>; for a REDUCE <code>rngs</code> prepends
+  freshly created ranges for the reduced axes. <code>broadcast_rngs</code> drops (replaces with <code>0</code>) the consumer ranges
+  for axes the source is broadcast along.</p>
+
+  <p>Setting <code>DEBUG_RANGEIFY=1</code> prints one line per visited UOp. The columns: <code>***</code> if realized, number of
+  consumers, op, shape, number of ending ranges, then the ranges (<code>in -&gt; out</code> where they differ):</p>
+
+  <div class="codecap"><b>examples/10_realize_map.py</b> — run with <code>DEV=CPU python3 examples/10_realize_map.py</code></div>
+<pre><code class="language-python">&quot;&quot;&quot;examples/10_realize_map.py — which UOps get realized, and the ranges every UOp gets (run_rangeify&#x27;s debug table)
+
+Run:  DEV=CPU python3 examples/10_realize_map.py
+
+DEBUG_RANGEIFY=1 makes run_rangeify (tinygrad/schedule/indexing.py) print one line per UOp as it walks the graph
+from the outputs down to the buffers (reversed toposort):
+
+    ***  2 Ops.EXP2   (4, 8)   0 [r4][r5]
+    ^^^  ^ ^^^^^^^^   ^^^^^^   ^ ^^^^^^^^
+    |    | op         shape    | ranges (&quot;in -&gt; out&quot; when they differ; yellow in a terminal = realized axes)
+    |    | number of consumers  number of &quot;ending ranges&quot; (ranges a consumer broadcasts over)
+    &quot;***&quot; = this UOp is in the realize_map: it gets FRESH output ranges and will be wrapped in a STAGE (bufferize)
+
+The final line of each program tells you how many kernels survived (the realize map is only the list of CANDIDATES;
+chapter 11 shows how pm_remove_bufferize throws the cheap ones away again).
+&quot;&quot;&quot;
+from tinygrad import Tensor
+from tinygrad.helpers import Context
+
+def run(title, make):
+  print(f&quot;\n######## {title}&quot;)
+  out = make()
+  with Context(DEBUG_RANGEIFY=1, SCACHE=0):
+    linear, var_vals = Tensor.linear_with_vars(out)
+  print(f&quot;-&gt; {len(linear.src)} kernel(s)&quot;)
+
+run(&quot;elementwise + reduce: (a.permute(1,0)+1).sum(0)&quot;, lambda: (Tensor.empty(3, 4).permute(1, 0) + 1).sum(0))
+run(&quot;softmax over the last axis&quot;, lambda: Tensor.empty(4, 8).softmax(-1))
+run(&quot;one value, two different readers: y = x*3; y.sum(0) + y.max(0)&quot;, lambda: (lambda y: y.sum(0) + y.max(0))(Tensor.empty(8, 4) * 3))
+run(&quot;same value read transposed: y = x+1; y + y.T&quot;, lambda: (lambda y: y + y.T)(Tensor.empty(4, 4) + 1))
+run(&quot;pad then slice then reduce&quot;, lambda: Tensor.empty(4, 4).pad(((1, 1), (1, 1)))[:4, 2:].sum(1))</code></pre>
+<pre class="output"><code>
+######## elementwise + reduce: (a.permute(1,0)+1).sum(0)
+**************************
+***  0 Ops.STORE            (3,)                                 0 [r0]
+     1 Ops.REDUCE           (3,)                                 0 [r1][r0] -&gt; [r0]
+     1 Ops.ADD              (4, 3)                               0 [r1][r0]
+     1 Ops.CONST            ()                                   2 
+     1 Ops.PERMUTE          (4, 3)                               0 [r0 -&gt; r1][r1 -&gt; r0]
+     1 Ops.RESHAPE          (3, 4)                               0 [(r0*4+r1)] -&gt; [r0][r1]
+     1 Ops.PARAM            (12,)                                0 [(r0*4+r1)]
+     2 Ops.PARAM            (3,)                                 0 [r0]
+-&gt; 1 kernel(s)
+
+######## softmax over the last axis
+**************************
+***  0 Ops.STORE            (4, 8)                               0 [r0][r1]
+     1 Ops.MUL              (4, 8)                               0 [r0][r1]
+     1 Ops.RECIP            (4, 1)                               1 [r0][0]
+     1 Ops.RESHAPE          (4, 1)                               1 [r0] -&gt; [r0][0]
+***  1 Ops.REDUCE           (4,)                                 0 [r3][r2] -&gt; [r2]
+     1 Ops.PERMUTE          (8, 4)                               0 [r2 -&gt; r3][r3 -&gt; r2]
+***  2 Ops.EXP2             (4, 8)                               0 [r4][r5]
+     1 Ops.MUL              (4, 8)                               0 [r4][r5]
+     1 Ops.CONST            ()                                   2 
+     1 Ops.ADD              (4, 8)                               0 [r4][r5]
+     1 Ops.MUL              (4, 1)                               1 [r4][0]
+     1 Ops.CONST            ()                                   2 
+     1 Ops.RESHAPE          (4, 1)                               1 [r4] -&gt; [r4][0]
+***  1 Ops.REDUCE           (4,)                                 0 [r7][r6] -&gt; [r6]
+     1 Ops.PERMUTE          (8, 4)                               0 [r6 -&gt; r7][r7 -&gt; r6]
+***  2 Ops.RESHAPE          (4, 8)                               0 [(r8*8+r9)] -&gt; [r8][r9]
+     1 Ops.PARAM            (32,)                                0 [(r8*8+r9)]
+     1 Ops.RESHAPE          (4, 8)                               0 [(r0*8+r1)] -&gt; [r0][r1]
+     2 Ops.PARAM            (32,)                                0 [(r0*8+r1)]
+-&gt; 3 kernel(s)
+
+######## one value, two different readers: y = x*3; y.sum(0) + y.max(0)
+**************************
+***  0 Ops.STORE            (4,)                                 0 [r0]
+     1 Ops.ADD              (4,)                                 0 [r0]
+     1 Ops.REDUCE           (4,)                                 0 [r1][r0] -&gt; [r0]
+     1 Ops.REDUCE           (4,)                                 0 [r2][r0] -&gt; [r0]
+***  2 Ops.MUL              (8, 4)                               0 [r3][r4]
+     1 Ops.CONST            ()                                   2 
+     1 Ops.RESHAPE          (8, 4)                               0 [(r3*4+r4)] -&gt; [r3][r4]
+     1 Ops.PARAM            (32,)                                0 [(r3*4+r4)]
+     2 Ops.PARAM            (4,)                                 0 [r0]
+-&gt; 1 kernel(s)
+
+######## same value read transposed: y = x+1; y + y.T
+**************************
+***  0 Ops.STORE            (4, 4)                               0 [r0][r1]
+     1 Ops.ADD              (4, 4)                               0 [r0][r1]
+     1 Ops.PERMUTE          (4, 4)                               0 [r1 -&gt; r0][r0 -&gt; r1]
+***  2 Ops.ADD              (4, 4)                               0 [r2][r3]
+     1 Ops.CONST            ()                                   2 
+     1 Ops.RESHAPE          (4, 4)                               0 [(r2*4+r3)] -&gt; [r2][r3]
+     1 Ops.PARAM            (16,)                                0 [(r2*4+r3)]
+     1 Ops.RESHAPE          (4, 4)                               0 [(r0*4+r1)] -&gt; [r0][r1]
+     2 Ops.PARAM            (16,)                                0 [(r0*4+r1)]
+-&gt; 1 kernel(s)
+
+######## pad then slice then reduce
+**************************
+***  0 Ops.STORE            (4,)                                 0 [r0]
+     1 Ops.REDUCE           (4,)                                 0 [r1][r0] -&gt; [r0]
+     1 Ops.PERMUTE          (4, 4)                               0 [r0 -&gt; r1][r1 -&gt; r0]
+     1 Ops.SHRINK           (4, 4)                               0 [r0][(r1+2) -&gt; r1]
+     1 Ops.PAD              (6, 6)                               0 [((r0+-1) if ((r0&lt;1)==False) else Invalid) -&gt; r0][((r1+1) if (r1&lt;3) else Invalid) -&gt; (r1+2)]
+     1 Ops.RESHAPE          (4, 4)                               0 [((r0*4+r1+-3) if ((r1&lt;3)&amp;((r0&lt;1)==False)) else Invalid)] -&gt; [((r0+-1) if ((r0&lt;1)==False) else Invalid)][((r1+1) if (r1&lt;3) else Invalid)]
+     1 Ops.PARAM            (16,)                                0 [((r0*4+r1+-3) if ((r1&lt;3)&amp;((r0&lt;1)==False)) else Invalid)]
+     2 Ops.PARAM            (4,)                                 0 [r0]
+-&gt; 1 kernel(s)</code></pre>
+
+  <p>Read the softmax block bottom-up and you can see every rule fire:</p>
+  <ul>
+    <li><code>RESHAPE (4,8)</code> of the input has 2 consumers (the max-branch and the exp-branch read it with different ranges:
+    <code>r6/r7</code> under the max reduce, <code>r4/r5</code> in the exp), so it gets fresh ranges <code>r8, r9</code> →
+    <code>***</code>. (It is a <em>cheap</em> candidate: it's only a view of a PARAM, and Chapter 11's
+    <code>pm_remove_bufferize</code> throws it away again.)</li>
+    <li>The first <code>REDUCE (4,)</code> (the max): its result is used through a <code>RESHAPE (4,1)</code> by a broadcasting
+    <code>MUL (4,8)</code>/<code>ADD</code>, so <code>r5</code> "ends" over it (the "1" in the ending-ranges column of the
+    <code>MUL (4,1)</code> and <code>RESHAPE (4,1)</code> lines) — reduce result must be finished before being broadcast →
+    <code>***</code>.</li>
+    <li><code>EXP2 (4,8)</code> has two consumers (the sum and the final multiply) at different ranges → <code>***</code>.</li>
+    <li>The second <code>REDUCE</code> (the sum of exps) is broadcast by the final <code>MUL</code> → <code>***</code>.</li>
+  </ul>
+  <p>And look at <code>y.sum(0) + y.max(0)</code>: the <code>MUL (8,4)</code> is realized (two reduces iterate it with different
+  reduce ranges <code>r1</code> vs <code>r2</code>), yet the program is <b>1 kernel</b> — another candidate that Chapter 11 removes.</p>
+
+  <div class="demo" id="demo-flow">
+    <div class="demo-title">Ranges flow down the graph</div>
+    <div class="demo-desc">Real captured data: the tensor graph that <code>run_rangeify</code> received, then its <code>range_map</code>
+    entries in the exact order the walk created them. Each step labels the visited node with its <b>output ranges</b>; realized nodes
+    turn gold. The last steps morph the graph into the output of <b>"apply rangeify"</b> and then <b>"symbolic+reduce_collapse+debuf"</b>.
+    Hover a node for its full UOp.</div>
+    <div class="controls" id="flowsel"></div>
+    <pre style="margin:6px 0" id="flowcode"></pre>
+    <div id="flowstep"></div>
+    <div class="row">
+      <div class="col" style="flex:2 1 520px"><div id="flowgraph"></div></div>
+      <div class="col" style="flex:1 1 280px"><table class="ch10-rtable" id="flowtable"></table></div>
+    </div>
+  </div>
+
+  <div class="quiz" data-answer="2">
+    <div class="q">Why does <code>run_rangeify</code> visit UOps in <em>reverse</em> toposort order?</div>
+    <button class="opt">Because buffers must be allocated before the ops that read them.</button>
+    <button class="opt">It's an arbitrary choice; forward order would produce the same ranges.</button>
+    <button class="opt">A UOp's ranges come from its consumers, so every consumer must be processed before the UOp itself.</button>
+    <div class="explain">Ranges flow from the outputs toward the inputs. <code>consumer_rngs</code> reads <code>rctx.range_map[c]</code> for every consumer <code>c</code>; those entries only exist if the consumers were visited first.</div>
+  </div>
+
+  <!-- ===================================================================================== -->
+  <h2 id="movement"><span class="sec">10.7</span> Movement ops become index arithmetic</h2>
+  <p>This is the heart of "the movement ops disappear". The comment above it says it all — <em>"this is the definition of the
+  movement ops"</em>:</p>
+<pre><code class="language-python"># this is the definition of the movement ops
+@functools.cache
+def apply_movement_op(op:Ops, in_shape:tuple[sint,...], arg:tuple, rngs:tuple[UOp, ...]) -> tuple[UOp, ...]:
+  match op:
+    case Ops.SHRINK:  rngs = tuple(a if off == 0 else a+off for a,(off,_) in zip(rngs, arg))
+    case Ops.PERMUTE: rngs = tuple(rngs[p] for p in argsort(arg))
+    case Ops.EXPAND:  rngs = rngs[len(arg):]
+    case Ops.PAD:
+      rngs = tuple(r if (sz == sh and off == 0) else (r-off).valid(graph_rewrite((r >= off) &amp; (r &lt; (sh+off)),
+        symbolic+pm_simplify_valid, name="pad")) for r,sh,(off,sz) in zip(rngs, in_shape, arg))
+    case Ops.RESHAPE:
+      sink = UOp.sink(*rngs).simplify()
+      sub_array = {r:r.replace(arg=(AxisType.PLACEHOLDER, i)) for i,r in enumerate(sink.ranges)}
+      rngs = _apply_reshape(in_shape, arg, sink.substitute(sub_array)).substitute({v:k for k,v in sub_array.items()}).src
+    case _: raise RuntimeError(f"{op} is not a MovementOp")
+  return rngs</code></pre>
+  <p><a class="src" data-path="tinygrad/schedule/indexing.py" data-line="164">indexing.py:164</a>. Given the index expressions for
+  the op's <b>output</b> axes, it returns the index expressions for its <b>input</b> axes. Op by op:</p>
+  <table>
+    <tr><th>op</th><th>marg (as stored on the UOp)</th><th>input index from output index</th><th>example</th></tr>
+    <tr><td>SHRINK</td><td><code>((offset, size), …)</code></td><td>\(i_k = r_k + \text{off}_k\)</td><td><code>x[1:3, 1:]</code>: <code>(r0+1, r1+1)</code></td></tr>
+    <tr><td>PERMUTE</td><td><code>order</code></td><td>\(i = r[\text{argsort}(\text{order})]\)</td><td><code>.permute(1,0)</code>: <code>(r1, r0)</code></td></tr>
+    <tr><td>EXPAND</td><td>sizes of the new <em>leading</em> axes</td><td>drop the leading ranges</td><td><code>(4,3)</code> from <code>(3,)</code>: <code>(r1,)</code></td></tr>
+    <tr><td>PAD</td><td><code>((offset, new_size), …)</code></td><td>\(i_k = r_k - \text{off}_k\) if \(\text{off}_k \le r_k &lt; \text{off}_k+s_k\) else <code>Invalid</code></td><td><code>(r0-1) if (r0≥1 &amp; r0&lt;4) else Invalid</code></td></tr>
+    <tr><td>RESHAPE</td><td>new shape</td><td>flatten outputs into one linear index, unflatten by the input shape with <code>//</code> and <code>%</code>, simplify</td><td><code>(3,4)</code> from <code>(12,)</code>: <code>r0*4+r1</code></td></tr>
+  </table>
+  <p>Two details are specific to this version. First, <b>EXPAND only prepends axes</b>: numpy-style broadcasting of a size-1 axis
+  is built by <a class="src" data-path="tinygrad/mixin/movement.py" data-line="128">_broadcast_to</a> as reshape (squeeze the 1s) →
+  EXPAND (prepend) → PERMUTE (move them back), so the expanded axis's range simply never reaches the buffer. Second, <b>there is no
+  FLIP op</b>: <code>flip</code> is assembled from pads, reshapes, a transpose and shrinks (an anti-diagonal trick in
+  <a class="src" data-path="tinygrad/mixin/movement.py" data-line="233">mixin/movement.py</a>), and the simplifier collapses the
+  12-op chain back into <code>3 - r0</code>.</p>
+
+  <h3>RESHAPE: the only op that needs real math</h3>
+<pre><code class="language-python">@functools.cache
+def _apply_reshape(in_shape:tuple[sint,...], out_shape:tuple[sint, ...], urngs:UOp) -> UOp:
+  acc:sint = 1
+  axes_in:list[UOp] = []
+  for s,src in list(zip(out_shape, urngs.src))[::-1]:
+    axes_in.append(acc*src)
+    acc *= s
+  combined_axes = UOp.const(0).usum(axes_in)
+  axes_out:list[UOp] = []
+  for s in in_shape[::-1]:
+    axes_out.append(combined_axes % s)
+    combined_axes //= s
+  # this simplify is doing a lot of heavy lifting. this is the replacement for the reshape view merging code
+  return graph_rewrite(UOp.sink(*axes_out[::-1]), symbolic+pm_simplify_valid+pm_drop_and_clauses, name="reshape")</code></pre>
+  <p>For output index \((i_0,\dots,i_{n-1})\) of shape \((o_0,\dots,o_{n-1})\) the linear position is
+  \(L = \sum_k i_k \prod_{j&gt;k} o_j\); the input index along axis \(k\) of shape \((s_0,\dots)\) is
+  \(\left\lfloor L / \prod_{j&gt;k} s_j \right\rfloor \bmod s_k\). Without simplification that's a pile of <code>//</code> and
+  <code>%</code>; the symbolic rules of <a href="06-symbolic.html">Chapter 6</a> use the ranges' bounds (<code>0 ≤ r &lt; size</code>)
+  to fold it, e.g. <code>(r0*4+r1)//4 → r0</code> and <code>(r0*4+r1)%4 → r1</code> because <code>r1 &lt; 4</code>. The
+  placeholder substitution (<code>AxisType.PLACEHOLDER</code>) renames ranges to canonical ids so that <code>@functools.cache</code>
+  hits for every reshape with the same shapes, regardless of which ranges flow in.</p>
+
+  <div class="codecap"><b>examples/10_movement_index.py</b> — run with <code>DEV=CPU python3 examples/10_movement_index.py</code></div>
+<pre><code class="language-python">&quot;&quot;&quot;examples/10_movement_index.py — movement ops become index arithmetic (tinygrad/schedule/indexing.py: apply_movement_op)
+
+Run:  DEV=CPU python3 examples/10_movement_index.py
+
+For each chain of movement ops we
+  1. create one RANGE per output axis (the loop variables of the consumer),
+  2. walk from the output down to the buffer, calling the REAL apply_movement_op for each op
+     (this is exactly what run_rangeify does for every movement op it visits),
+  3. verify the final index expression by evaluating it for every output element and comparing with the real
+     values tinygrad computes for the same view of arange(N).
+&quot;&quot;&quot;
+import itertools
+from tinygrad import Tensor, dtypes
+from tinygrad.uop.ops import UOp, Ops, GroupOp
+from tinygrad.schedule.indexing import apply_movement_op
+
+def show(desc, base_shape, fn):
+  print(f&quot;=== {desc}&quot;)
+  base = Tensor.arange(int(__import__(&#x27;math&#x27;).prod(base_shape))).reshape(base_shape).contiguous().realize()
+  y = fn(base)
+  # collect the movement ops between the output and the realized buffer
+  u, mops = y.uop, []
+  while u.op in GroupOp.Movement: mops.append(u); u = u.src[0]
+  rngs = tuple(UOp.range(s, i) for i, s in enumerate(y.shape))     # RANGE(size, axis id) per output axis
+  idx = rngs
+  print(f&quot;  output shape {y.shape}, loop vars {[r.render() for r in rngs]}&quot;)
+  for m in mops:
+    idx = apply_movement_op(m.op, m.src[0].shape, m.marg, idx)
+    print(f&quot;  {m.op.name:8s} arg={str(m.marg):22s} into shape {str(m.src[0].shape):9s} -&gt; {[i.render() for i in idx]}&quot;)
+  # the base after .contiguous().realize() is a reshape of a flat buffer, so the last index is a flat offset
+  expr = idx[0] if len(idx) == 1 else None
+  if expr is not None:
+    real = y.flatten().tolist()
+    ok = True
+    for flat, pos in enumerate(itertools.product(*[range(s) for s in y.shape])):
+      v = expr.substitute({r: r.const_like(p) for r, p in zip(rngs, pos)}).simplify()
+      val = None if v.op is Ops.CONST and str(v.arg) == &quot;Invalid&quot; else (v.arg if v.op is Ops.CONST else v.render())
+      # a padded (Invalid) position reads nothing: the real tensor shows the pad value 0 there
+      want = real[flat]
+      got = 0 if val is None else val
+      if got != want: ok = False
+    print(f&quot;  check: evaluating the index for all {len(real)} outputs reproduces y.tolist() -&gt; {&#x27;OK&#x27; if ok else &#x27;MISMATCH&#x27;}&quot;)
+
+show(&quot;transpose: reshape(3,4) then permute(1,0)&quot;, (12,), lambda x: x.reshape(3, 4).permute(1, 0))
+show(&quot;slice: x[1:3, 1:]  (SHRINK adds the offset)&quot;, (3, 4), lambda x: x[1:3, 1:])
+show(&quot;pad: x.pad(((1,1),(0,2)))  (PAD adds a validity condition)&quot;, (3, 4), lambda x: x.pad(((1, 1), (0, 2))))
+show(&quot;broadcast: x.reshape(3,1).expand(3,4)  (EXPAND drops the range)&quot;, (3,), lambda x: x.reshape(3, 1).expand(3, 4))
+show(&quot;two reshapes collapse: reshape(2,6).reshape(4,3)&quot;, (12,), lambda x: x.reshape(2, 6).reshape(4, 3))
+show(&quot;flip(0): there is no FLIP op, but the index still comes out as 3-r0&quot;, (4,), lambda x: x.flip(0))</code></pre>
+<pre class="output"><code>=== transpose: reshape(3,4) then permute(1,0)
+  output shape (4, 3), loop vars [&#x27;r0&#x27;, &#x27;r1&#x27;]
+  PERMUTE  arg=(1, 0)                 into shape (3, 4)    -&gt; [&#x27;r1&#x27;, &#x27;r0&#x27;]
+  RESHAPE  arg=(3, 4)                 into shape (12,)     -&gt; [&#x27;(r1*4+r0)&#x27;]
+  check: evaluating the index for all 12 outputs reproduces y.tolist() -&gt; OK
+=== slice: x[1:3, 1:]  (SHRINK adds the offset)
+  output shape (2, 3), loop vars [&#x27;r0&#x27;, &#x27;r1&#x27;]
+  SHRINK   arg=((1, 2), (1, 3))       into shape (3, 4)    -&gt; [&#x27;(r0+1)&#x27;, &#x27;(r1+1)&#x27;]
+  RESHAPE  arg=(3, 4)                 into shape (12,)     -&gt; [&#x27;(r0*4+r1+5)&#x27;]
+  check: evaluating the index for all 6 outputs reproduces y.tolist() -&gt; OK
+=== pad: x.pad(((1,1),(0,2)))  (PAD adds a validity condition)
+  output shape (5, 6), loop vars [&#x27;r0&#x27;, &#x27;r1&#x27;]
+  PAD      arg=((1, 5), (0, 6))       into shape (3, 4)    -&gt; [&#x27;((r0+-1) if (((r0&lt;1)==False)&amp;(r0&lt;4)) else Invalid)&#x27;, &#x27;(r1 if (r1&lt;4) else Invalid)&#x27;]
+  RESHAPE  arg=(3, 4)                 into shape (12,)     -&gt; [&#x27;((r0*4+r1+-4) if ((r1&lt;4)&amp;(((r0&lt;1)==False)&amp;(r0&lt;4))) else Invalid)&#x27;]
+  check: evaluating the index for all 30 outputs reproduces y.tolist() -&gt; OK
+=== broadcast: x.reshape(3,1).expand(3,4)  (EXPAND drops the range)
+  output shape (3, 4), loop vars [&#x27;r0&#x27;, &#x27;r1&#x27;]
+  PERMUTE  arg=(1, 0)                 into shape (4, 3)    -&gt; [&#x27;r1&#x27;, &#x27;r0&#x27;]
+  EXPAND   arg=(4,)                   into shape (3,)      -&gt; [&#x27;r0&#x27;]
+  RESHAPE  arg=(3,)                   into shape (3, 1)    -&gt; [&#x27;r0&#x27;, &#x27;0&#x27;]
+  RESHAPE  arg=(3, 1)                 into shape (3,)      -&gt; [&#x27;r0&#x27;]
+  check: evaluating the index for all 12 outputs reproduces y.tolist() -&gt; OK
+=== two reshapes collapse: reshape(2,6).reshape(4,3)
+  output shape (4, 3), loop vars [&#x27;r0&#x27;, &#x27;r1&#x27;]
+  RESHAPE  arg=(4, 3)                 into shape (2, 6)    -&gt; [&#x27;(r0//2)&#x27;, &#x27;(r0%2*3+r1)&#x27;]
+  RESHAPE  arg=(2, 6)                 into shape (12,)     -&gt; [&#x27;(r0*3+r1)&#x27;]
+  check: evaluating the index for all 12 outputs reproduces y.tolist() -&gt; OK
+=== flip(0): there is no FLIP op, but the index still comes out as 3-r0
+  output shape (4,), loop vars [&#x27;r0&#x27;]
+  RESHAPE  arg=(4,)                   into shape (4, 1)    -&gt; [&#x27;r0&#x27;, &#x27;0&#x27;]
+  SHRINK   arg=((0, 4), (0, 1))       into shape (4, 3)    -&gt; [&#x27;r0&#x27;, &#x27;0&#x27;]
+  RESHAPE  arg=(4, 3)                 into shape (12,)     -&gt; [&#x27;(r0*3)&#x27;]
+  SHRINK   arg=((3, 12),)             into shape (16,)     -&gt; [&#x27;(r0*3+3)&#x27;]
+  RESHAPE  arg=(16,)                  into shape (4, 4)    -&gt; [&#x27;r0&#x27;, &#x27;(r0*-1+3)&#x27;]
+  PERMUTE  arg=(1, 0)                 into shape (4, 4)    -&gt; [&#x27;(r0*-1+3)&#x27;, &#x27;r0&#x27;]
+  RESHAPE  arg=(4, 4)                 into shape (16,)     -&gt; [&#x27;(r0*-3+12)&#x27;]
+  PAD      arg=((3, 16),)             into shape (12,)     -&gt; [&#x27;(r0*-3+9)&#x27;]
+  RESHAPE  arg=(12,)                  into shape (4, 3)    -&gt; [&#x27;(r0*-1+3)&#x27;, &#x27;0&#x27;]
+  PAD      arg=((0, 4), (0, 3))       into shape (4, 1)    -&gt; [&#x27;(r0*-1+3)&#x27;, &#x27;0&#x27;]
+  RESHAPE  arg=(4, 1)                 into shape (4,)      -&gt; [&#x27;(r0*-1+3)&#x27;]
+  PAD      arg=((0, 4),)              into shape (4,)      -&gt; [&#x27;(r0*-1+3)&#x27;]
+  check: evaluating the index for all 4 outputs reproduces y.tolist() -&gt; OK</code></pre>
+
+  <div class="demo" id="demo-mops">
+    <div class="demo-title">Movement-op → index-expression calculator</div>
+    <div class="demo-desc">Build a chain of movement ops on <code>arange(N)</code>. The calculator walks it <b>backwards</b> like
+    <code>run_rangeify</code>, applying a JavaScript port of <code>apply_movement_op</code> (raw ops, with tinygrad's marg conventions)
+    and a small affine simplifier (div/mod folding using range bounds, as in Chapter 6). Hover an output cell to see which buffer cell it
+    reads. <b>verify</b> recomputes every output by actually moving data around (an independent forward implementation) and compares.
+    Presets show the string the <em>real</em> tinygrad printed for the same chain. The toy simplifier is weaker in places (the
+    <b>flip</b> preset needs tinygrad's validity-aware rules to collapse to <code>3-r0</code>) and occasionally stronger (<b>split an axis</b>);
+    strings may differ, values never do — that's what <b>verify</b> checks.</div>
+    <div class="controls"><label>base buffer shape</label><input type="text" id="mbase" value="3,4" size="8">
+      <span id="mpresets"></span></div>
+    <div class="controls">
+      <select id="mop"><option>reshape</option><option>permute</option><option>expand</option><option>pad</option><option>shrink</option><option>flip</option>
+      <option>RESHAPE</option><option>EXPAND</option><option>PAD</option><option>SHRINK</option><option>PERMUTE</option></select>
+      <input type="text" id="marg" value="4,3" size="22"><button class="primary" id="madd">add op</button>
+      <button id="mclear">clear</button><button id="mverify">verify</button><span id="mhelp" style="font-size:12px;color:var(--dim)"></span>
+    </div>
+    <div class="ch10-chain" id="mchain"></div>
+    <div id="merr" style="color:var(--red);font-size:13px"></div>
+    <table class="ch10-steps" id="msteps"></table>
+    <div class="ch10-expr" id="mexpr"></div>
+    <div id="mreal" style="font-size:13px;color:var(--dim)"></div>
+    <div class="ch10-grids">
+      <div><h4>output (hover a cell)</h4><div id="mout"></div></div>
+      <div><h4>flat source buffer = arange(N)</h4><div id="mbuf"></div></div>
+    </div>
+    <div id="mhover" style="font-family:var(--mono);font-size:13px;margin-top:8px;min-height:1.4em"></div>
+    <div id="mverres" style="font-size:13px;margin-top:4px"></div>
+  </div>
+
+  <div class="quiz" data-answer="0">
+    <div class="q">A (3, 1) tensor is broadcast to (3, 4) and stored. Which index does the output element <code>[r0, r1]</code> read?</div>
+    <button class="opt"><code>r0</code> — the r1 range never reaches the buffer</button>
+    <button class="opt"><code>r0*4 + r1</code></button>
+    <button class="opt"><code>r1</code></button>
+    <button class="opt"><code>r0 + r1</code></button>
+    <div class="explain">Broadcasting is reshape→EXPAND→permute. EXPAND drops the leading (expanded) range; the size-1 axis is indexed by constant 0. The examples output above prints exactly this: <code>['r0']</code>.</div>
+  </div>
+
+  <!-- ===================================================================================== -->
+  <h2 id="apply"><span class="sec">10.8</span> Applying the ranges: pm_apply_rangeify</h2>
+  <p>The walk only <em>computes</em> <code>range_map</code> and <code>realize_map</code>. The graph is rewritten afterwards, bottom-up,
+  by <a class="src" data-path="tinygrad/schedule/indexing.py" data-line="129">pm_apply_rangeify</a> (pass "apply rangeify"):</p>
+<pre><code class="language-python">pm_apply_rangeify = PatternMatcher([
+  # REDUCE(op, axis) -> REDUCE(op) with ranges
+  (UPat(Ops.REDUCE, name="x"), convert_reduce_to_reduce_with_ranges),
+  # PAD -> WHERE
+  (UPat((Ops.PAD, Ops.INDEX), name="x"), convert_pad_to_where_to_keep_behavior_local),
+  # STACK -> WHERE select on the leading range
+  (UPat(Ops.STACK, name="x"), convert_stack_to_where),
+  # finally, apply_rangeify
+  (UPat(GroupOp.All-{Ops.STAGE, Ops.INDEX}, name="x"), create_bufferize_and_index_based_on_ranges),
+  # remove movement op
+  (UPat(GroupOp.Movement, name="x"), remove_movement_op_after_rangeify),
+])</code></pre>
+  <p>The workhorse is <a class="src" data-path="tinygrad/schedule/indexing.py" data-line="71">create_bufferize_and_index_srcs</a>.
+  For every src <code>s</code> of a UOp <code>x</code>:</p>
+  <ul>
+    <li>if <code>s</code> is a buffer (<code>PARAM</code>/<code>BUFFER</code>/<code>ALLOC</code>/<code>AFTER</code>/…):
+    replace it by <code>s.index(*rngs)</code> — <b>a load at the input ranges of <code>x</code></b>;</li>
+    <li>if <code>s</code> is in the realize map and is a STORE: replace it by <code>s.end(*closed_ranges)</code>;</li>
+    <li>if <code>s</code> is in the realize map otherwise: wrap it as
+    <code>STAGE(s, *closed_ranges, arg=BufferizeOpts(device, removable=...))</code> and index that with <code>x</code>'s ranges. The
+    STAGE iterates the <em>fresh</em> ranges the walk gave <code>s</code>; the INDEX is where the consumer reads it.</li>
+  </ul>
+  <p>Then the leftovers are cleaned: a movement op whose src is now an INDEX is simply removed (its effect already lives in the
+  index), <a class="src" data-path="tinygrad/schedule/indexing.py" data-line="98">PAD → WHERE</a> multiplies in the validity
+  (<code>valid.where(x, 0)</code>, so padded positions produce 0 without loading), and
+  <a class="src" data-path="tinygrad/schedule/indexing.py" data-line="105">REDUCE</a> is rebuilt as <code>REDUCE(src, *new_ranges,
+  arg=(op, 0))</code> listing exactly the ranges it created. Finally "add device to deviceless" puts a device on STAGEs that had none.</p>
+
+  <div class="codecap"><b>examples/10_apply_rangeify.py</b> — run with <code>DEV=CPU python3 examples/10_apply_rangeify.py</code></div>
+<pre><code class="language-python">&quot;&quot;&quot;examples/10_apply_rangeify.py — the graph BEFORE and AFTER run_rangeify, printed as real UOps
+
+Run:  DEV=CPU python3 examples/10_apply_rangeify.py
+
+Uses the pass recorder from 10_sched_capture.py to grab the input of the &quot;get realize&quot; pass (the tensor graph that
+run_rangeify receives) and the output of &quot;apply rangeify&quot; (the same computation written with RANGEs and INDEX).
+&quot;&quot;&quot;
+import importlib.util, pathlib
+from tinygrad import Tensor
+from tinygrad.uop.ops import Ops
+
+spec = importlib.util.spec_from_file_location(&quot;cap&quot;, pathlib.Path(__file__).parent / &quot;10_sched_capture.py&quot;)
+cap = importlib.util.module_from_spec(spec); spec.loader.exec_module(cap)
+
+def before_after(title, out):
+  log, linear, compiled = cap.schedule(out)
+  before = cap.pass_by_name(log, &quot;get realize&quot;)[1]
+  after = cap.pass_by_name(log, &quot;apply rangeify&quot;)[2]
+  cleaned = cap.pass_by_name(log, &quot;symbolic+reduce_collapse+debuf&quot;)[2]
+  print(f&quot;################ {title}&quot;)
+  print(&quot;---- BEFORE run_rangeify (shapes + movement ops):&quot;)
+  print(before)
+  print(&quot;---- AFTER &#x27;apply rangeify&#x27; (RANGE / INDEX / STAGE, no movement ops):&quot;)
+  print(after)
+  count = lambda g, op: sum(1 for u in g.toposort() if u.op is op)
+  print(f&quot;---- STAGE count: after &#x27;apply rangeify&#x27; = {count(after, Ops.STAGE)}, &quot;
+        f&quot;after &#x27;symbolic+reduce_collapse+debuf&#x27; = {count(cleaned, Ops.STAGE)}; kernels = {len(linear.src)}\n&quot;)
+
+# 1. PAD becomes a WHERE on a validity condition, SHRINK becomes +2, the sum gets its own RANGE
+before_after(&quot;x.pad(((1,1),(1,1)))[:4, 2:].sum(1)&quot;, Tensor.empty(4, 4).pad(((1, 1), (1, 1)))[:4, 2:].sum(1))
+# 2. a value read by two consumers that disagree on ranges gets a STAGE (bufferize) ... which is later removed
+before_after(&quot;y = x+1; y + y.T&quot;, (lambda y: y + y.T)(Tensor.empty(4, 4) + 1))</code></pre>
+<pre class="output"><code>################ x.pad(((1,1),(1,1)))[:4, 2:].sum(1)
+---- BEFORE run_rangeify (shapes + movement ops):
+UOp(Ops.SINK, arg=None, src=(
+  UOp(Ops.AFTER, arg=None, src=(
+    x1:=UOp(Ops.PARAM, arg=ParamArg(0, dtypes.f32, device=&#x27;CPU&#x27;), src=(
+      x2:=UOp(Ops.CONST, arg=4, src=()),)),
+    UOp(Ops.STORE, arg=None, src=(
+      x1,
+      UOp(Ops.REDUCE, arg=(Ops.ADD, 1), src=(
+        UOp(Ops.PERMUTE, arg=None, src=(
+          UOp(Ops.SHRINK, arg=None, src=(
+            UOp(Ops.PAD, arg=None, src=(
+              UOp(Ops.RESHAPE, arg=None, src=(
+                UOp(Ops.PARAM, arg=ParamArg(1, dtypes.f32, device=&#x27;CPU&#x27;), src=(
+                  UOp(Ops.CONST, arg=16, src=()),)),
+                x11:=UOp(Ops.STACK, arg=None, src=(
+                  x2,
+                  x2,)),)),
+              UOp(Ops.STACK, arg=None, src=(
+                x13:=UOp(Ops.CONST, arg=1, src=()),
+                x13,)),
+              UOp(Ops.STACK, arg=None, src=(
+                x15:=UOp(Ops.CONST, arg=6, src=()),
+                x15,)),)),
+            UOp(Ops.STACK, arg=None, src=(
+              x17:=UOp(Ops.CONST, arg=0, src=()),
+              UOp(Ops.CONST, arg=2, src=()),)),
+            x11,)),
+          UOp(Ops.STACK, arg=None, src=(
+            x13,
+            x17,)),)),)),)),)),))
+---- AFTER &#x27;apply rangeify&#x27; (RANGE / INDEX / STAGE, no movement ops):
+UOp(Ops.SINK, arg=None, src=(
+  UOp(Ops.AFTER, arg=None, src=(
+    x1:=UOp(Ops.PARAM, arg=ParamArg(0, dtypes.f32, device=&#x27;CPU&#x27;), src=(
+      x2:=UOp(Ops.CONST, arg=4, src=()),)),
+    UOp(Ops.END, arg=None, src=(
+      UOp(Ops.STORE, arg=None, src=(
+        UOp(Ops.INDEX, arg=None, src=(
+          x1,
+          x6:=UOp(Ops.RANGE, arg=(AxisType.WEAK, 0), src=(
+            x2,)),)),
+        UOp(Ops.REDUCE, arg=(Ops.ADD, 0), src=(
+          UOp(Ops.WHERE, arg=None, src=(
+            UOp(Ops.AND, arg=None, src=(
+              UOp(Ops.AND, arg=None, src=(
+                UOp(Ops.CONST, arg=True, src=()),
+                x12:=UOp(Ops.CMPEQ, arg=None, src=(
+                  UOp(Ops.CMPLT, arg=None, src=(
+                    x6,
+                    UOp(Ops.CONST, arg=1, src=()),)),
+                  UOp(Ops.CONST, arg=False, src=()),)),)),
+              x16:=UOp(Ops.CMPLT, arg=None, src=(
+                x17:=UOp(Ops.RANGE, arg=(AxisType.WEAK, 1), src=(
+                  x2,)),
+                UOp(Ops.CONST, arg=3, src=()),)),)),
+            UOp(Ops.INDEX, arg=None, src=(
+              UOp(Ops.PARAM, arg=ParamArg(1, dtypes.f32, device=&#x27;CPU&#x27;), src=(
+                UOp(Ops.CONST, arg=16, src=()),)),
+              UOp(Ops.WHERE, arg=None, src=(
+                UOp(Ops.AND, arg=None, src=(
+                  x16,
+                  x12,)),
+                UOp(Ops.ADD, arg=None, src=(
+                  UOp(Ops.ADD, arg=None, src=(
+                    UOp(Ops.MUL, arg=None, src=(
+                      x6,
+                      x2,)),
+                    x17,)),
+                  UOp(Ops.CONST, arg=-3, src=()),)),
+                UOp(Ops.CONST, arg=Invalid, src=()),)),)),
+            UOp(Ops.CONST, arg=ConstFloat(0.0), src=()),)),
+          x17,)),)),
+      x6,)),)),))
+---- STAGE count: after &#x27;apply rangeify&#x27; = 0, after &#x27;symbolic+reduce_collapse+debuf&#x27; = 0; kernels = 1
+
+################ y = x+1; y + y.T
+---- BEFORE run_rangeify (shapes + movement ops):
+UOp(Ops.SINK, arg=None, src=(
+  UOp(Ops.AFTER, arg=None, src=(
+    x1:=UOp(Ops.PARAM, arg=ParamArg(0, dtypes.f32, device=&#x27;CPU&#x27;), src=(
+      x2:=UOp(Ops.CONST, arg=16, src=()),)),
+    UOp(Ops.STORE, arg=None, src=(
+      UOp(Ops.RESHAPE, arg=None, src=(
+        x1,
+        x5:=UOp(Ops.STACK, arg=None, src=(
+          x6:=UOp(Ops.CONST, arg=4, src=()),
+          x6,)),)),
+      UOp(Ops.ADD, arg=None, src=(
+        x8:=UOp(Ops.ADD, arg=None, src=(
+          UOp(Ops.RESHAPE, arg=None, src=(
+            UOp(Ops.PARAM, arg=ParamArg(1, dtypes.f32, device=&#x27;CPU&#x27;), src=(
+              x2,)),
+            x5,)),
+          UOp(Ops.CONST, arg=ConstFloat(1.0), src=()),)),
+        UOp(Ops.PERMUTE, arg=None, src=(
+          x8,
+          UOp(Ops.STACK, arg=None, src=(
+            UOp(Ops.CONST, arg=1, src=()),
+            UOp(Ops.CONST, arg=0, src=()),)),)),)),)),)),))
+---- AFTER &#x27;apply rangeify&#x27; (RANGE / INDEX / STAGE, no movement ops):
+UOp(Ops.SINK, arg=None, src=(
+  UOp(Ops.AFTER, arg=None, src=(
+    x1:=UOp(Ops.PARAM, arg=ParamArg(0, dtypes.f32, device=&#x27;CPU&#x27;), src=(
+      x2:=UOp(Ops.CONST, arg=16, src=()),)),
+    UOp(Ops.END, arg=None, src=(
+      UOp(Ops.STORE, arg=None, src=(
+        UOp(Ops.INDEX, arg=None, src=(
+          x1,
+          UOp(Ops.ADD, arg=None, src=(
+            UOp(Ops.MUL, arg=None, src=(
+              x8:=UOp(Ops.RANGE, arg=(AxisType.WEAK, 0), src=(
+                x9:=UOp(Ops.CONST, arg=4, src=()),)),
+              x9,)),
+            x10:=UOp(Ops.RANGE, arg=(AxisType.WEAK, 1), src=(
+              x9,)),)),)),
+        UOp(Ops.ADD, arg=None, src=(
+          UOp(Ops.INDEX, arg=None, src=(
+            x13:=UOp(Ops.STAGE, arg=BufferizeOpts(device=&#x27;CPU&#x27;, addrspace=AddrSpace.GLOBAL, removable=True), src=(
+              UOp(Ops.ADD, arg=None, src=(
+                UOp(Ops.INDEX, arg=None, src=(
+                  UOp(Ops.PARAM, arg=ParamArg(1, dtypes.f32, device=&#x27;CPU&#x27;), src=(
+                    x2,)),
+                  UOp(Ops.ADD, arg=None, src=(
+                    UOp(Ops.MUL, arg=None, src=(
+                      x19:=UOp(Ops.RANGE, arg=(AxisType.WEAK, 2), src=(
+                        x9,)),
+                      x9,)),
+                    x20:=UOp(Ops.RANGE, arg=(AxisType.WEAK, 3), src=(
+                      x9,)),)),)),
+                UOp(Ops.CONST, arg=ConstFloat(1.0), src=()),)),
+              x19,
+              x20,)),
+            x8,
+            x10,)),
+          UOp(Ops.INDEX, arg=None, src=(
+            x13,
+            x10,
+            x8,)),)),)),
+      x8,
+      x10,)),)),))
+---- STAGE count: after &#x27;apply rangeify&#x27; = 1, after &#x27;symbolic+reduce_collapse+debuf&#x27; = 0; kernels = 1</code></pre>
+
+  <p>Look at the first program: <code>PAD</code>, <code>SHRINK</code>, <code>PERMUTE</code>, <code>RESHAPE</code> and the
+  <code>STACK</code> shape arguments are all gone. What's left is pure scalar logic on two ranges: a <code>WHERE</code> whose
+  condition is <code>r0 ≥ 1 &amp; r1 &lt; 3</code> (only the left and bottom pads survive the slice <code>[:4, 2:]</code> — the
+  simplifier proved the other two edges can't be hit), an <code>INDEX</code> into PARAM 1 at <code>r0*4 + r1 - 3</code> (itself
+  guarded by the same condition, with <code>Invalid</code> otherwise), and a <code>REDUCE</code> over <code>r1</code>. In the second
+  program you can see a realized value in its natural habitat: <code>STAGE(ADD(...), r2, r3)</code> read twice, once by
+  <code>INDEX(stage, r0, r1)</code> and once by <code>INDEX(stage, r1, r0)</code> — the transpose.</p>
+
+  <div class="demo" id="demo-explorer">
+    <div class="demo-title">Before / after rangeify explorer</div>
+    <div class="demo-desc">Pick a program, then step through the real graph snapshots (shared node ids, so unchanged nodes stay put and
+    the rest morph). The last stages belong to Chapter 11 but are here so you can see where the STAGEs go. Below: the generated kernels.</div>
+    <div class="controls" id="exsel"></div>
+    <pre id="excode" style="margin:6px 0"></pre>
+    <div id="expipe"></div>
+    <div id="exdesc" style="font-size:14px;color:var(--dim);min-height:2.4em"></div>
+    <div id="exgraph"></div>
+    <div class="row" style="margin-top:10px"><div class="col"><div id="exkern"></div></div>
+      <div class="col" style="flex:0 1 360px"><table class="ch10-passes" id="expasses"></table></div></div>
+  </div>
+
+  <!-- ===================================================================================== -->
+  <h2 id="hammer"><span class="sec">10.9</span> Hammer it again: three views of the same mechanism</h2>
+  <h3>View 1 — as substitution</h3>
+  <p>Forget graphs. Write the output as a function of its index and keep substituting definitions:</p>
+  \[\text{out}[r_0] = \sum_{r_1=0}^{3} u[r_1, r_0],\quad u[i,j] = t[i,j]+1,\quad t[i,j] = a[j,i],\quad a[p,q] = \text{buf}[4p+q]\]
+  \[\Rightarrow\ \text{out}[r_0] = \sum_{r_1=0}^{3} \left(\text{buf}[4r_0 + r_1] + 1\right)\]
+  <p>Every "=" sign is one step of <code>run_rangeify</code>. Movement ops are the rows where only the subscript changes. The REDUCE
+  is where a new bound variable \(r_1\) appears.</p>
+
+  <h3>View 2 — as "who can share my loop?"</h3>
+  <p>A node can be computed inside its consumer's loop iff it is needed exactly once per iteration, at a position the consumer
+  can express. One consumer → always (just inherit the ranges). Two consumers at the same position → fine (the merge branch:
+  <code>all_all_same</code>, validity OR-ed). Two consumers at different positions, or a consumer that needs <em>all</em>
+  values along an axis before it can use any (the broadcast-after-reduce case) → not in the same loop: it needs its own loop
+  nest — fresh ranges, a STAGE.</p>
+
+  <h3>View 3 — as data</h3>
+  <p>The <code>range_map</code> for <code>(a.permute(1,0)+1).sum(0)</code> printed by <code>10_sched_capture.py</code> above:</p>
+<pre class="output"><code>STORE    (3,)     in=['r0']  out=['r0']
+REDUCE   (3,)     in=['r1', 'r0']  out=['r0']        &lt;- created r1 for the reduced axis
+ADD      (4, 3)   in=['r1', 'r0']  out=['r1', 'r0']  &lt;- elementwise: pass through
+PERMUTE  (4, 3)   in=['r0', 'r1']  out=['r1', 'r0']  &lt;- swapped
+RESHAPE  (3, 4)   in=['(r0*4+r1)']  out=['r0', 'r1'] &lt;- flattened
+PARAM    (12,)    in=['(r0*4+r1)']  out=['(r0*4+r1)'] &lt;- the load address</code></pre>
+
+  <h3>Edge cases worth knowing</h3>
+  <ul>
+    <li><b>Size-1 axes</b> never get a RANGE: <code>new_range(1)</code> returns <code>CONST 0</code>. That's why you see
+    <code>[r0][0]</code> in the debug table for <code>(4,1)</code> shapes.</li>
+    <li><b>Reduce to a scalar</b> (<code>x.mean()</code>) has shape <code>()</code>: no output ranges at all, so it has nothing to
+    realize along — it is computed inside whatever loop reads it. That's why <code>x - x.mean()</code> is <b>one</b> kernel while
+    <code>x - x.mean(1, keepdim=True)</code> is two (Chapter 11 has both side by side).</li>
+    <li><b>Symbolic shapes</b> (a <code>Variable</code> dimension) make ranges with a symbolic bound; several cleanups skip them
+    (<code>cleanup_dead_axes</code>: "skip for symbolic. TODO").</li>
+    <li><b>STACK</b> (from <code>Tensor.stack</code>/<code>cat</code> on scalars) becomes a WHERE tree selecting on the leading
+    range (<a class="src" data-path="tinygrad/schedule/indexing.py" data-line="113">_stack_select</a>).</li>
+    <li><b>EXPAND that injects a range</b> (an EXPAND whose new sizes are themselves RANGEs) is not counted as ending ranges. The
+    comment in the code admits the heuristic: <em>"this doesn't actually always end a range, but this is why convs are realized"</em>.</li>
+  </ul>
+
+  <!-- ===================================================================================== -->
+  <h2 id="why"><span class="sec">10.10</span> Why it's designed this way</h2>
+  <ul>
+    <li><b>One IR all the way down.</b> After rangeify the graph is already almost a kernel AST: <code>STORE(INDEX(buf, expr), value)</code>
+    with <code>RANGE</code>s and <code>END</code>. Splitting it into kernels (Chapter 11) is just cutting at STAGE/STORE, and the
+    codegen (<a href="13-kernel-ast.html">Chapter 13</a>) starts from exactly this form. There's no separate "lowering from
+    views to indices" stage later.</li>
+    <li><b>Fusion is the default.</b> Nothing is materialized unless a rule says so; the rules are local (consumers of one node).
+    Elementwise chains, reduces of elementwise expressions, and arbitrary views all fuse for free.</li>
+    <li><b>View merging is algebra.</b> Instead of a special data structure that has to know when two views can merge (the old
+    ShapeTracker's hard problem), rangeify composes index expressions and lets the general symbolic simplifier fold them. If it can't
+    fold, you get <code>//</code> and <code>%</code> in the kernel — correct, just slower.</li>
+    <li><b>Over-propose, then prune.</b> The walk is conservative (it realizes on any disagreement); a separate cost-based pass decides
+    which candidates are worth a buffer. Each piece stays simple.</li>
+  </ul>
+
+  <div class="quiz" data-answer="1">
+    <div class="q">In <code>y = x + 1; out = y + y.T</code>, why is <code>y</code> (the ADD) in the realize map?</div>
+    <button class="opt">Because it is an elementwise op feeding a PERMUTE.</button>
+    <button class="opt">It has two consumers that index it at different positions (<code>[r0,r1]</code> vs <code>[r1,r0]</code>), so it cannot inherit one set of ranges.</button>
+    <button class="opt">Because <code>y.T</code> is a reduce.</button>
+    <button class="opt">It isn't — only STOREs are ever realized.</button>
+    <div class="explain">The 2+-consumers branch compares the consumers' ranges; they differ, so every axis gets a new range and the ADD is (partially) realized. It's later removed by <code>pm_remove_bufferize</code> (cheap to recompute), giving one kernel.</div>
+  </div>
+
+  <div class="quiz" data-answer="3">
+    <div class="q">Which of these makes a REDUCE result a realize candidate?</div>
+    <button class="opt">Any REDUCE is always realized.</button>
+    <button class="opt">The REDUCE has a single consumer.</button>
+    <button class="opt">The REDUCE reduces more than 32768 elements.</button>
+    <button class="opt">A consumer broadcasts the result back over an axis (ending ranges), like <code>x - x.max(1, keepdim=True)</code>.</button>
+    <div class="explain">REDUCE collects <code>broadcast_ending_ranges</code> from its consumers; pending ending ranges on an elementwise/REDUCE node realize it. (The 32768 threshold is <code>split_reduceop</code>, which splits rather than realizes.)</div>
+  </div>
+
+  <div class="quiz" data-answer="2">
+    <div class="q">What does a <code>STAGE(value, r2, r3)</code> node <em>mean</em> right after "apply rangeify"?</div>
+    <button class="opt">A kernel launch.</button>
+    <button class="opt">A copy between devices.</button>
+    <button class="opt">"Materialize <code>value</code> into a buffer by looping r2, r3" — a BUFFERIZE candidate that readers INDEX into.</button>
+    <button class="opt">A synchronization barrier.</button>
+    <div class="explain">STAGE with <code>BufferizeOpts</code> is the bufferize marker. It may still be removed (recompute) or turned into an ALLOC+STORE (Chapter 11).</div>
+  </div>
+
+  <div class="quiz" data-answer="0">
+    <div class="q"><code>x.reshape(2, 6).reshape(4, 3)</code> on a flat 12-element buffer: what is the final index for output <code>[r0, r1]</code>?</div>
+    <button class="opt"><code>r0*3 + r1</code></button>
+    <button class="opt"><code>(r0//2)*6 + (r0%2*3 + r1)</code></button>
+    <button class="opt"><code>r0*6 + r1</code></button>
+    <div class="explain">The intermediate step really is <code>((r0//2), (r0%2*3+r1))</code> (see the example output), but the second reshape's flatten <code>(r0//2)*6 + r0%2*3 + r1</code> simplifies to <code>r0*3 + r1</code>: the two reshapes "merged" through algebra.</div>
+  </div>
+
+  <div class="summary-box"><h3>Chapter summary</h3><ul>
+    <li><b>Input</b>: a tensor-form SINK of <code>AFTER(PARAM, STORE(...))</code> with shapes and movement ops (after transform_to_call + prepare_rangeify).
+    <b>Output</b>: the same computation written with <code>RANGE</code>, <code>INDEX</code>, <code>REDUCE(…ranges)</code>, <code>END</code>, and <code>STAGE</code> (BUFFERIZE) wrappers around materialization candidates.</li>
+    <li><code>run_rangeify</code> walks outputs → inputs. Each UOp's output ranges are fresh (if realized), inherited (one consumer), merged (agreeing consumers) or fresh+realized (disagreeing). Inputs get the ranges transformed by <code>apply_movement_op</code>, or extended with new reduce ranges.</li>
+    <li>Realize map = STOREs, MSELECT/MSTACK srcs, custom-kernel srcs, hazardous store sources (phase 1), plus disagreeing multi-consumer nodes and nodes with ending (broadcast) ranges (phase 2).</li>
+    <li>Movement ops become index math: SHRINK adds, PERMUTE reorders, EXPAND drops, PAD adds a validity condition (→ WHERE), RESHAPE flattens/unflattens with <code>//</code>/<code>%</code> and the symbolic simplifier merges views.</li>
+    <li>Realize-map entries are only candidates; Chapter 11 decides which survive.</li>
+  </ul></div>
+</main>
+</div>
+<script>
+(async function () {
+  const G = window.Guide, el = G.el;
+
+  // ---------------------------------------------------------------- pass table
+  const PASSES = [
+    ["drop after", "tensor.py", "Tensor.linear_with_vars", 166, "Each realized output became buf.after(buf.store(compute)). pm_drop_after strips AFTERs to find the storage each output will become; that storage is substituted into your Tensors (the 'bufferize' step) so a second realize() is a no-op."],
+    ["early transform tensor graph", "schedule/__init__.py", "transform_to_call", 257, "pm_callify_ctx_collect: folds contiguous movement-op views of BUFFERs into SHRINK views and collects every effect (AFTER with a STORE) into CallifyCtx.stores."],
+    ["replace bufs", "schedule/__init__.py", "transform_to_call", 263, "pm_canonicalize_alloc + pm_replace_buf: every GLOBAL BUFFER becomes PARAM(slot), bound Variables become value-free PARAMs, ALLOCs get canonical negative slots. Result: CALL(SINK(stores), *buffers, precompile=True). The body's hash is the schedule cache key."],
+    ["multi_pm", "schedule/prepare.py", "prepare_rangeify", 257, "multi-device rewrites (MULTI → per-device ops). No-op on one device. Chapter 19."],
+    ["inline calls", "schedule/prepare.py", "prepare_rangeify", 258, "pm_mops + pm_inline_calls + pm_disk_copy: inline @function CALLs, handle disk copies."],
+    ["earliest rewrites", "schedule/prepare.py", "earliest_rewrites", 188, "bottom-up cleanup: split_reduceop, COPY/STAGE → STORE into fresh ALLOC, remove DETACH, bitcast expansion, size-0 handling, movement ops off SINK/AFTER."],
+    ["get realize", "schedule/indexing.py", "pm_generate_realize_map", 43, "THIS CHAPTER. Phase 1 of the realize map: STOREs, MSELECT/MSTACK srcs, custom-kernel srcs, hazardous STORE sources. The graph is not changed."],
+    ["reshape / pad", "schedule/indexing.py", "apply_movement_op", 164, "THIS CHAPTER. Not separate passes: the small simplify rewrites inside _apply_reshape and the PAD case of apply_movement_op, called while run_rangeify walks the graph."],
+    ["apply rangeify", "schedule/indexing.py", "pm_apply_rangeify", 129, "THIS CHAPTER. Rewrites the graph with the computed range_map: INDEX on buffers, STAGE (BUFFERIZE) on realized values, END on STOREs, REDUCE with ranges, PAD → WHERE, movement ops removed."],
+    ["add device to deviceless", "schedule/indexing.py", "pm_fix_deviceless", 142, "THIS CHAPTER. STAGEs with no device get the sink's device."],
+    ["symbolic+reduce_collapse+debuf", "schedule/rangeify.py", "get_kernel_graph", 344, "Chapter 11. Index simplification, reduce simplification, const-buffer folding and pm_remove_bufferize: cheap STAGEs are replaced by recomputation."],
+    ["limit buffers", "schedule/rangeify.py", "pm_limit_bufs", 194, "Chapter 11. Inserts extra STAGEs if a kernel would read more than MAX_KERNEL_BUFFERS buffers; fixes store hazards."],
+    ["stage to store", "schedule/rangeify.py", "pm_add_buffers", 251, "Chapter 11. bufferize_to_store: each STAGE becomes AFTER(ALLOC, END(STORE(INDEX(ALLOC, idx), value), ranges))."],
+    ["remove indexing from call args", "schedule/rangeify.py", "pm_no_indexing_calls", 155, "Chapter 11. Strip INDEX / zero-offset SHRINK from CALL arguments."],
+    ["kernel split / (unnamed) / split kernels", "schedule/rangeify.py", "split_store", 321, "Chapter 11. Every STORE/END with no open ranges becomes SINK(KernelInfo).call(*buffers): one CALL per kernel, buffers renumbered to kernel-local PARAMs, ranges renumbered (the unnamed rewrite is pm_renumber_range)."],
+    ["remove views from the kernel graph", "schedule/rangeify.py", "pm_no_views", 160, "Chapter 11. RESHAPE/SHRINK directly on buffers are dropped."],
+    ["schedule to linear", "schedule/__init__.py", "lower_sink_to_linear", 121, "Chapter 12. Wraps everything above (cache lookup → prepare_rangeify → get_kernel_graph → create_schedule), producing CALL(LINEAR(CALL, CALL, ...))."],
+    ["params to buffers / resolve linear call", "schedule/__init__.py", "resolve_linear_call", 100, "Chapter 12. PARAMs → the real BUFFERs passed in, ALLOCs → fresh BUFFERs, nested LINEARs flattened."],
+    ["lower copy kernels to STORE calls", "schedule/__init__.py", "pm_copy_from_store", 170, "Chapter 12. Cross-device copy kernels become bulk CALL(STORE(dst, src))."],
+  ];
+  const pt = G.$("#passtable"), pd = G.$("#passdesc");
+  pt.append(el("tr", {}, el("th", {}, "#"), el("th", {}, "pass name"), el("th", {}, "PatternMatcher / function")));
+  PASSES.forEach((p, i) => {
+    const me = /THIS CHAPTER/.test(p[4]);
+    const tr = el("tr", { class: me ? "ch10-me" : "", style: "cursor:pointer", onclick: () => sel(i) }, el("td", {}, i), el("td", { class: "ch10-pn" }, p[0]), el("td", {}, p[2]));
+    pt.append(tr);
+  });
+  function sel(i) {
+    G.$$("tr", pt).forEach((t, j) => t.style.outline = j === i + 1 ? "1px solid var(--yellow)" : "");
+    const p = PASSES[i];
+    pd.innerHTML = `<div style="font-family:var(--mono);color:var(--yellow);font-size:15px">${G.escape(p[0])}</div>
+      <div style="margin:6px 0"><a class="src" target="_blank" href="${G.src("tinygrad/" + p[1], p[3])}">${p[1]}:${p[3]} ${p[2]}</a></div><p>${G.escape(p[4])}</p>`;
+  }
+  sel(8);
+
+  // ---------------------------------------------------------------- range flow stepper
+  const flowData = (await G.loadJSON("../data/ch10_flow.json")).flows;
+  let flowStepper = null;
+  function fmtR(rs) { return rs.length ? rs.map((r) => "[" + r + "]").join("") : "()"; }
+  function showFlow(fi) {
+    G.$$("button", G.$("#flowsel")).forEach((b, j) => b.classList.toggle("active", j === fi));
+    const F = flowData[fi];
+    G.$("#flowcode").innerHTML = "";
+    G.$("#flowcode").append(el("code", { class: "language-python", html: hljs.highlight(F.code, { language: "python" }).value }));
+    const gbox = G.$("#flowgraph");
+    const base = JSON.parse(JSON.stringify(F.before));
+    const ctl = G.uopGraph(gbox, base, { height: 560, compact: true });
+    const steps = [{ caption: `The tensor graph exactly as <b>run_rangeify</b> receives it (input of pass "get realize"). Shapes and movement ops; buffers are PARAMs. Press <b>next</b> to walk it from the output down.`, k: -1 }];
+    F.steps.forEach((s, k) => {
+      const why = s.realized ? ` <span style="color:var(--gold)">REALIZED axes [${s.realized}]</span>: ${G.escape(s.why)}.` : "";
+      const kind = { REDUCE: "creates fresh ranges for its reduced axes and passes them (in front) to its source", PERMUTE: "reorders the ranges", RESHAPE: "flattens/unflattens: the input index is an arithmetic expression", EXPAND: "drops the expanded (leading) ranges", PAD: "adds a validity condition", SHRINK: "adds the offset", STORE: "is an output: always gets fresh ranges" }[s.op] || "passes its ranges through unchanged";
+      steps.push({ k, caption: `Visit <b>${s.op}</b> ${s.shape} (${s.consumers} consumer${s.consumers === 1 ? "" : "s"}): out ranges <code>${G.escape(fmtR(s.out))}</code>, hands <code>${G.escape(fmtR(s.in))}</code> to its sources — it ${kind}.${why}` });
+    });
+    steps.push({ k: F.steps.length, phase: "after", caption: `<b>"apply rangeify"</b>: the graph is rewritten with these ranges. Movement ops vanish, every buffer read is an <code>INDEX</code>, realized values are wrapped in <code>STAGE</code> (BUFFERIZE) closing their fresh ranges.` });
+    steps.push({ k: F.steps.length, phase: "cleaned", caption: `<b>"symbolic+reduce_collapse+debuf"</b> (Chapter 11): cheap STAGEs removed, index math simplified. Kernels in the end: <b>${F.kernels.length}</b> — ${F.kernels.map((n) => "<code>" + n + "</code>").join(", ")}.` });
+    G.$("#flowstep").innerHTML = "";
+    const tbl = G.$("#flowtable");
+    function onStep(i, st) {
+      if (st.phase) {
+        ctl.setGraph(st.phase === "after" ? F.after : F.cleaned);
+        ctl.highlight([]);
+      } else {
+        const g = JSON.parse(JSON.stringify(F.before));
+        const byId = new Map(g.nodes.map((n) => [n.id, n]));
+        for (let k = 0; k <= st.k; k++) {
+          const s = F.steps[k], n = byId.get(s.id);
+          if (!n) continue;
+          n.sub = (n.shape ? n.shape + " " : "") + "out " + fmtR(s.out);
+          if (s.realized) n.color = "#F4D345";
+          n.note = `in ranges : ${fmtR(s.in)}\nout ranges: ${fmtR(s.out)}` + (s.realized ? `\nREALIZED: ${s.why}` : "");
+        }
+        ctl.setGraph(g, { animate: false });
+        if (st.k >= 0 && F.steps[st.k].id) {
+          ctl.highlight([F.steps[st.k].id], { dimOthers: false });
+          const ne = gbox.querySelector(`.node[data-id="${F.steps[st.k].id}"]`), wrap = gbox.querySelector(".uopgraph");
+          const m = ne && /translate\(([-\d.]+)px,\s*([-\d.]+)px\)/.exec(ne.style.transform);
+          if (m && wrap) wrap.scrollTo({ top: Math.max(0, +m[2] - wrap.clientHeight / 2), behavior: "smooth" });
+        }
+      }
+      tbl.innerHTML = "";
+      tbl.append(el("tr", {}, el("th", {}, "op"), el("th", {}, "shape"), el("th", {}, "in"), el("th", {}, "out")));
+      F.steps.forEach((s, k) => tbl.append(el("tr", { class: (k === st.k && !st.phase ? "cur " : "") + (s.realized ? "real " : "") + (k > st.k ? "todo" : "") },
+        el("td", {}, (s.realized ? "*** " : "") + s.op), el("td", {}, s.shape), el("td", {}, fmtR(s.in)), el("td", {}, fmtR(s.out)))));
+    }
+    flowStepper = G.stepper("#flowstep", steps, onStep, { autoplayMs: 1500 });
+  }
+  flowData.forEach((F, i) => G.$("#flowsel").append(el("button", { onclick: () => showFlow(i) }, F.name)));
+  showFlow(0);
+
+  // ---------------------------------------------------------------- movement-op calculator
+  // --- tiny affine algebra: expr = {t: Map(key -> {a: atom, k}), c}; atom = {key, s, lo, hi, ev(env)}
+  const prod = (a) => a.reduce((x, y) => x * y, 1);
+  const A = {
+    atom(at) { return { t: new Map([[at.key, { a: at, k: 1 }]]), c: 0 }; },
+    num(c) { return { t: new Map(), c }; },
+    add(x, y) { const t = new Map(x.t); for (const [k, v] of y.t) { const o = t.get(k); const nk = (o ? o.k : 0) + v.k; if (nk) t.set(k, { a: v.a, k: nk }); else t.delete(k); } return { t, c: x.c + y.c }; },
+    mul(x, m) { if (!m) return A.num(0); const t = new Map(); for (const [k, v] of x.t) t.set(k, { a: v.a, k: v.k * m }); return { t, c: x.c * m }; },
+    isNum(x) { return x.t.size === 0; },
+    bounds(x, B) { let lo = x.c, hi = x.c; for (const [k, v] of x.t) { const [alo, ahi] = B(v.a); if (v.k > 0) { lo += v.k * alo; hi += v.k * ahi; } else { lo += v.k * ahi; hi += v.k * alo; } } return [lo, hi]; },
+    ev(x, env) { let s = x.c; for (const [k, v] of x.t) s += v.k * v.a.ev(env); return s; },
+    str(x) {
+      const ts = [...x.t.values()].sort((p, q) => Math.abs(q.k) - Math.abs(p.k) || (p.a.s < q.a.s ? -1 : 1));
+      const parts = ts.map((v) => v.k === 1 ? v.a.s : `${v.a.s}*${v.k}`);
+      if (x.c || !parts.length) parts.push(String(x.c));
+      return parts.length === 1 ? parts[0] : "(" + parts.join("+") + ")";
+    },
+  };
+  const fdiv = (a, b) => Math.floor(a / b), fmod = (a, b) => ((a % b) + b) % b;
+  function divmod(x, d, B) {
+    // returns [x // d, x % d] simplified with bounds (B gives atom bounds)
+    if (d === 1) return [x, A.num(0)];
+    let q = A.num(fdiv(x.c, d)), rest = A.num(fmod(x.c, d));
+    for (const [k, v] of x.t) {
+      if (v.k % d === 0) q = A.add(q, A.mul(A.atom(v.a), v.k / d));
+      else rest = A.add(rest, A.mul(A.atom(v.a), v.k));
+    }
+    const [lo, hi] = A.bounds(rest, B);
+    const m = fdiv(lo, d);
+    if (fdiv(hi, d) === m) return [A.add(q, A.num(m)), A.add(rest, A.num(-m * d))];
+    // opaque atoms
+    const rs = A.str(rest);
+    const dv = { key: `(${rs}//${d})`, s: `(${rs}//${d})`, lo: fdiv(lo, d), hi: fdiv(hi, d), ev: (env) => fdiv(A.ev(rest, env), d), div: { rest, d } };
+    const md = { mod: { rest, d }, key: `(${rs}%${d})`, s: `(${rs}%${d})`, lo: lo >= 0 ? 0 : 0, hi: Math.min(d - 1, lo >= 0 && hi < d ? hi : d - 1), ev: (env) => fmod(A.ev(rest, env), d) };
+    return [A.add(q, A.atom(dv)), A.atom(md)];
+  }
+  // (R//d)*k*d + (R%d)*k  ->  R*k   (the identity that makes two reshapes merge)
+  function recombine(x) {
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const [k, v] of x.t) {
+        if (!v.a.div) continue;
+        const { rest, d } = v.a.div, mk = `(${A.str(rest)}%${d})`, m = x.t.get(mk);
+        if (m && m.k * d === v.k) {
+          const t = new Map(x.t); t.delete(k); t.delete(mk);
+          x = A.add({ t, c: x.c }, A.mul(rest, m.k)); changed = true; break;
+        }
+      }
+    }
+    return x;
+  }
+  function argsort(a) { return a.map((v, i) => [v, i]).sort((x, y) => x[0] - y[0]).map((x) => x[1]); }
+
+  // raw ops mirror tinygrad's marg conventions; user ops are sugar that expands to raw ops
+  function toRaw(shape, op, arg) {
+    switch (op) {
+      case "reshape": { if (prod(arg) !== prod(shape)) throw `reshape ${shape} -> ${arg}: element counts differ`; return [["RESHAPE", arg]]; }
+      case "permute": { if ([...arg].sort((a, b) => a - b).join() !== shape.map((_, i) => i).join()) throw `invalid permutation ${arg}`; return [["PERMUTE", arg]]; }
+      case "expand": {
+        if (arg.length < shape.length) throw "expand cannot remove dims";
+        const nl = arg.length - shape.length, al = Array(nl).fill(1).concat(shape);
+        al.forEach((s, i) => { if (s !== arg[i] && s !== 1) throw `cannot expand ${shape} to ${arg}`; });
+        const expandAt = []; for (let i = 0; i < shape.length; i++) if (shape[i] === 1 && arg[nl + i] !== 1) expandAt.push(i);
+        const kept = shape.map((_, i) => i).filter((i) => !expandAt.includes(i));
+        const out = [];
+        if (expandAt.length || kept.length !== shape.length) out.push(["RESHAPE", kept.map((i) => shape[i])]);
+        const eArg = arg.slice(0, nl).concat(expandAt.map((i) => arg[nl + i]));
+        if (eArg.length) out.push(["EXPAND", eArg]);
+        const perm = []; for (let i = 0; i < nl; i++) perm.push(i);
+        for (let i = 0; i < shape.length; i++) perm.push(nl + (expandAt.includes(i) ? expandAt.indexOf(i) : expandAt.length + kept.indexOf(i)));
+        if (perm.some((p, i) => p !== i)) out.push(["PERMUTE", perm]);
+        return out;
+      }
+      case "pad": { if (arg.length !== shape.length * 2) throw `pad needs ${shape.length * 2} numbers: before,after per axis`; const pr = shape.map((s, i) => [arg[2 * i], s + arg[2 * i] + arg[2 * i + 1]]); return [["PAD", pr]]; }
+      case "shrink": { if (arg.length !== shape.length * 2) throw `shrink needs ${shape.length * 2} numbers: start,end per axis`; const pr = shape.map((s, i) => { const a = arg[2 * i], b = arg[2 * i + 1]; if (a < 0 || b > s || b < a) throw `bad shrink ${a}:${b} on axis of ${s}`; return [a, b - a]; }); return [["SHRINK", pr]]; }
+      case "flip": { const ax = arg[0]; if (!(ax >= 0 && ax < shape.length)) throw "flip axis out of range"; return [["FLIP", [ax]]]; }
+      default: return [[op, arg]];
+    }
+  }
+  function rawShape(shape, op, arg) {
+    switch (op) {
+      case "RESHAPE": return arg.slice();
+      case "PERMUTE": return arg.map((i) => shape[i]);
+      case "EXPAND": return arg.concat(shape);
+      case "PAD": return arg.map((p) => p[1]);
+      case "SHRINK": return arg.map((p) => p[1]);
+      case "FLIP": return shape.slice();
+    }
+  }
+  // the JS twin of apply_movement_op: input index exprs from output index exprs
+  function applyMop(op, inShape, arg, idx, valid, B) {
+    switch (op) {
+      case "SHRINK": return idx.map((a, i) => arg[i][0] ? A.add(a, A.num(arg[i][0])) : a);
+      case "PERMUTE": return argsort(arg).map((p) => idx[p]);
+      case "EXPAND": return idx.slice(arg.length);
+      case "FLIP": return idx.map((a, i) => i === arg[0] ? A.add(A.mul(a, -1), A.num(inShape[i] - 1)) : a);
+      case "PAD": return idx.map((r, i) => {
+        const [off, sz] = arg[i], sh = inShape[i];
+        if (sz === sh && off === 0) return r;
+        const [lo, hi] = A.bounds(r, B);
+        const conds = [];
+        if (lo < off) conds.push({ e: r, op: ">=", v: off });
+        if (hi >= sh + off) conds.push({ e: r, op: "<", v: sh + off });
+        conds.forEach((c) => valid.push(c));
+        return A.add(r, A.num(-off));
+      });
+      case "RESHAPE": {
+        const outShape = arg; let acc = 1, L = A.num(0);
+        for (let i = outShape.length - 1; i >= 0; i--) { L = A.add(L, A.mul(idx[i], acc)); acc *= outShape[i]; }
+        L = recombine(L);
+        const res = [];
+        for (let i = inShape.length - 1; i >= 0; i--) { const [q, m] = divmod(L, inShape[i], B); res.push(m); L = q; }
+        return res.reverse();
+      }
+    }
+  }
+  let chain = [];   // user ops [{op, arg}]
+  let lastVerify = null;
+  const parseNums = (s) => s.split(/[ ,()\[\]]+/).filter(Boolean).map(Number);
+  const HELP = { reshape: "new shape, e.g. 4,3", permute: "order, e.g. 1,0", expand: "new shape (only size-1 axes grow), e.g. 3,4", pad: "before,after per axis, e.g. 1,1,0,2", shrink: "start,end per axis, e.g. 1,3,1,4", flip: "axis, e.g. 0",
+    RESHAPE: "raw: new shape", EXPAND: "raw: sizes of NEW leading axes", PAD: "raw: off,newsize per axis", SHRINK: "raw: off,size per axis", PERMUTE: "raw: order" };
+  G.$("#mop").addEventListener("change", () => G.$("#mhelp").textContent = HELP[G.$("#mop").value]);
+  G.$("#mhelp").textContent = HELP.reshape;
+  function pairs(a) { const r = []; for (let i = 0; i < a.length; i += 2) r.push([a[i], a[i + 1]]); return r; }
+  G.$("#madd").addEventListener("click", () => {
+    const op = G.$("#mop").value; let arg = parseNums(G.$("#marg").value);
+    if (op === "PAD" || op === "SHRINK") arg = pairs(arg);
+    chain.push({ op, arg }); if (!recompute()) chain.pop(), recompute(true);
+  });
+  G.$("#mclear").addEventListener("click", () => { chain = []; recompute(); });
+  G.$("#mbase").addEventListener("change", () => recompute());
+
+  function recompute(keepErr) {
+    const errEl = G.$("#merr"); if (!keepErr) errEl.textContent = "";
+    G.$("#mverres").textContent = ""; G.$("#mreal").textContent = G.$("#mreal").dataset.keep === "1" ? G.$("#mreal").textContent : "";
+    G.$("#mreal").dataset.keep = "0";
+    const base = parseNums(G.$("#mbase").value); const N = prod(base);
+    if (!base.length || N > 96) { errEl.textContent = "base shape must have 1..96 elements"; return false; }
+    // forward: raw ops with shapes, starting from the flat buffer (N,) reshaped to base (like PARAM -> RESHAPE)
+    let raw = [{ op: "RESHAPE", arg: base, inShape: [N], user: "(buffer view)" }], shape = base.slice();
+    try {
+      for (const u of chain) for (const [op, arg] of toRaw(shape, u.op, u.arg)) {
+        const out = rawShape(shape, op, arg);
+        if (op === "PAD" && arg.some((p, i) => p[0] < 0 || p[1] < shape[i] + p[0])) throw "invalid PAD";
+        if (op === "SHRINK" && arg.some((p, i) => p[0] < 0 || p[0] + p[1] > shape[i])) throw "invalid SHRINK";
+        if (op === "RESHAPE" && prod(arg) !== prod(shape)) throw "invalid RESHAPE";
+        raw.push({ op, arg, inShape: shape, user: u.op }); shape = out;
+      }
+    } catch (e) { errEl.textContent = String(e); return false; }
+    if (prod(shape) > 400) { errEl.textContent = "output too large to draw (max 400 elements)"; return false; }
+    // chain UI
+    const ch = G.$("#mchain"); ch.innerHTML = "";
+    ch.append(el("span", { class: "shp" }, `buf(${N}) → (${base})`));
+    let s2 = base.slice();
+    chain.forEach((u, i) => {
+      for (const [op, arg] of toRaw(s2, u.op, u.arg)) s2 = rawShape(s2, op, arg);
+      ch.append(el("span", {}, "→"), el("span", { class: "op" }, `${u.op}(${JSON.stringify(u.arg).replace(/^\[|\]$/g, "")})`, el("button", { onclick: () => { chain.splice(i, 1); recompute(); } }, "✕")), el("span", { class: "shp" }, `(${s2})`));
+    });
+    // backward walk
+    const R = shape.map((s, i) => ({ key: "r" + i, s: s === 1 ? "0" : "r" + i, lo: 0, hi: s - 1, ev: (env) => env[i] }));
+    const valid = [];
+    const B = (a) => {
+      let lo = a.lo, hi = a.hi;
+      for (const c of valid) if (c.e.t.size === 1 && c.e.c === 0) { const [[k, v]] = [...c.e.t]; if (k === a.key && v.k === 1) { if (c.op === ">=") lo = Math.max(lo, c.v); else hi = Math.min(hi, c.v - 1); } }
+      return [lo, hi];
+    };
+    let idx = shape.map((s, i) => s === 1 ? A.num(0) : A.atom(R[i]));
+    const rows = [];
+    for (let i = raw.length - 1; i >= 0; i--) {
+      const m = raw[i];
+      idx = applyMop(m.op, m.inShape, m.arg, idx, valid, B);
+      rows.push([m.op, JSON.stringify(m.arg), `(${m.inShape})`, "[" + idx.map((e) => A.str(e)).join(", ") + "]", m.user]);
+    }
+    const st = G.$("#msteps"); st.innerHTML = "";
+    st.append(el("tr", {}, el("th", {}, "raw op (output → input)"), el("th", {}, "marg"), el("th", {}, "into shape"), el("th", {}, "index after this op"), el("th", {}, "from")));
+    rows.forEach((r) => st.append(el("tr", {}, ...r.map((c) => el("td", {}, c)))));
+    const flat = idx[0];
+    const vstr = valid.map((c) => `${A.str(c.e)}${c.op}${c.v}`).join(" & ");
+    G.$("#mexpr").textContent = `out[${shape.map((s, i) => s === 1 ? "0" : "r" + i).join(", ")}] = ` + (valid.length ? `${A.str(flat)} if (${vstr}) else Invalid` : `buf[${A.str(flat)}]`);
+    const isValid = (env) => valid.every((c) => { const v = A.ev(c.e, env); return c.op === ">=" ? v >= c.v : v < c.v; });
+    // grids
+    const rowsN = shape.length >= 2 ? prod(shape.slice(0, -1)) : 1, colsN = shape.length ? shape[shape.length - 1] : 1;
+    const out = G.$("#mout"); out.innerHTML = "";
+    const og = G.cells(out, rowsN, colsN, () => "");
+    const bufBox = G.$("#mbuf"); bufBox.innerHTML = "";
+    const bcols = Math.min(N, 12), brows = Math.ceil(N / bcols);
+    const bg = G.cells(bufBox, brows, bcols, (r, c) => (r * bcols + c < N ? r * bcols + c : ""));
+    const envs = [];
+    for (let f = 0; f < prod(shape); f++) {
+      const env = []; let rem = f; for (let i = shape.length - 1; i >= 0; i--) { env[i] = rem % shape[i]; rem = Math.floor(rem / shape[i]); }
+      envs.push(env);
+      const r = Math.floor(f / colsN), c = f % colsN, ok = isValid(env), v = ok ? A.ev(flat, env) : null;
+      const cell = og.cell(r, c); cell.textContent = ok ? v : "0";
+      if (!ok) cell.classList.add("ch10-inv");
+      cell.addEventListener("mouseenter", () => {
+        bg.clear("ch10-src"); og.clear("hot"); cell.classList.add("hot");
+        if (ok) bg.set(Math.floor(v / bcols), v % bcols, "ch10-src");
+        G.$("#mhover").textContent = `${env.map((x, i) => `r${i}=${x}`).join(", ")}  →  ` + (ok ? `index ${A.str(flat)} = ${v}  → reads buf[${v}]` : `validity fails → Invalid: no load, value 0 (PAD → WHERE)`);
+      });
+    }
+    lastVerify = () => {
+      // independent forward implementation on real arrays
+      let t = { shape: [N], d: [...Array(N).keys()] };
+      const at = (t, ix) => { let o = 0; for (let i = 0; i < t.shape.length; i++) o = o * t.shape[i] + ix[i]; return t.d[o]; };
+      for (const m of raw) {
+        const os = rawShape(t.shape, m.op, m.arg), d = [];
+        for (let f = 0; f < prod(os); f++) {
+          const ix = []; let rem = f; for (let i = os.length - 1; i >= 0; i--) { ix[i] = rem % os[i]; rem = Math.floor(rem / os[i]); }
+          let v;
+          if (m.op === "RESHAPE") v = t.d[f];
+          else if (m.op === "PERMUTE") { const src = []; m.arg.forEach((p, i) => src[p] = ix[i]); v = at(t, src); }
+          else if (m.op === "EXPAND") v = at(t, ix.slice(m.arg.length));
+          else if (m.op === "SHRINK") v = at(t, ix.map((x, i) => x + m.arg[i][0]));
+          else if (m.op === "FLIP") v = at(t, ix.map((x, i) => i === m.arg[0] ? t.shape[i] - 1 - x : x));
+          else if (m.op === "PAD") { const src = ix.map((x, i) => x - m.arg[i][0]); v = src.every((x, i) => x >= 0 && x < t.shape[i]) ? at(t, src) : 0; }
+          d.push(v);
+        }
+        t = { shape: os, d };
+      }
+      let bad = 0;
+      envs.forEach((env, f) => { const want = t.d[f], got = isValid(env) ? A.ev(flat, env) : 0; if (want !== got) bad++; });
+      G.$("#mverres").innerHTML = bad ? `<span style="color:var(--red)">✗ ${bad} of ${envs.length} outputs differ</span>` : `<span style="color:var(--green)">✓ all ${envs.length} outputs match a direct forward evaluation of the ops</span>`;
+    };
+    return true;
+  }
+  G.$("#mverify").addEventListener("click", () => lastVerify && lastVerify());
+  const mopsData = (await G.loadJSON("../data/ch10_mops.json")).chains;
+  mopsData.forEach((c) => G.$("#mpresets").append(el("button", { onclick: () => {
+    G.$("#mbase").value = c.base.join(",");
+    chain = c.ops.slice(c.ops[0] && c.ops[0].op === "RESHAPE" && c.base.length === 1 ? 0 : 0).map((o) => ({ op: o.op, arg: o.arg }));
+    // the captured chain starts at the realized base view; our engine already adds buf -> base, so drop a leading no-op reshape to base
+    if (chain.length && chain[0].op === "RESHAPE" && chain[0].arg.join() === c.base.join()) chain.shift();
+    recompute();
+    const g = G.$("#mreal"); g.dataset.keep = "1";
+    g.innerHTML = `real tinygrad (apply_movement_op on <code>${G.escape(c.code)}</code>): <code style="color:var(--green)">${G.escape(c.steps[c.steps.length - 1].idx.join(", "))}</code>`;
+  } }, c.name)));
+  chain = [{ op: "reshape", arg: [4, 3] }, { op: "permute", arg: [1, 0] }];
+  recompute();
+
+  // ---------------------------------------------------------------- explorer
+  const ex = (await G.loadJSON("../data/ch10_explorer.json")).programs;
+  let exCtl = null;
+  function showEx(pi) {
+    G.$$("button", G.$("#exsel")).forEach((b, j) => b.classList.toggle("active", j === pi));
+    const P = ex[pi];
+    G.$("#excode").innerHTML = ""; G.$("#excode").append(el("code", { html: hljs.highlight(P.code, { language: "python" }).value }));
+    exCtl = G.uopGraph("#exgraph", P.stages[0].graph, { height: 600, compact: true });
+    G.$("#expipe").innerHTML = "";
+    const pipe = G.pipeline("#expipe", P.stages.map((s) => ({ name: s.title, sub: `${s.n} uops` })), (i) => {
+      exCtl.setGraph(P.stages[i].graph);
+      const stg = P.stages[i].graph.nodes.filter((n) => n.op === "STAGE").map((n) => n.id);
+      exCtl.highlight(stg, { dimOthers: false });
+      G.$("#exdesc").innerHTML = `<b>${G.escape(P.stages[i].pass)}</b> — ${G.escape(P.stages[i].desc)}` + (stg.length ? ` <span class="ch10-chip y">${stg.length} STAGE node(s) highlighted</span>` : "");
+    });
+    pipe.select(0);
+    const kb = G.$("#exkern"); kb.innerHTML = "";
+    kb.append(el("div", { style: "font-weight:700;margin-bottom:4px" }, `${P.kernels.length} kernel(s) generated (CPU, clang):`));
+    P.kernels.forEach((k) => { const pre = el("pre", { class: "ch10-kcode" }, el("code", { html: hljs.highlight(k.src, { language: "c" }).value })); kb.append(el("div", { class: "codecap" }, el("b", {}, k.name)), pre); });
+    const pt2 = G.$("#expasses"); pt2.innerHTML = "";
+    pt2.append(el("tr", {}, el("th", {}, "pass"), el("th", {}, "uops in → out")));
+    P.passes.forEach((p) => pt2.append(el("tr", {}, el("td", { class: "ch10-pn" }, p.name), el("td", {}, `${p.nin} → ${p.nout}`))));
+  }
+  ex.forEach((P, i) => G.$("#exsel").append(el("button", { onclick: () => showEx(i) }, P.name)));
+  showEx(0);
+})();
+</script>
+</body>
+</html>

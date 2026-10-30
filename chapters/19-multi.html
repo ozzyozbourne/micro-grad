@@ -1,0 +1,1142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>19. Multi-device &amp; sharding — tinygrad internals</title>
+<link rel="stylesheet" href="../assets/vendor/hljs-dark.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/vendor/highlight.min.js"></script>
+<script src="../assets/vendor/dagre.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/chapters.js"></script>
+<script src="../assets/guide.js"></script>
+<style>
+.ch19-viz { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; }
+@media (max-width: 1000px) { .ch19-viz { grid-template-columns: 1fr; } }
+.ch19-viz svg, .ch19-ring svg, .ch19-sched svg { width: 100%; height: auto; background: #0d0f12; border: 1px solid var(--line); border-radius: 8px; }
+.ch19-expl { background: var(--bg3); border-radius: 8px; padding: 10px 14px; font-size: 14px; }
+.ch19-expl b { color: var(--yellow); }
+.ch19-expl .err { color: var(--red); font-family: var(--mono); }
+.ch19-calls { font-family: var(--mono); font-size: 12px; margin-top: 8px; max-height: 260px; overflow-y: auto; }
+.ch19-calls div { padding: 1px 0; }
+.ch19-calls .k { color: var(--blue); } .ch19-calls .c { color: var(--gold); }
+.ch19-src { font-family: var(--mono); font-size: 12px; background: #0a0c0e; border: 1px solid var(--line); border-radius: 8px; padding: 10px; white-space: pre; overflow-x: auto; max-height: 300px; margin-top: 8px; color: #cfd8dc; }
+.ch19-stats { display: flex; gap: 18px; flex-wrap: wrap; font-family: var(--mono); font-size: 13px; margin: 6px 0; }
+.ch19-stats span b { color: var(--yellow); }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="sidebar" id="sidebar"></nav>
+<main>
+  <h1><span class="chnum">CHAPTER 19</span>Multi-device &amp; sharding</h1>
+  <p class="lede">A sharded tensor is one logical tensor whose storage is split (or replicated) across several devices. tinygrad does not have a
+  separate "distributed" engine: sharding is <b>more UOps</b> — an <code>UNSHARD</code> wrapper with a <code>DEVICE</code> range, a rewrite
+  (<code>multi_pm</code>) that pushes every op down to the per-device shards, <code>COPY</code>/<code>MSELECT</code>/<code>MSTACK</code> to move data
+  between devices, and an <code>ALLREDUCE</code> that is expanded into plain copies and adds. We run everything on several CPU "devices"
+  (<code>CPU</code>, <code>CPU:1</code>, <code>CPU:2</code>…) and look at the real kernels and copies.</p>
+
+  <div class="callout note"><span class="title">Version note</span>Older tinygrad had a <code>MultiLazyBuffer</code> and later an <code>Ops.MULTI</code>
+  UOp holding <code>(axis, real)</code>. In this version a sharded value is <code>UNSHARD(value, RANGE(DEVICE))</code> with <code>arg=(axis,)</code>, storage is a
+  <a class="src" data-path="tinygrad/device.py" data-line="98">MultiBuffer</a>, a multi-device kernel is launched once per device with a
+  <code>_device_num</code> argument, and the schedule-level rewrite lives in
+  <a class="src" data-path="tinygrad/schedule/multi.py" data-line="274">schedule/multi.py</a> and
+  <a class="src" data-path="tinygrad/schedule/allreduce.py" data-line="6">schedule/allreduce.py</a>.</div>
+
+  <!-- ============================================================ -->
+  <h2 id="intuition"><span class="sec">19.1</span>Intuition: one tensor, many hands</h2>
+  <div class="callout analogy"><span class="title">Analogy</span>Grading a stack of 1000 exams with 4 teachers. Split the stack by rows (<b>shard on
+  axis 0</b>): each grades 250, no talking needed. Ask "what's the average score of question 3?" and each teacher sums their own 250, then they
+  must <b>combine</b> their partial sums — that's an <em>allreduce</em>. Give every teacher a full copy of the answer key (<b>replicated</b>,
+  <code>axis=None</code>) so nobody has to ask for it. The art of sharding is choosing splits so that most work needs no talking.</div>
+  <p>Three ideas carry the whole chapter:</p>
+  <ol>
+    <li><b>The device range.</b> A sharded value is described by a symbolic <code>RANGE</code> of <code>AxisType.DEVICE</code> — "I am device
+      <i>r</i> of <i>n</i>". Shard <i>r</i> of a tensor sharded on axis 0 is <code>x[r*sz : r*sz+sz]</code>. One UOp graph describes all shards.</li>
+    <li><b>Push-down.</b> <code>multi_pm</code> rewrites <code>op(UNSHARD(a), UNSHARD(b))</code> into <code>UNSHARD(op(a, b))</code> whenever that's
+      legal: elementwise ops, reshapes and reductions over non-sharded axes run independently per device.</li>
+    <li><b>Communication is explicit.</b> When the push-down isn't legal (a reduction over the sharded axis, a gather to one device, a reshard),
+      the rewrite inserts <code>COPY</code>s and an <code>ALLREDUCE</code>, which later become copy CALLs and add kernels.</li>
+  </ol>
+
+  <!-- ============================================================ -->
+  <h2 id="shard"><span class="sec">19.2</span>Creating a sharded tensor</h2>
+  <div class="codecap"><b>tinygrad/tensor.py</b> — <a class="src" data-path="tinygrad/tensor.py" data-line="353">Tensor.shard / shard_ / shard_like</a></div>
+  <pre><code class="language-python" data-src="tinygrad/tensor.py:353-383">  def shard(self, devices:tuple[str, ...], axis:int|None=None) -&gt; Tensor:
+    """
+    Shards the tensor across the given devices. Optionally specify which axis to shard on.
+
+    ```python exec="true" source="above" session="tensor" result="python"
+    t = Tensor.empty(2, 4)
+    print(t.shard((t.device, t.device), axis=1).uop)
+    ```
+    """
+    if self.uop.device is None: return self
+    if not isinstance(self.device, str): raise RuntimeError("can't shard a multi-device tensor")
+    if len(devices) == 1: return self.to(devices[0])
+    devices = cast(tuple[str, ...], canonicalize_device(devices))
+    # a shard of a load from a creation device (disk/npy/python) wants the copy to persist, so it inserts a clone
+    src = self.uop.clone(devices) if self.uop.on_creation_device() else self.uop
+    uop = src.shard(devices, None if axis is None else self._resolve_dim(axis))
+    return Tensor(uop).is_param_(self.is_param)
+
+  def shard_(self, devices:tuple[str, ...], axis:int|None=None) -&gt; Tensor:
+    """
+    Shards the tensor across the given devices in place.
+    """
+    return self.replace(self.shard(devices, axis))
+
+  def shard_like(self, y:Tensor) -&gt; Tensor:
+    """
+    Shards the tensor the same way as `y` (same devices and axis).
+    """
+    if y.device is None: return self
+    if isinstance(y.device, str): return self.to(y.device)
+    return self if isinstance(self.device, tuple) and (y.device, y.uop.axis) == (self.device, self.uop.axis) else self.shard(y.device, y.uop.axis)</code></pre>
+  <div class="codecap"><b>tinygrad/uop/ops.py</b> — <a class="src" data-path="tinygrad/uop/ops.py" data-line="713">UOp._shard / shard / copy_to_device / mselect / mstack</a></div>
+  <pre><code class="language-python" data-src="tinygrad/uop/ops.py:713-733">  def _shard(self, axis:int, rng:UOp) -&gt; UOp:
+    if len(self.shape) == 0: return self  # scalars broadcast, no sharding needed
+    dcount = int(rng.vmax)+1
+    if self.shape[axis] % dcount != 0: raise RuntimeError(f"multi axis uneven: {self.shape[axis]=} {axis=} {dcount=}")
+    sz = self.shape[axis] // dcount
+    return self.shrink(tuple((0,s) if i != axis else (rng*sz,rng*sz+sz) for i,s in enumerate(self.shape)))
+  def shard(self, devices:tuple[str, ...], axis:int|None=None) -&gt; UOp:
+    copied = self.copy_to_device(devices)
+    return copied if axis is None else copied._shard(axis, UOp.range(len(devices), 0, AxisType.DEVICE)).unshard(axis)
+
+  def copy_to_device(self, device:str|tuple[str, ...]):
+    if is_disk_device(device):
+      raise RuntimeError("COPY to DISK is not allowed; use STORE to an explicit disk buffer")
+    if self.dtype in dtypes.weaks: raise RuntimeError(f"cannot create storage for weak dtype {self.dtype}")
+    # multi-device COPYs carry the DEVICE range as src[1] (like UNSHARD's sharding ranges)
+    return UOp(Ops.COPY, src=(self, *UOp.device_range_src(device)), arg=device)
+  def store_call(self, src:UOp) -&gt; UOp:
+    """Executable bulk transfer into this buffer."""
+    return self.param_like(0).store(src.param_like(1)).call(self, src)
+  def mselect(self, arg:int) -&gt; UOp: return UOp(Ops.MSELECT, src=(self,), arg=arg)
+  def mstack(self, *srcs: UOp) -&gt; UOp: return UOp(Ops.MSTACK, src=(self,)+srcs) if len(srcs) else self</code></pre>
+  <p>So <code>t.shard(devs, axis=0)</code> builds:</p>
+  <pre class="output"><code>UNSHARD(arg=(0,))                                   # "this value is sharded on axis 0 over range r"
+ ├─ SHRINK( (r*2, r*2+2), (0, 4) )                  # shard r = rows [2r, 2r+2)
+ │   └─ COPY(arg=('CPU','CPU:1'), src=(t, r))        # t broadcast to every device
+ └─ r = RANGE(DEVICE, 2)</code></pre>
+  <p>Read it as math, not as an algorithm: "copy to all devices, then on device <i>r</i> keep rows <code>[2r, 2r+2)</code>". The scheduler
+  later fuses the shrink into the copy, so each device only receives its own slice (you'll see one 32-byte copy, not two full copies). The
+  helper <code>unshard()</code> and the properties around it:</p>
+  <pre><code class="language-python" data-src="tinygrad/uop/ops.py:661-711">  def unshard(self, axis:int|tuple[int, ...]|None, device_range:UOp|tuple[UOp, ...]|None=None):
+    assert axis is not None, "multi None is no longer supported"
+    # an UNSHARD carries the value and one sharding range per sharded axis (arg is the tuple of sharded axes,
+    # sorted). the single-axis axis form defaults the range to a DEVICE range over the devices; a range need not
+    # be DEVICE, e.g. a LOCAL range shards a kernel tile into per-thread fragments
+    if isinstance(axis, int): axis = (axis,)
+    if device_range is None:
+      assert isinstance(self.device, tuple), f"multi device must be tuple, {self.device} isn't"
+      device_range = (UOp.range(len(self.device), 0, AxisType.DEVICE),)
+    if isinstance(device_range, UOp): device_range = (device_range,)
+    assert isinstance(device_range, tuple) and len(axis) == len(device_range) and len(set(axis)) == len(axis)
+    axis, device_range = map(tuple, zip(*sorted(zip(axis, device_range))))
+    return UOp(Ops.UNSHARD, src=(self, *device_range), arg=axis)
+
+  @property
+  def sharding(self) -&gt; tuple[tuple[int, UOp], ...]:
+    """(axis, RANGE) pairs this value is sharded over (the source of truth for shard bounds/counts)."""
+    return tuple(zip(self.arg, self.src[1:])) if self.op is Ops.UNSHARD else ()
+
+  @functools.cached_property
+  def axis(self) -&gt; int|None:
+    # COPY removes axis. TODO: add more tests for this, and consider MSELECT/MSTACK
+    if self.op is Ops.COPY: return None
+    if self.op is Ops.UNSHARD:
+      if len(self.arg) != 1: raise RuntimeError(f"UOp is sharded on multiple axes {self.arg}, use .sharding")
+      return self.arg[0]
+    # NOTE: they all have to share an axis, we always choose [-1]. src axes are right-aligned into the output shape
+    if self.op in GroupOp.ALU.union({Ops.STACK}):
+      return axes[-1] if (axes := dedup([x.axis+len(self.shape)-len(x.shape) for x in self.src if x.axis is not None])) else None
+    if len(self.src) == 0: return None
+    src_axis = self.src[0].axis
+    if self.op is Ops.SHRINK and src_axis is not None and self.marg[src_axis] != (0, self.src[0].shape[src_axis]):
+      return None # SHRINK will remove the sharding if it's on axis
+    if self.op is Ops.REDUCE:
+      if src_axis is None: return None
+      if src_axis &lt; self.arg[1]: return None
+      return src_axis - self.arg[1]
+    if self.op is Ops.RESHAPE:
+      if src_axis is None: return None
+      arg_acc:list[sint] = [ssimplify(x) for x in itertools.accumulate(self.marg, operator.mul, initial=1)]
+      # new_axis is the last one that preserves prod(prior to new_axis) and must not move items between shards
+      target = ssimplify(prod(self.src[0].shape[:src_axis]))
+      if target not in arg_acc: raise RuntimeError(f"reshape {self.src[0].shape} -&gt; {self.shape} moved items between shards")
+      new_axis = len(arg_acc) - arg_acc[::-1].index(target) - 1
+      dcount = len(self.device) if isinstance(self.device, tuple) else \
+        int(next(u.src[1] for u in self.src[0].toposort() if u.op is Ops.UNSHARD).vmax)+1
+      if self.shape[new_axis] % dcount != 0: raise RuntimeError(f"reshape {self.src[0].shape} -&gt; {self.shape} moved items between shards")
+      return new_axis
+    if self.op is Ops.PERMUTE: return self.marg.index(src_axis) if src_axis is not None else None
+    if self.op is Ops.EXPAND: return src_axis + len(self.marg) if src_axis is not None else None
+    return src_axis</code></pre>
+  <ul>
+    <li><b><code>axis</code></b> is a <em>derived</em> property computed through the graph: a <code>PERMUTE</code> moves it, an <code>EXPAND</code> shifts it,
+      a <code>REDUCE</code> over it erases it, a <code>RESHAPE</code> must keep the shard boundary intact or raise
+      <code>"reshape … moved items between shards"</code>, a <code>COPY</code> to one device removes it.</li>
+    <li><b>Uneven splits are rejected</b> (<code>_shard</code> requires <code>shape[axis] % n == 0</code>).</li>
+    <li><b>Device names</b> are canonicalized: <code>("CPU:0","CPU:1")</code> becomes <code>('CPU', 'CPU:1')</code>; <code>Device["CPU:1"]</code> is a
+      second <code>CPUDevice</code> instance (<a href="17-runtime.html">Chapter 17</a>).</li>
+  </ul>
+  <div class="codecap"><b>examples/19_shard_basics.py</b> — run with <code>DEV=CPU python3 examples/19_shard_basics.py</code></div>
+  <pre><code class="language-python" data-file="examples/19_shard_basics.py"># Chapter 19 — what a sharded Tensor is: UOps, devices, axis, and the per-device MultiBuffer.
+# run: DEV=CPU python3 examples/19_shard_basics.py
+import struct
+from tinygrad import Tensor
+from tinygrad.uop.ops import Ops
+
+devs = ("CPU:0", "CPU:1")                       # two CPU "devices": CPU (":0" is canonicalized away) and CPU:1
+t = Tensor([[float(4*i + j) for j in range(4)] for i in range(4)]).realize()
+
+# 1) shard = copy_to_device(devices) -&gt; SHRINK by the DEVICE range -&gt; UNSHARD(axis)
+s = t.shard(devs, axis=0)
+u = s.uop
+print("1 device:", s.device, "| shape (global):", s.shape, "| uop.axis:", u.axis, "| shard_shape:", u.shard_shape)
+print("  uop chain:", u.op.name, "&lt;-", u.src[0].op.name, "&lt;-", u.src[0].src[0].op.name, "(arg", u.src[0].src[0].arg, ")")
+drange = u.src[1]
+print("  sharding:", [(ax, f"RANGE({r.arg[0].name}, {int(r.vmax)+1})") for ax, r in u.sharding])
+print("  SHRINK bounds per axis (symbolic in the DEVICE range r):", [tuple(x.render() if hasattr(x, 'render') else str(x) for x in b) for b in u.src[0].marg])
+
+# 2) realize: one MultiBuffer = one Buffer per device, each holding its shard
+s.realize()
+mb = s.uop.src[0].base.buffer if s.uop.op is Ops.UNSHARD else s.uop.buffer
+print("2 realized storage:", mb)
+for b in mb.bufs: print(f"   {b.device:6s} {b.nbytes}B -&gt;", struct.unpack(f"{b.nbytes//4}f", b.as_memoryview()))
+
+# 3) axis=1 splits columns; axis=None replicates the whole tensor on every device
+for ax in (1, None):
+  r = t.shard(devs, axis=ax).realize()
+  mb = (r.uop.src[0].base if r.uop.op is Ops.UNSHARD else r.uop.base).buffer
+  print(f"3 axis={ax}:", [struct.unpack(f"{b.nbytes//4}f", b.as_memoryview()) for b in mb.bufs])
+
+# 4) uneven splits are rejected
+try: Tensor.ones(3, 4).contiguous().shard(devs, axis=0)
+except RuntimeError as e: print("4 uneven:", e)
+
+# 5) elementwise on a sharded tensor stays sharded; reading it (.tolist) gathers it to one device with COPYs
+y = (s * 10 + 1)
+print("5 y.device:", y.device, "axis", y.uop.axis, "-&gt;", y.tolist())
+
+# 6) .to() a single device = gather; shard_like copies another tensor's sharding
+g = s.to("CPU")
+print("6 gathered:", g.device, g.shape, "| shard_like:", Tensor.ones(4, 4).contiguous().shard_like(s).uop.axis)</code></pre>
+  <pre class="output"><code data-out="19_shard_basics">1 device: ('CPU', 'CPU:1') | shape (global): (4, 4) | uop.axis: 0 | shard_shape: (2, 4)
+  uop chain: UNSHARD &lt;- SHRINK &lt;- COPY (arg ('CPU', 'CPU:1') )
+  sharding: [(0, 'RANGE(DEVICE, 2)')]
+  SHRINK bounds per axis (symbolic in the DEVICE range r): [('(r0*2)', '2'), ('0', '4')]
+2 realized storage: &lt;multibuf real:True device:('CPU', 'CPU:1') nbytes:32&gt;
+   CPU    32B -&gt; (0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0)
+   CPU:1  32B -&gt; (8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0)
+3 axis=1: [(0.0, 1.0, 4.0, 5.0, 8.0, 9.0, 12.0, 13.0), (2.0, 3.0, 6.0, 7.0, 10.0, 11.0, 14.0, 15.0)]
+3 axis=None: [(0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0), (0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0)]
+4 uneven: multi axis uneven: self.shape[axis]=3 axis=0 dcount=2
+5 y.device: ('CPU', 'CPU:1') axis 0 -&gt; [[1.0, 11.0, 21.0, 31.0], [41.0, 51.0, 61.0, 71.0], [81.0, 91.0, 101.0, 111.0], [121.0, 131.0, 141.0, 151.0]]
+6 gathered: CPU (4, 4) | shard_like: 0</code></pre>
+
+  <div class="quiz" data-answer="2">
+    <div class="q">A (6, 4) tensor is sharded on 3 devices with <code>axis=1</code>. What happens?</div>
+    <button class="opt">Each device gets 2 rows.</button>
+    <button class="opt">Each device gets columns of width 4/3, padded.</button>
+    <button class="opt"><code>RuntimeError: multi axis uneven</code> — 4 isn't divisible by 3.</button>
+    <div class="explain"><code>_shard</code> checks <code>self.shape[axis] % dcount</code>. There is no padding; choose the axis (or the device count) so
+    that it divides.</div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="multipm"><span class="sec">19.3</span><code>multi_pm</code>: pushing ops through <code>UNSHARD</code></h2>
+  <p>Sharded tensors flow through the normal Tensor API, building a normal lazy graph with <code>UNSHARD</code> nodes inside. At schedule time,
+  <code>prepare_rangeify</code> runs <code>graph_rewrite(sink, multi_pm)</code> first thing
+  (<a class="src" data-path="tinygrad/schedule/prepare.py" data-line="257">schedule/prepare.py:257</a>), and the result has <code>UNSHARD</code>s only at the
+  top. Here is the matcher:</p>
+  <div class="codecap"><b>tinygrad/schedule/multi.py</b> — <a class="src" data-path="tinygrad/schedule/multi.py" data-line="274">multi_pm</a></div>
+  <pre><code class="language-python" data-src="tinygrad/schedule/multi.py:274-303">multi_pm = PatternMatcher([
+  (UPat(GroupOp.ALU, name="root", custom_early_reject=set([Ops.UNSHARD])), alu_multi),
+  (UPat(Ops.REDUCE, src=(UPat(Ops.UNSHARD, name="multi"), ), name="root"), reduce_multi),
+  (UPat(Ops.RESHAPE, src=(UPat(Ops.UNSHARD, name="multi"), UPat()), name="root"), reshape_multi),
+  (UPat(Ops.EXPAND, src=(UPat(Ops.UNSHARD, name="multi"), UPat()), name="root"), expand_multi),
+  (UPat(Ops.PAD, src=(UPat(Ops.UNSHARD, name="multi"), UPat(), UPat()), name="root"), pad_multi),
+  (UPat(Ops.SHRINK, src=(UPat(Ops.UNSHARD, name="multi"), UPat(), UPat()), name="root"), shrink_multi),
+  (UPat(Ops.PERMUTE, src=(UPat(Ops.UNSHARD, name="multi"), UPat()), name="root"), permute_multi),
+  (UPat(Ops.STACK, name="root", custom_early_reject=set([Ops.UNSHARD])), stack_multi),
+  (UPat(Ops.INDEX, src=(UPat(Ops.UNSHARD, name="multi"),), name="root", allow_any_len=True), index_multi),
+  (UPat(Ops.AFTER, src=(UPat(Ops.UNSHARD), UPat(Ops.STORE, src=(UPat(Ops.UNSHARD, name="dest"), UPat(Ops.UNSHARD, name="src"))))), store_after_multi),
+  # a COPY of a sharded value copies every shard to the target device
+  (UPat(Ops.COPY, src=(UPat(Ops.UNSHARD, name="multi"),), allow_any_len=True, name="copy"), lambda multi,copy: copy_multi(multi, copy.arg)),
+  (UPat(Ops.ALLREDUCE, src=(UPat(Ops.UNSHARD, name="multi"),), name="red"),
+    lambda multi,red: multi.src[0].allreduce(*red.arg).unshard(multi.arg, multi.src[1:])),
+
+  # rewrite value-producing calls explicitly for UNSHARD
+  # NOTE: lambda for late binding, rewrite_into_function references multi_pm
+  (UPat(Ops.CALL, name="call"), lambda call: rewrite_into_function(call)),
+  (UPat(Ops.AFTER, src=(UPat(Ops.UNSHARD, name="multi"), ), name="root", allow_any_len=True), passthrough_multi),
+  # just strip the UNSHARD from non-value-producing CALLs (custom kernels, etc.) — value-producing CALLs are handled by rewrite_into_function
+  (UPat(Ops.CALL, dtype=dtypes.void, name="root", custom_early_reject=set([Ops.UNSHARD])), lambda root:
+    UOp(root.op, src=tuple(x.src[0] if x.op is Ops.UNSHARD else x for x in root.src), arg=root.arg)),
+  (UPat((Ops.CAST, Ops.BITCAST, Ops.STAGE, Ops.DETACH, Ops.CONTIGUOUS_BACKWARD),
+        src=(UPat(Ops.UNSHARD, name="multi"), ), name="root"), passthrough_multi),
+  # STORE of a sharded value into an unsharded dest (e.g. a fragment into a full output tile)
+  (UPat(Ops.STORE, src=(UPat.var("dest"), UPat(Ops.UNSHARD, name="multi"))), store_value_multi),
+  # STORE into a sharded dest (e.g. the fragment init): every shard stores into its own shard
+  (UPat(Ops.STORE, src=(UPat(Ops.UNSHARD, name="multi"), ), name="root", allow_any_len=True), store_dest_multi),
+])+replace_allreduce</code></pre>
+  <p>The two rules that matter most:</p>
+  <div class="codecap"><b>tinygrad/schedule/multi.py</b> — <a class="src" data-path="tinygrad/schedule/multi.py" data-line="87">alu_multi / reduce_multi</a></div>
+  <pre><code class="language-python" data-src="tinygrad/schedule/multi.py:87-122">def alu_multi(root:UOp):
+  multis = [m for m in root.src if m.op is Ops.UNSHARD]
+  sharding = multis[0].sharding
+  target = multis[0]
+  def can_handle(m:UOp) -&gt; bool:
+    # same sharding (peel the UNSHARD), or a whole unsharded value of the full tile shape (takes its per-shard
+    # sub-view), or a broadcast scalar
+    if m.sharding: return m.sharding == sharding
+    return m.shape == () or tuple(m.shape) == tuple(target.shape)
+  if all(can_handle(m) for m in root.src):
+    # every src either has the target sharding or is whole on every shard: run the alu per-shard
+    srcs = [m.src[0] if m.op is Ops.UNSHARD else m if m.shape == () else shard_subview(m, target) for m in root.src]
+    return srcs[0].alu(root.op, *srcs[1:]).unshard(target.arg, target.src[1:])
+  # resharding: single-axis fallback via shard_srcs
+  axis = root.axis
+  assert axis is not None
+  srcs = shard_srcs(root.src, axis)
+  return srcs[0].alu(root.op, *srcs[1:]).unshard(axis, next(m.src[1] for m in root.src if m.op is Ops.UNSHARD))
+
+def reduce_multi(root:UOp, multi:UOp):
+  op, num_axes = root.arg
+  sharding = multi.sharding
+  reduced = [(ax, rng) for ax, rng in sharding if ax &lt; num_axes]
+  remaining = [(ax, rng) for ax, rng in sharding if ax &gt;= num_axes]
+  local = multi.src[0]._rop(op, tuple(range(num_axes)))
+  if reduced:
+    assert not remaining, f"partial allreduce not supported for multi-axis sharding {sharding}"
+    # all sharded axes are reduced: full allreduce
+    if ALLREDUCE_CAST and multi.src[0].op is Ops.CAST and multi.src[0].src[0].dtype in (dtypes.bfloat16, dtypes.half):
+      orig_dtype = multi.src[0].src[0].dtype
+      return local.cast(orig_dtype).allreduce(op, multi.device).cast(local.dtype)
+    return local.allreduce(op, multi.device)
+  # no sharded axes reduced: piecewise, keep all remaining sharding
+  new_axes = tuple(ax - num_axes for ax, _ in remaining)
+  new_rngs = tuple(rng for _, rng in remaining)
+  return local.unshard(new_axes, new_rngs)</code></pre>
+  <ul>
+    <li><b>alu_multi</b>: if every source has the same sharding (or is a scalar, or is a whole unsharded value of the full shape — it takes its
+      per-shard sub-view), peel the <code>UNSHARD</code>s, apply the op, re-wrap. Otherwise fall back to <code>shard_srcs</code>: gather the odd source
+      with <code>copy_multi</code> and re-shard it on the target axis.</li>
+    <li><b>reduce_multi</b>: reduce locally first (<code>_rop</code> on the shard). If the reduced axes include the sharded one, the local results are
+      only partial → <code>local.allreduce(op, devices)</code>. With <code>ALLREDUCE_CAST</code>, a bf16/half value cast up for the reduce is sent in
+      its original narrow dtype to halve traffic. If the sharded axis survives, no communication: re-wrap with the axis shifted.</li>
+    <li><b>Movement ops</b> (<code>reshape_multi</code>, <code>permute_multi</code>, <code>expand_multi</code>, <code>pad_multi</code>,
+      <code>shrink_multi</code>) translate the global movement into the local one and recompute the sharded axis. Shrinking or padding <em>across</em>
+      the sharded axis is mostly unsupported.</li>
+    <li><b>COPY of a sharded value</b> → <code>copy_multi</code>: to a single device, <code>MSELECT(i)</code> every shard, copy it, and
+      <code>cat</code> them back; to a device tuple, pad each shard into place and <code>allreduce(ADD)</code>.</li>
+  </ul>
+  <p>And a second matcher, <code>replace_allreduce</code>, cleans up the device-level plumbing:</p>
+  <pre><code class="language-python" data-src="tinygrad/schedule/multi.py:24-45">def lower_broadcast_copy(c:UOp, x:UOp):
+  if not (isinstance(c.device, tuple) and isinstance(x.device, str)): return None
+  if (sx:=x.simplify()).device is None: return UOp(Ops.MSTACK, src=(sx,)*len(c.device))
+  return UOp(Ops.MSTACK, src=tuple(x.pad_to(x.max_shape).contiguous().copy_to_device(d) for d in c.device)).shrink_to(c.shape)
+
+replace_allreduce = PatternMatcher([
+  # BROADCAST: explicitly expand broadcast copies and combine with MSTACK
+  (UPat(Ops.COPY, name="c", src=(UPat(name="x"),), allow_any_len=True), lower_broadcast_copy),
+  # COPY_TO_ONE: if copying from multidevice to one, MSELECT the first (TODO: a little from each?)
+  (UPat(Ops.COPY, name="c", src=(UPat(name="x"),), allow_any_len=True), lambda c,x:
+    (m if (m:=x.mselect(0)).device == c.device else m.copy_to_device(c.device))
+    if isinstance(c.device, str) and isinstance(x.device, tuple) else None),
+  # MSELECT on MSTACK is replaced with nothing
+  (UPat(Ops.MSELECT, src=(UPat(Ops.MSTACK, name="mstack"),), name="ms"), lambda mstack, ms: mstack.src[ms.arg]),
+  # move shrink before MSTACK
+  (UPat(Ops.SHRINK, src=(UPat(Ops.MSTACK, name="ms"),), allow_any_len=True, name="shrink"), mstack_early_shrink),
+  # move MSELECT before movement/ALU ops
+  (UPat(Ops.MSELECT, src=(UPat(GroupOp.Movement, src=(UPat.var("s"),), allow_any_len=True, name="v"),), name="ms"),
+   lambda s,v,ms: v.replace(src=(s.mselect(ms.arg),)+v.src[1:])),
+  (UPat(Ops.MSELECT, src=(UPat(GroupOp.ALU, name="a"),), name="ms"), lambda a,ms:
+   a.replace(src=tuple(s.mselect(ms.arg) if isinstance(s.device, tuple) else s for s in a.src))),
+])</code></pre>
+  <table>
+    <tr><th>UOp</th><th>meaning</th></tr>
+    <tr><td><code>UNSHARD(x, r…)</code>, arg = axes</td><td>logical view: x is shard <i>r</i>; the full value is the concatenation along <code>arg</code></td></tr>
+    <tr><td><code>COPY(x, [r])</code>, arg = device(s)</td><td>copy x to a device, or to every device of a tuple (then it carries the DEVICE range)</td></tr>
+    <tr><td><code>MSELECT(x)</code>, arg = i</td><td>the single-device lane <i>i</i> of a multi-device value</td></tr>
+    <tr><td><code>MSTACK(x0, x1, …)</code></td><td>the opposite: build a multi-device value from one single-device value per device</td></tr>
+    <tr><td><code>ALLREDUCE(x)</code>, arg = (op, devices)</td><td>combine the per-device values with op; result on <code>devices</code> (tuple: every device gets it)</td></tr>
+  </table>
+
+  <div class="demo" id="demo-viz">
+    <div class="demo-title">Sharding visualizer</div>
+    <div class="demo-desc">Choose a shape, the number of devices, the shard axis and an operation. Left: how the input (and its result) is laid out
+    over devices, colored per device. Right: what <code>multi_pm</code> does with it, and the <b>real compiled schedule</b> for that configuration
+    (captured on a 12×12 input by <code>examples/19_shard_grid.py</code>; the kernel/copy structure doesn't depend on the size, except for the
+    ring-allreduce threshold which is computed for your shape).</div>
+    <div class="controls">
+      <label>rows <select id="v-r"><option>4</option><option>6</option><option>8</option><option>9</option><option selected>12</option></select></label>
+      <label>cols <select id="v-c"><option>4</option><option>6</option><option>8</option><option>9</option><option selected>12</option></select></label>
+      <label>devices <select id="v-n"><option>2</option><option selected>3</option><option>4</option></select></label>
+      <label>axis <select id="v-a"><option value="0">0 (rows)</option><option value="1">1 (cols)</option><option value="None">None (replicate)</option></select></label>
+      <label>op <select id="v-op"></select></label>
+    </div>
+    <div class="ch19-viz"><div id="v-svg"></div><div><div class="ch19-expl" id="v-expl"></div><div class="ch19-calls" id="v-calls"></div></div></div>
+  </div>
+
+  <div class="codecap"><b>examples/19_shard_grid.py</b> — run with <code>DEV=CPU python3 examples/19_shard_grid.py</code></div>
+  <pre><code class="language-python" data-file="examples/19_shard_grid.py"># Chapter 19 — capture the real compiled schedule for a grid of (num devices, shard axis, operation) on a 12x12 tensor.
+# run: DEV=CPU python3 examples/19_shard_grid.py        (writes data/ch19_grid.json, used by the sharding visualizer)
+import json, pathlib
+from tinygrad import Tensor
+from tinygrad.uop.ops import Ops
+from tinygrad.engine.realize import compile_linear, run_linear, get_call_arg_uops
+
+def devstr(d): return list(d) if isinstance(d, tuple) else d
+def summarize(t):
+  lin = t.schedule_linear()
+  calls = []
+  for c in compile_linear(lin).src:
+    c = c.without_after
+    a = get_call_arg_uops(c)
+    if c.body.op is Ops.STORE:
+      src = a[1]
+      while src.op in (Ops.SHRINK, Ops.BITCAST, Ops.RESHAPE) : src = src.src[0]
+      lane = src.arg if src.op is Ops.MSELECT else None
+      while src.op in (Ops.MSELECT, Ops.SHRINK, Ops.BITCAST, Ops.RESHAPE): src = src.src[0]
+      sdev = src.device[lane] if lane is not None and isinstance(src.device, tuple) else src.device
+      calls.append({"k": "copy", "src": devstr(sdev), "dst": devstr(a[0].device), "n": a[0].max_numel() * a[0].dtype.itemsize})
+    else: calls.append({"k": "kernel", "name": c.body.src[0].arg.name, "dev": devstr(a[0].device)})
+  run_linear(lin)
+  return calls
+
+X = Tensor([[float(12*i + j) for j in range(12)] for i in range(12)]).realize()
+W = Tensor([[float((i + 2*j) % 5) for j in range(12)] for i in range(12)]).realize()
+OPS = {
+  "x * 2 + 1":            lambda x, d: x * 2 + 1,
+  "x.sum(axis=0)":        lambda x, d: x.sum(axis=0),
+  "x.sum(axis=1)":        lambda x, d: x.sum(axis=1),
+  "x.sum()":              lambda x, d: x.sum(),
+  "x @ W  (W replicated)":  lambda x, d: x @ W.shard(d),
+  "x @ W  (W axis=0)":    lambda x, d: x @ W.shard(d, axis=0),
+  "x @ W  (W axis=1)":    lambda x, d: x @ W.shard(d, axis=1),
+}
+out = {}
+for nd in (2, 3, 4):
+  devs = tuple(f"CPU:{i}" for i in range(nd))
+  for axis in (0, 1, None):
+    xs = X.shard(devs, axis=axis).realize()
+    for name, fn in OPS.items():
+      try:
+        y = fn(xs, devs)
+        calls = summarize(y)
+        ref = fn(X, None).tolist() if "@" not in name else (X @ W).tolist()
+        ok = y.tolist() == ref
+        out[f"{nd}|{axis}|{name}"] = {"calls": calls, "out_device": devstr(y.device), "out_axis": y.uop.axis if isinstance(y.device, tuple) else None,
+                                     "ok": ok}
+      except Exception as e:
+        out[f"{nd}|{axis}|{name}"] = {"error": f"{type(e).__name__}: {e}"[:200]}
+      r = out[f"{nd}|{axis}|{name}"]
+      if "error" in r: print(f"{nd} devs, axis={axis!s:4} {name:22s} ERROR {r['error'][:80]}")
+      else:
+        k = sum(c["k"] == "kernel" for c in r["calls"]); cp = sum(c["k"] == "copy" for c in r["calls"])
+        print(f"{nd} devs, axis={axis!s:4} {name:22s} {k:2d} kernels {cp:2d} copies  out axis={r['out_axis']!s:4}  correct={r['ok']}")
+path = pathlib.Path(__file__).resolve().parent.parent / "data" / "ch19_grid.json"
+path.write_text(json.dumps(out))
+print("wrote", path.name, f"({path.stat().st_size} bytes)")</code></pre>
+  <details class="deep-dive"><summary>Real output of 19_shard_grid.py (63 configurations, all checked against the single-device result)</summary>
+  <pre class="output"><code data-out="19_shard_grid">2 devs, axis=0    x * 2 + 1               1 kernels  0 copies  out axis=0     correct=True
+2 devs, axis=0    x.sum(axis=0)           3 kernels  2 copies  out axis=None  correct=True
+2 devs, axis=0    x.sum(axis=1)           1 kernels  0 copies  out axis=0     correct=True
+2 devs, axis=0    x.sum()                 3 kernels  2 copies  out axis=None  correct=True
+2 devs, axis=0    x @ W  (W replicated)   1 kernels  1 copies  out axis=0     correct=True
+2 devs, axis=0    x @ W  (W axis=0)       7 kernels  5 copies  out axis=None  correct=True
+2 devs, axis=0    x @ W  (W axis=1)       5 kernels  3 copies  out axis=1     correct=True
+2 devs, axis=1    x * 2 + 1               1 kernels  0 copies  out axis=1     correct=True
+2 devs, axis=1    x.sum(axis=0)           1 kernels  0 copies  out axis=0     correct=True
+2 devs, axis=1    x.sum(axis=1)           3 kernels  2 copies  out axis=None  correct=True
+2 devs, axis=1    x.sum()                 3 kernels  2 copies  out axis=None  correct=True
+2 devs, axis=1    x @ W  (W replicated)   3 kernels  3 copies  out axis=None  correct=True
+2 devs, axis=1    x @ W  (W axis=0)       5 kernels  3 copies  out axis=None  correct=True
+2 devs, axis=1    x @ W  (W axis=1)       5 kernels  3 copies  out axis=1     correct=True
+2 devs, axis=None x * 2 + 1               1 kernels  0 copies  out axis=None  correct=True
+2 devs, axis=None x.sum(axis=0)           1 kernels  0 copies  out axis=None  correct=True
+2 devs, axis=None x.sum(axis=1)           1 kernels  0 copies  out axis=None  correct=True
+2 devs, axis=None x.sum()                 1 kernels  0 copies  out axis=None  correct=True
+2 devs, axis=None x @ W  (W replicated)   1 kernels  1 copies  out axis=None  correct=True
+2 devs, axis=None x @ W  (W axis=0)       5 kernels  3 copies  out axis=None  correct=True
+2 devs, axis=None x @ W  (W axis=1)       3 kernels  1 copies  out axis=1     correct=True
+3 devs, axis=0    x * 2 + 1               1 kernels  0 copies  out axis=0     correct=True
+3 devs, axis=0    x.sum(axis=0)           3 kernels  6 copies  out axis=None  correct=True
+3 devs, axis=0    x.sum(axis=1)           1 kernels  0 copies  out axis=0     correct=True
+3 devs, axis=0    x.sum()                 3 kernels  6 copies  out axis=None  correct=True
+3 devs, axis=0    x @ W  (W replicated)   1 kernels  2 copies  out axis=0     correct=True
+3 devs, axis=0    x @ W  (W axis=0)       8 kernels 14 copies  out axis=None  correct=True
+3 devs, axis=0    x @ W  (W axis=1)       6 kernels  8 copies  out axis=1     correct=True
+3 devs, axis=1    x * 2 + 1               1 kernels  0 copies  out axis=1     correct=True
+3 devs, axis=1    x.sum(axis=0)           1 kernels  0 copies  out axis=0     correct=True
+3 devs, axis=1    x.sum(axis=1)           3 kernels  6 copies  out axis=None  correct=True
+3 devs, axis=1    x.sum()                 3 kernels  6 copies  out axis=None  correct=True
+3 devs, axis=1    x @ W  (W replicated)   3 kernels  8 copies  out axis=None  correct=True
+3 devs, axis=1    x @ W  (W axis=0)       6 kernels  8 copies  out axis=None  correct=True
+3 devs, axis=1    x @ W  (W axis=1)       6 kernels  8 copies  out axis=1     correct=True
+3 devs, axis=None x * 2 + 1               1 kernels  0 copies  out axis=None  correct=True
+3 devs, axis=None x.sum(axis=0)           1 kernels  0 copies  out axis=None  correct=True
+3 devs, axis=None x.sum(axis=1)           1 kernels  0 copies  out axis=None  correct=True
+3 devs, axis=None x.sum()                 1 kernels  0 copies  out axis=None  correct=True
+3 devs, axis=None x @ W  (W replicated)   1 kernels  2 copies  out axis=None  correct=True
+3 devs, axis=None x @ W  (W axis=0)       6 kernels  8 copies  out axis=None  correct=True
+3 devs, axis=None x @ W  (W axis=1)       4 kernels  2 copies  out axis=1     correct=True
+4 devs, axis=0    x * 2 + 1               1 kernels  0 copies  out axis=0     correct=True
+4 devs, axis=0    x.sum(axis=0)           3 kernels 12 copies  out axis=None  correct=True
+4 devs, axis=0    x.sum(axis=1)           1 kernels  0 copies  out axis=0     correct=True
+4 devs, axis=0    x.sum()                 3 kernels 12 copies  out axis=None  correct=True
+4 devs, axis=0    x @ W  (W replicated)   1 kernels  3 copies  out axis=0     correct=True
+4 devs, axis=0    x @ W  (W axis=0)       9 kernels 27 copies  out axis=None  correct=True
+4 devs, axis=0    x @ W  (W axis=1)       7 kernels 15 copies  out axis=1     correct=True
+4 devs, axis=1    x * 2 + 1               1 kernels  0 copies  out axis=1     correct=True
+4 devs, axis=1    x.sum(axis=0)           1 kernels  0 copies  out axis=0     correct=True
+4 devs, axis=1    x.sum(axis=1)           3 kernels 12 copies  out axis=None  correct=True
+4 devs, axis=1    x.sum()                 3 kernels 12 copies  out axis=None  correct=True
+4 devs, axis=1    x @ W  (W replicated)   3 kernels 15 copies  out axis=None  correct=True
+4 devs, axis=1    x @ W  (W axis=0)       7 kernels 15 copies  out axis=None  correct=True
+4 devs, axis=1    x @ W  (W axis=1)       7 kernels 15 copies  out axis=1     correct=True
+4 devs, axis=None x * 2 + 1               1 kernels  0 copies  out axis=None  correct=True
+4 devs, axis=None x.sum(axis=0)           1 kernels  0 copies  out axis=None  correct=True
+4 devs, axis=None x.sum(axis=1)           1 kernels  0 copies  out axis=None  correct=True
+4 devs, axis=None x.sum()                 1 kernels  0 copies  out axis=None  correct=True
+4 devs, axis=None x @ W  (W replicated)   1 kernels  3 copies  out axis=None  correct=True
+4 devs, axis=None x @ W  (W axis=0)       7 kernels 15 copies  out axis=None  correct=True
+4 devs, axis=None x @ W  (W axis=1)       5 kernels  3 copies  out axis=1     correct=True
+wrote ch19_grid.json (33353 bytes)</code></pre></details>
+  <p>Patterns to notice in that table: elementwise ops and reductions over the non-sharded axis are always 1 kernel / 0 copies; reducing the sharded
+  axis costs \(n(n-1)\) copies (naive allreduce: every device sends its partial result to every other); replicated inputs never communicate for
+  their own ops; <code>x @ W</code> with <code>x</code> on rows and <code>W</code> replicated is the data-parallel sweet spot (the only copies are
+  broadcasting <code>W</code> itself); and mismatched shardings (e.g. <code>x</code> on rows, <code>W</code> on rows) trigger gathers and reshards.</p>
+
+  <!-- ============================================================ -->
+  <h2 id="kernels"><span class="sec">19.4</span>One kernel, n launches: <code>_device_num</code></h2>
+  <p>After <code>multi_pm</code>, the per-device computation is still <em>one</em> graph, parametrized by the DEVICE range. Rangeify keeps that range
+  open ("open DEVICE ranges are fine, they are bound per device at launch",
+  <a class="src" data-path="tinygrad/schedule/rangeify.py" data-line="322">rangeify.py:322</a>), so a whole multi-device kernel is a single CALL whose buffer
+  args are MultiBuffers. In codegen, the DEVICE range becomes a kernel argument:</p>
+  <div class="codecap"><b>tinygrad/codegen/gpudims.py</b> — <a class="src" data-path="tinygrad/codegen/gpudims.py" data-line="91">pm_device_to_var</a></div>
+  <pre><code class="language-python" data-src="tinygrad/codegen/gpudims.py:91-96">pm_device_to_var = PatternMatcher([
+  # the DEVICE axis is not a program axis, it's bound per device at launch. lower it to the _device_num variable (like SPECIAL for devices)
+  (UPat(Ops.RANGE, name="r"),
+   lambda r: UOp.variable("_device_num", 0, r.vmax, dtype=r.dtype) if r.axis_type is AxisType.DEVICE else None),
+  # ENDs that closed a DEVICE range no longer close it
+  (UPat(Ops.END, name="e"), lambda e: e.replace(src=(e.src[0],)+tuple(s for s in e.src[1:] if s.op is not Ops.PARAM))</code></pre>
+  <p>and at run time <code>exec_kernel</code> iterates over the lanes of the MultiBuffers, binding <code>_device_num</code> to the lane index:</p>
+  <div class="codecap"><b>tinygrad/engine/realize.py</b> — <a class="src" data-path="tinygrad/engine/realize.py" data-line="134">unwrap_multi</a></div>
+  <pre><code class="language-python" data-src="tinygrad/engine/realize.py:134-145">def unwrap_multi(call:UOp, resolved:list[UOp]) -&gt; Iterator[tuple[list[Buffer], dict[str, int]]]:
+  bufs = [b.buffer for b in resolved]
+  if not any(isinstance(b, MultiBuffer) for b in bufs): yield cast(list[Buffer], bufs), {}
+  else:
+    # the DEVICE axis is bound per device at launch: it's a RANGE in the AST and the _device_num variable after codegen
+    # on x86 the params aren't PARAMs in the body, so also check the PROGRAM's kernel_params
+    has_dnum = ((isinstance(call.body.arg, ProgramInfo) and any(p.arg.name == '_device_num' for p in call.body.kernel_params)) or
+                any((x.op is Ops.RANGE and x.axis_type is AxisType.DEVICE) or (x.op is Ops.PARAM and x.arg.name == '_device_num')
+                    for x in call.body.toposort()))
+    lanes = max(len(b.bufs) for b in bufs if isinstance(b, MultiBuffer)) # a single buffer is shared by every lane
+    per_lane = [b.bufs if isinstance(b, MultiBuffer) else (b,)*lanes for b in bufs]
+    for j, per_dev in enumerate(zip(*per_lane)): yield list(per_dev), {"_device_num": j} if has_dnum else {}</code></pre>
+  <p>Most kernels don't even need <code>_device_num</code> — the same code runs on each shard. It shows up when the computation depends on <em>which</em>
+  shard you are, e.g. adding an <code>arange</code> over the sharded axis (row index = <code>_device_num*2 + local row</code>):</p>
+  <pre class="output"><code id="dn-src"></code></pre>
+  <p>(On HCQ devices, <code>pm_unwrap_multi</code> in <code>hcq_compile</code> splits the CALL into one per device with <code>_device_num</code> bound to a
+  constant instead, <a href="17-runtime.html">Chapter 17 §17.10</a>.)</p>
+
+  <div class="quiz" data-answer="1">
+    <div class="q">In the DEBUG=2 output of a 2-device elementwise op you see two lines, <code>*** CPU 6 E_2_4</code> and <code>*** CPU:1 6 E_2_4</code>, with the same kernel number. Why the same number?</div>
+    <button class="opt">It's a bug in the counter.</button>
+    <button class="opt">It is one CALL launched on two devices: <code>track_stats</code> adds <code>n=len(get_call_kernels(call))</code> to <code>kernel_count</code> before printing the per-device lines.</button>
+    <button class="opt">The two devices have separate counters.</button>
+    <div class="explain"><code>get_call_kernels</code> returns one entry per device of the call; the counter is bumped by 2 at once, and each lane prints its
+    own line with its own time.</div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="copies"><span class="sec">19.5</span>COPY between devices</h2>
+  <p>A cross-device <code>COPY</code> UOp becomes a buffer plus a store (<code>copy_to_anon_store</code> in
+  <a class="src" data-path="tinygrad/schedule/prepare.py" data-line="154">prepare.py</a>: "copies are always cross device: pad to the max shape so the copy reads
+  a whole buffer"), and finally a copy CALL in the LINEAR: <code>CALL(STORE(PARAM0, PARAM1), dst, src)</code>. Its arguments use
+  <code>MSELECT(i)</code> to pick one lane of a MultiBuffer as the source, and <code>MSTACK</code> to assemble per-device single buffers into a multi
+  argument for the next kernel. <code>exec_copy</code> then does a host memcpy (CPU↔CPU) or an allocator <code>_copyin</code>/<code>_copyout</code>; on HCQ
+  devices it is a copy-queue command (DMA engine), possibly peer-to-peer, possibly staged through host memory (<code>stage_copy</code>).</p>
+  <div class="codecap"><b>tinygrad/schedule/multi.py</b> — <a class="src" data-path="tinygrad/schedule/multi.py" data-line="221">copy_multi</a></div>
+  <pre><code class="language-python" data-src="tinygrad/schedule/multi.py:221-245">def copy_multi(multi:UOp, device:str | tuple[str, ...]):
+  sharding = multi.sharding
+  if isinstance(device, str):
+    # reconstruct by concatenating along each axis from last to first
+    piece_info: list[tuple[tuple, UOp]] = []
+    for i in range(len(multi.device)):
+      idxs = tuple(_shard_idx(r, i) for _, r in sharding)
+      piece_info.append((idxs, multi.src[0].mselect(i).copy_to_device(device)))
+    for j in range(len(sharding) - 1, -1, -1):
+      ax, rng = sharding[j]
+      groups: dict[tuple, list[tuple[int, UOp]]] = {}
+      for idxs, p in piece_info:
+        key = idxs[:j] + idxs[j+1:]
+        groups.setdefault(key, []).append((idxs[j], p))
+      piece_info = []
+      for key in sorted(groups):
+        grp = sorted(groups[key], key=lambda x: x[0])
+        piece_info.append((key, grp[0][1].cat(*[x[1] for x in grp[1:]], dim=ax)))
+    return piece_info[0][1]
+  # multi-device target: unshard all axes and allreduce
+  val = multi.src[0]
+  for ax, rng in sharding:
+    bsz = val.shape[ax]
+    val = val.pad(tuple((0,0) if a != ax else (bsz*rng, bsz*int(rng.vmax) - bsz*rng) for a in range(len(val.shape))))
+  return val.allreduce(Ops.ADD, device)</code></pre>
+
+  <!-- ============================================================ -->
+  <h2 id="allreduce"><span class="sec">19.6</span>Allreduce: naive, ring, all-to-all</h2>
+  <p>An <code>ALLREDUCE</code> is expanded early in scheduling: <code>earliest_rewrites</code> calls
+  <a class="src" data-path="tinygrad/schedule/allreduce.py" data-line="68">create_allreduce_function</a>, which wraps
+  <code>handle_allreduce</code> in a precompiled CALL named "allreduce" — so the same allreduce pattern is scheduled once and reused.</p>
+  <div class="codecap"><b>tinygrad/schedule/allreduce.py</b> — <a class="src" data-path="tinygrad/schedule/allreduce.py" data-line="6">handle_allreduce</a> (the node-level hierarchical path, lines 22–28, omitted)</div>
+  <pre><code class="language-python" data-src="tinygrad/schedule/allreduce.py:6-20">def handle_allreduce(buf:UOp, red:UOp) -&gt; UOp|None:
+  if not isinstance(buf.device, tuple): return None
+  ndev, shape, numel = len(buf.device), buf.shape, prod(buf.shape)
+  op, device = red.arg
+
+  # ring allreduce doesn't provide a benefit with only 2 nodes or where number of elements is less than 256k (empirically)
+  # fallback to naive allreduce to save on kernel dispatch, chunking and reassembling chunks.
+  concrete = all_int(shape)
+  use_all2all = concrete and (ALL2ALL &gt;= 2 or (ndev &gt; 2 and numel &gt; getenv("RING_ALLREDUCE_THRESHOLD", 256_000) and ALL2ALL &gt;= 1))
+  use_ring = concrete and not use_all2all and (RING &gt;= 2 or (ndev &gt; 2 and numel &gt; getenv("RING_ALLREDUCE_THRESHOLD", 256_000) and RING &gt;= 1))
+  if DEBUG &gt;= 2: print(f"{'ALL2ALL' if use_all2all else 'RING' if use_ring else 'NAIVE'} ALLREDUCE {ndev}x{numel} | {buf.dtype}")
+
+  buf = buf.pad_to(buf.max_shape)
+  # contiguous before we copy it
+  buf = buf.contiguous()</code></pre>
+  <pre><code class="language-python" data-src="tinygrad/schedule/allreduce.py:30-66">  # naive: copy to all devices. if you shrink later, that'll be handled
+  if not use_ring and not use_all2all:
+    return functools.reduce(lambda x,y: x.alu(op, y), [buf.mselect(i).copy_to_device(device) for i in range(ndev)]).shrink_to(shape)
+
+  # chunk data into ndev pieces
+  assert isinstance(numel, int)
+  factor = next((f for f in [32, 16, 8, 4, 2] if numel % f == 0), 1)
+  base, left = divmod(numel // factor,  ndev)
+  chunks = list(itertools.pairwise(itertools.accumulate([(base + 1) * factor] * left + [base * factor] * (ndev - left), initial=0)))
+
+  # reduce-scatter
+  reduced_chunks:list[UOp] = []
+  for i,(s,e) in enumerate(chunks):
+    if use_all2all:
+      chunks_on_i = [buf.mselect(j).reshape((numel,)).shrink(((s,e),)).copy_to_device(buf.device[i]) for j in range(ndev)]
+      reduced_chunks.append(functools.reduce(lambda x,y: x.alu(op, y), chunks_on_i))
+    else:
+      chunk, reduced = buf.reshape((numel,)).shrink(((s,e),)), buf.reshape((numel,)).shrink(((s,e),))
+      for step in range(ndev-1):
+        src, dest = (i+step)%ndev, (i+step+1)%ndev
+        cp = (reduced.mselect(src) if isinstance(reduced.device, tuple) else reduced).copy_to_device(buf.device[dest])
+        reduced = cp.alu(op, chunk.mselect(dest).copy_to_device(buf.device[dest]))
+      reduced_chunks.append(reduced)
+
+  # allgather
+  copied_chunks:list[UOp] = []
+  for i,rc in enumerate(reduced_chunks):
+    if isinstance(device, str): copied_chunks.append(rc.copy_to_device(device))
+    elif use_all2all: copied_chunks.append(UOp.mstack(*(rc.copy_to_device(buf.device[j]) for j in range(ndev))))
+    else:
+      chain:list[UOp] = [rc]
+      for step in range(ndev-1):
+        chain.append(rc := rc.copy_to_device(buf.device[(i+step)%ndev]))
+      copied_chunks.append(UOp.mstack(*(chain[(j-i+1)%ndev] for j in range(ndev))))
+
+  # reassemble
+  return UOp.usum(*[c.pad(((s,numel-e),)) for (s,e),c in zip(chunks, copied_chunks)]).reshape(shape)</code></pre>
+  <p>The decision:</p>
+  <ul>
+    <li><b>Naive</b> (default for 2 devices or ≤ 256 000 elements): every device's buffer is copied to the target and folded with <code>op</code>. With a
+      device tuple as target, <code>lower_broadcast_copy</code> turns each copy into an <code>MSTACK</code> of per-device copies: \(n(n-1)\) cross-device
+      copies of the <em>whole</em> buffer. Fewest kernels, most bytes.</li>
+    <li><b>Ring</b> (\(n&gt;2\) and \(N&gt;\)256 000, or <code>RING=2</code>): cut the flattened buffer into \(n\) chunks (sizes multiples of the largest of
+      32/16/8/4/2 dividing \(N\)). <em>Reduce-scatter</em>: chunk \(i\) starts on device \(i\) and walks the ring \(i \to i{+}1 \to \dots\), each hop adding
+      the local piece — after \(n-1\) hops it's fully reduced on device \(i{-}1\). <em>Allgather</em>: walk it around once more, \(n-1\) hops, leaving a
+      copy everywhere. Every device sends \(2(n-1)\cdot N/n\) elements instead of \((n-1)\cdot N\).</li>
+    <li><b>All-to-all</b> (<code>ALL2ALL</code>): every device sends chunk \(i\) directly to device \(i\), which reduces it, then broadcasts it — fewer
+      sequential steps, more simultaneous links.</li>
+    <li>Finally the chunks are padded back into place and summed (<code>UOp.usum</code>) — a cheap way to concatenate.</li>
+  </ul>
+
+  <div class="demo ch19-ring" id="demo-ring">
+    <div class="demo-title">Ring allreduce, exactly as allreduce.py chunks it</div>
+    <div class="demo-desc">Pick the device count and element count. The chunk boundaries come from the same <code>factor</code>/<code>divmod</code>
+    arithmetic as the code. Each cell is a chunk on a device; the label lists whose contributions it contains. Step through reduce-scatter
+    (\(n-1\) hops) and allgather (\(n-1\) hops); arrows are the copies issued at that step (one per chunk, all in parallel).</div>
+    <div class="controls">
+      <label>devices <input type="range" id="r-n" min="2" max="6" value="3"> <span id="r-nv"></span></label>
+      <label>elements <input type="number" id="r-N" value="300000" min="2" step="1" style="width:110px"></label>
+    </div>
+    <div class="ch19-stats" id="r-stats"></div>
+    <div id="r-stepper"></div>
+    <div id="r-svg"></div>
+  </div>
+  <p>The 3-device run below (<code>RING=2</code> forces the ring for a tiny 6-element tensor) matches the demo with devices=3, elements=6 exactly:
+  copies <code>CPU→CPU:1, CPU:1→CPU:2, CPU:2→CPU</code> (hop 1 of chunks 0, 1, 2), add kernels, the second hop, then the allgather copies,
+  and finally the two "reassemble" kernels on all three devices.</p>
+
+  <div class="quiz" data-answer="0">
+    <div class="q">With 4 devices and \(N\) elements, how many elements does each device <em>send</em> in a ring allreduce vs the naive one?</div>
+    <button class="opt">ring \(2\cdot 3 \cdot N/4 = 1.5N\), naive \(3N\)</button>
+    <button class="opt">ring \(N/4\), naive \(N\)</button>
+    <button class="opt">both \(3N\)</button>
+    <div class="explain">Ring: \(n-1\) reduce-scatter hops plus \(n-1\) allgather hops, each moving one chunk of \(N/n\). Naive: the whole buffer to each
+    of the \(n-1\) others. The ring's advantage grows with \(n\) — at the cost of \(2(n-1)\) sequential steps, which is why it only kicks in for big buffers.</div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="schedules"><span class="sec">19.7</span>Real multi-device schedules</h2>
+  <div class="codecap"><b>examples/19_multi_schedules.py</b> — run with <code>DEV=CPU python3 examples/19_multi_schedules.py</code></div>
+  <pre><code class="language-python" data-file="examples/19_multi_schedules.py"># Chapter 19 — capture the real compiled schedules (kernels + copies, per device) of common multi-device programs.
+# run: DEV=CPU python3 examples/19_multi_schedules.py        (writes data/ch19_schedules.json)
+import json, pathlib
+from tinygrad import Tensor, Context
+from tinygrad.uop.ops import Ops
+from tinygrad.engine.realize import compile_linear, run_linear, get_call_arg_uops
+
+def dev_str(d): return list(d) if isinstance(d, tuple) else d
+def describe(a):
+  """walk a CALL argument down to its storage: MSELECT(i) picks lane i of a multi buffer, MSTACK stacks per-device buffers"""
+  chain = []
+  while a.op in (Ops.MSELECT, Ops.SHRINK, Ops.BITCAST, Ops.RESHAPE):
+    if a.op is Ops.MSELECT: chain.append(f"MSELECT({a.arg})")
+    a = a.src[0]
+  if a.op is Ops.MSTACK: chain.append(f"MSTACK[{len(a.src)}]")
+  return {"via": chain, "device": dev_str(a.device)}
+
+def capture(label, code, tensor):
+  lin = tensor.schedule_linear()
+  cl = compile_linear(lin)
+  calls = []
+  for c in cl.src:
+    c = c.without_after
+    args = get_call_arg_uops(c)
+    if c.body.op is Ops.STORE:
+      calls.append({"kind": "copy", "src": describe(args[1]), "dst": describe(args[0]),
+                    "nbytes": args[0].max_numel() * args[0].dtype.itemsize})
+    else:
+      src = c.body.src[2].arg
+      calls.append({"kind": "kernel", "name": c.body.src[0].arg.name, "device": dev_str(args[0].device),
+                    "args": [describe(a) for a in args], "device_num": "_device_num" in src, "source": src})
+  run_linear(lin)
+  value = tensor.tolist()
+  print(f"\n== {label}: {code}\n   -&gt; {sum(c['kind']=='kernel' for c in calls)} kernels, {sum(c['kind']=='copy' for c in calls)} copies")
+  for i, c in enumerate(calls):
+    if c["kind"] == "copy": print(f"   {i:2d} COPY   {c['nbytes']:3d}B  {c['src']['device']}{''.join('.'+v for v in c['src']['via'])} -&gt; {c['dst']['device']}")
+    else: print(f"   {i:2d} KERNEL {c['name']:10s} on {c['device']}" + ("   (uses _device_num)" if c["device_num"] else ""))
+  print("   value:", value)
+  return {"label": label, "code": code, "calls": calls, "value": value}
+
+D2, D3 = ("CPU:0", "CPU:1"), ("CPU:0", "CPU:1", "CPU:2")
+t = Tensor([[float(4*i + j) for j in range(4)] for i in range(4)]).realize()
+out = []
+s = t.shard(D2, axis=0)
+out.append(capture("shard", "s = t.shard(('CPU:0','CPU:1'), axis=0)", s))
+out.append(capture("elementwise", "s * 2 + 1", s * 2 + 1))
+out.append(capture("needs _device_num", "s + Tensor.arange(4).reshape(4,1)", s + Tensor.arange(4).float().reshape(4, 1)))
+out.append(capture("reduce other axis", "s.sum(axis=1)", s.sum(axis=1)))
+out.append(capture("reduce sharded axis (naive allreduce)", "s.sum(axis=0)", s.sum(axis=0)))
+w = Tensor([[1., 0], [0, 1], [1, 1], [2, 0]]).realize()
+out.append(capture("data parallel matmul", "s @ w.shard(devs)   # x split on rows, w replicated", s @ w.shard(D2)))
+xc = t.shard(D2, axis=1)
+out.append(capture("model parallel matmul", "t.shard(devs,axis=1) @ w.shard(devs,axis=0)   # split the contraction dim", xc @ w.shard(D2, axis=0)))
+out.append(capture("gather", "s.to('CPU')", s.to("CPU")))
+t3 = Tensor([[float(i*10 + j) for j in range(6)] for i in range(3)]).realize()
+s3 = t3.shard(D3, axis=0).realize()
+with Context(RING=2):   # force the ring algorithm (by default ring needs &gt;2 devices and &gt;256k elements)
+  out.append(capture("ring allreduce, 3 devices", "with Context(RING=2): t3.shard(3 devs, axis=0).sum(axis=0)", s3.sum(axis=0)))
+
+path = pathlib.Path(__file__).resolve().parent.parent / "data" / "ch19_schedules.json"
+path.write_text(json.dumps(out))
+print("\nwrote", path.name, f"({path.stat().st_size} bytes)")</code></pre>
+  <pre class="output"><code data-out="19_multi_schedules">
+== shard: s = t.shard(('CPU:0','CPU:1'), axis=0)
+   -&gt; 3 kernels, 1 copies
+    0 KERNEL E_2_4      on CPU
+    1 KERNEL E_2_4      on CPU
+    2 COPY    32B  CPU -&gt; CPU:1
+    3 KERNEL E_2_4      on ['CPU', 'CPU:1']
+   value: [[0.0, 1.0, 2.0, 3.0], [4.0, 5.0, 6.0, 7.0], [8.0, 9.0, 10.0, 11.0], [12.0, 13.0, 14.0, 15.0]]
+
+== elementwise: s * 2 + 1
+   -&gt; 1 kernels, 0 copies
+    0 KERNEL E_2_4      on ['CPU', 'CPU:1']
+   value: [[1.0, 3.0, 5.0, 7.0], [9.0, 11.0, 13.0, 15.0], [17.0, 19.0, 21.0, 23.0], [25.0, 27.0, 29.0, 31.0]]
+
+== needs _device_num: s + Tensor.arange(4).reshape(4,1)
+   -&gt; 1 kernels, 0 copies
+    0 KERNEL E_2_4      on ['CPU', 'CPU:1']   (uses _device_num)
+   value: [[0.0, 1.0, 2.0, 3.0], [5.0, 6.0, 7.0, 8.0], [10.0, 11.0, 12.0, 13.0], [15.0, 16.0, 17.0, 18.0]]
+
+== reduce other axis: s.sum(axis=1)
+   -&gt; 1 kernels, 0 copies
+    0 KERNEL r_2_4      on ['CPU', 'CPU:1']
+   value: [6.0, 22.0, 38.0, 54.0]
+
+== reduce sharded axis (naive allreduce): s.sum(axis=0)
+   -&gt; 3 kernels, 2 copies
+    0 KERNEL r_4_2      on ['CPU', 'CPU:1']
+    1 COPY    16B  ['CPU', 'CPU:1'].MSELECT(0) -&gt; CPU:1
+    2 COPY    16B  ['CPU', 'CPU:1'].MSELECT(1) -&gt; CPU
+    3 KERNEL E_4        on ['CPU', 'CPU:1']
+    4 KERNEL E_4        on ['CPU', 'CPU:1']
+   value: [24.0, 28.0, 32.0, 36.0]
+
+== data parallel matmul: s @ w.shard(devs)   # x split on rows, w replicated
+   -&gt; 1 kernels, 1 copies
+    0 COPY    32B  CPU -&gt; CPU:1
+    1 KERNEL r_2_2_4    on ['CPU', 'CPU:1']
+   value: [[8.0, 3.0], [24.0, 11.0], [40.0, 19.0], [56.0, 27.0]]
+
+== model parallel matmul: t.shard(devs,axis=1) @ w.shard(devs,axis=0)   # split the contraction dim
+   -&gt; 7 kernels, 4 copies
+    0 KERNEL E_4_2      on CPU
+    1 KERNEL E_4_2      on CPU
+    2 KERNEL E_4        on CPU
+    3 KERNEL E_4        on CPU
+    4 COPY    32B  CPU -&gt; CPU:1
+    5 COPY    16B  CPU -&gt; CPU:1
+    6 KERNEL r_4_2_2    on ['CPU', 'CPU:1']
+    7 COPY    32B  ['CPU', 'CPU:1'].MSELECT(0) -&gt; CPU:1
+    8 COPY    32B  ['CPU', 'CPU:1'].MSELECT(1) -&gt; CPU
+    9 KERNEL E_2_4      on ['CPU', 'CPU:1']
+   10 KERNEL E_2_4      on ['CPU', 'CPU:1']
+   value: [[8.0, 3.0], [24.0, 11.0], [40.0, 19.0], [56.0, 27.0]]
+
+== gather: s.to('CPU')
+   -&gt; 1 kernels, 1 copies
+    0 COPY    32B  ['CPU', 'CPU:1'].MSELECT(1) -&gt; CPU
+    1 KERNEL E_8_2      on CPU
+   value: [[0.0, 1.0, 2.0, 3.0], [4.0, 5.0, 6.0, 7.0], [8.0, 9.0, 10.0, 11.0], [12.0, 13.0, 14.0, 15.0]]
+
+== ring allreduce, 3 devices: with Context(RING=2): t3.shard(3 devs, axis=0).sum(axis=0)
+   -&gt; 14 kernels, 12 copies
+    0 KERNEL E_2        on CPU
+    1 KERNEL E_2        on CPU:1
+    2 KERNEL E_2        on CPU:2
+    3 COPY     8B  CPU -&gt; CPU:1
+    4 COPY     8B  CPU:1 -&gt; CPU:2
+    5 COPY     8B  CPU:2 -&gt; CPU
+    6 KERNEL E_2        on CPU:1
+    7 KERNEL E_2        on CPU:2
+    8 KERNEL E_2        on CPU
+    9 COPY     8B  CPU:1 -&gt; CPU:2
+   10 COPY     8B  CPU:2 -&gt; CPU
+   11 COPY     8B  CPU -&gt; CPU:1
+   12 KERNEL E_2        on CPU:2
+   13 KERNEL E_2        on CPU:2
+   14 KERNEL E_2        on CPU
+   15 KERNEL E_2        on CPU
+   16 KERNEL E_2        on CPU:1
+   17 KERNEL E_2        on CPU:1
+   18 COPY     8B  CPU:2 -&gt; CPU
+   19 COPY     8B  CPU -&gt; CPU:1
+   20 COPY     8B  CPU:1 -&gt; CPU:2
+   21 COPY     8B  CPU -&gt; CPU:1
+   22 COPY     8B  CPU:1 -&gt; CPU:2
+   23 COPY     8B  CPU:2 -&gt; CPU
+   24 KERNEL E_6        on ['CPU', 'CPU:1', 'CPU:2']
+   25 KERNEL E_6        on ['CPU', 'CPU:1', 'CPU:2']
+   value: [30.0, 33.0, 36.0, 39.0, 42.0, 45.0]
+
+wrote ch19_schedules.json (23471 bytes)</code></pre>
+
+  <div class="demo ch19-sched" id="demo-sched">
+    <div class="demo-title">Captured multi-device schedule viewer</div>
+    <div class="demo-desc">Each program's compiled LINEAR, drawn as one lane per device, in execution order left to right. A kernel spanning several
+    lanes is one CALL launched on each device. Arrows are copy CALLs (source lane → destination lane). Click a kernel to see its generated C.</div>
+    <div class="controls" id="s-pick"></div>
+    <div id="s-svg"></div>
+    <div class="ch19-expl" id="s-info" style="margin-top:8px"></div>
+    <div class="ch19-src" id="s-src">click a kernel…</div>
+  </div>
+  <p>Some things the viewer shows that are easy to miss in text:</p>
+  <ul>
+    <li><b>shard</b>: two kernels on <code>CPU</code> produce the two shards (each a contiguous slice), then one copy sends shard 1 to <code>CPU:1</code>, and
+      a final multi-device kernel writes both into the MultiBuffer (its second argument is an <code>MSTACK</code> of the two single-device buffers).</li>
+    <li><b>reduce sharded axis</b>: local partial sums (one CALL on both devices), two cross copies, then the adds — the naive allreduce with \(n=2\).</li>
+    <li><b>data-parallel matmul</b>: one copy (broadcasting <code>w</code>), one kernel on both devices. That's why data parallelism is the default way to
+      scale training: the forward pass needs no communication; gradients of replicated weights are summed by an allreduce in backward.</li>
+    <li><b>gather</b>: <code>s.to('CPU')</code> copies only the shard that isn't already on <code>CPU</code> (MSELECT(1)), then concatenates.</li>
+  </ul>
+
+  <!-- ============================================================ -->
+  <h2 id="again"><span class="sec">19.8</span>Hammer it again: training with shards</h2>
+  <p>The data-parallel recipe from <a class="src" data-path="examples/beautiful_mnist_multigpu.py" data-line="22">examples/beautiful_mnist_multigpu.py</a>
+  (see also <a href="20-nn-training.html">Chapter 20</a>):</p>
+  <pre><code class="language-python" data-src="examples/beautiful_mnist_multigpu.py:22-41">if __name__ == "__main__":
+  X_train, Y_train, X_test, Y_test = mnist()
+  # we shard the test data on axis 0
+  X_test.shard_(GPUS, axis=0)
+  Y_test.shard_(GPUS, axis=0)
+
+  model = Model()
+  for k, x in nn.state.get_state_dict(model).items(): x.to_(GPUS)  # we put a copy of the model on every GPU
+  opt = nn.optim.Adam(nn.state.get_parameters(model))
+
+  @TinyJit
+  def train_step() -&gt; Tensor:
+    with Context(TRAINING=1):
+      opt.zero_grad()
+      samples = Tensor.randint(getenv("BS", 512), high=X_train.shape[0])
+      Xt, Yt = X_train[samples].shard_(GPUS, axis=0), Y_train[samples].shard_(GPUS, axis=0)  # we shard the data on axis 0
+      # TODO: this "gather" of samples is very slow. will be under 5s when this is fixed
+      loss = model(Xt).sparse_categorical_crossentropy(Yt).backward()
+      opt.step()
+      return loss</code></pre>
+  <p>Note <code>x.to_(GPUS)</code>: <code>Tensor.to</code> with a device <em>tuple</em> is <code>copy_to_device(tuple)</code> — a replicated value with no
+  <code>UNSHARD</code>, the same thing <code>shard(GPUS)</code> with <code>axis=None</code> produces.</p>
+  <ul>
+    <li>The loss's <code>mean()</code> reduces over the sharded batch axis → <code>reduce_multi</code> → allreduce of a scalar.</li>
+    <li>Each weight gradient is a reduction over the batch axis of something sharded on that axis → an allreduce per weight. This is where ring
+      allreduce (big weights, many GPUs) pays off.</li>
+    <li>Weights replicated (<code>to_(GPUS)</code> / <code>axis=None</code>) and updated by identical computations stay bit-identical on every device.</li>
+    <li>Sharded tensors work with <code>TinyJit</code>: <code>_prepare_jit_inputs</code> takes <code>t.uop.src[0]</code> of an <code>UNSHARD</code>, i.e. the
+      MultiBuffer, as the input (<a class="src" data-path="tinygrad/engine/jit.py" data-line="89">jit.py:89</a>).</li>
+  </ul>
+  <div class="quiz" data-answer="2">
+    <div class="q">You shard a (64, 1024) activation on axis 0 over 4 devices and call <code>.reshape(64*1024)</code>. Then <code>.reshape(4, 16, 1024)</code>. What's the axis after each?</div>
+    <button class="opt">Error on the first reshape.</button>
+    <button class="opt">None, then None — reshapes unshard.</button>
+    <button class="opt">0, then 0 — both keep the shard boundary (rows 16k…16k+15 stay together and the axis length stays divisible by 4).</button>
+    <div class="explain"><code>reshape_multi</code> finds the new axis whose prefix product equals <code>prod(shape[:axis])</code> = 1 → axis 0 in both cases, and
+    checks divisibility (65536 % 4, 4 % 4). A reshape like <code>(64,1024)→(1024,64)</code> would also keep axis 0 here; one that moves elements across
+    shards raises.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">Which operation on <code>x = t.shard(devs, axis=0)</code> causes <em>no</em> cross-device copies?</div>
+    <button class="opt"><code>x.sum(axis=0)</code></button>
+    <button class="opt"><code>(x * 3).max(axis=1)</code></button>
+    <button class="opt"><code>x.to("CPU")</code></button>
+    <div class="explain">Elementwise then a reduce over axis 1 (not the sharded one): <code>alu_multi</code> then the piecewise branch of
+    <code>reduce_multi</code>. The other two need an allreduce or a gather.</div>
+  </div>
+
+  <div class="summary-box"><h3>Chapter summary</h3><ul>
+    <li><code>t.shard(devs, axis)</code> = <code>COPY</code> to all devices → <code>SHRINK</code> by a <code>RANGE(DEVICE)</code> → <code>UNSHARD(arg=(axis,))</code>; <code>axis=None</code> replicates. Storage is a <code>MultiBuffer</code> (one Buffer per device).</li>
+    <li><code>multi_pm</code> (run first in <code>prepare_rangeify</code>) pushes ALU, movement, reduce, store, cast… through <code>UNSHARD</code>; mismatches reshard via <code>copy_multi</code>.</li>
+    <li>Reducing over the sharded axis → local reduce + <code>ALLREDUCE</code>; <code>handle_allreduce</code> picks naive (≤2 devices or small), ring (reduce-scatter + allgather over \(n\) chunks) or all-to-all.</li>
+    <li><code>MSELECT(i)</code> picks a lane, <code>MSTACK</code> assembles lanes; cross-device <code>COPY</code>s become copy CALLs executed by <code>exec_copy</code> (or a DMA queue).</li>
+    <li>A multi-device kernel is one CALL launched per device; the DEVICE range becomes the <code>_device_num</code> kernel argument, bound by <code>unwrap_multi</code>.</li>
+    <li>Data parallel (batch on axis 0, weights replicated) needs no communication in forward; backward allreduces every weight gradient.</li>
+  </ul></div>
+</main>
+</div>
+<script>
+const G = Guide, el = G.el;
+const DEVCOL = ["#58C4DD", "#F0AC5F", "#83C167", "#D147BD", "#9A72AC", "#FC6255"];
+
+// _device_num example source from the captured schedules
+G.loadJSON("../data/ch19_schedules.json").then((d) => {
+  const p = d.find((x) => x.label === "needs _device_num");
+  const k = p.calls.find((c) => c.kind === "kernel");
+  G.$("#dn-src").textContent = k.source.trim();
+});
+
+// ---------------- demo 1: sharding visualizer ----------------
+(async function () {
+  const grid = await G.loadJSON("../data/ch19_grid.json");
+  const OPS = ["x * 2 + 1", "x.sum(axis=0)", "x.sum(axis=1)", "x.sum()", "x @ W  (W replicated)", "x @ W  (W axis=0)", "x @ W  (W axis=1)"];
+  const opSel = G.$("#v-op");
+  OPS.forEach((o) => opSel.append(el("option", { value: o }, o)));
+  ["#v-r", "#v-c", "#v-n", "#v-a", "#v-op"].forEach((s) => G.$(s).addEventListener("change", draw));
+  function explain(R, C, n, axis, op) {
+    const ax = axis === "None" ? null : +axis;
+    const numelOf = (shape) => shape.reduce((a, b) => a * b, 1);
+    const ringOrNaive = (N) => (n > 2 && N > 256000 ? `<b>ring</b> (n=${n} &gt; 2 and N=${N} &gt; 256000)` : `<b>naive</b> (${n <= 2 ? "only " + n + " devices" : "N=" + N + " ≤ 256000"}; RING=2 would force the ring)`);
+    if (op === "x * 2 + 1") return ax === null ? "Replicated input: every device computes the full result (alu_multi does not even see an UNSHARD)." : `<b>alu_multi</b>: same sharding on all srcs (constants broadcast) → peel the UNSHARD, compute per shard, re-wrap with axis ${ax}. No communication.`;
+    if (op.startsWith("x.sum")) {
+      const red = op === "x.sum()" ? [0, 1] : [op.includes("axis=0") ? 0 : 1];
+      const outShape = op === "x.sum()" ? [1] : [red[0] === 0 ? C : R];
+      if (ax === null) return "Replicated: each device reduces its full copy. Result replicated, no communication.";
+      if (!red.includes(ax)) return `<b>reduce_multi</b>, piecewise branch: the sharded axis ${ax} is not reduced → local reduce, result stays sharded (axis shifts to ${ax - red.filter((r) => r < ax).length}). No communication.`;
+      const N = numelOf(outShape);
+      return `<b>reduce_multi</b>: the sharded axis ${ax} is reduced → each device reduces its shard to a partial result of shape (${outShape}), then <code>local.allreduce(ADD, devices)</code>. handle_allreduce picks ${ringOrNaive(N)}. Result replicated (axis None).`;
+    }
+    if (op === "x @ W  (W replicated)") return ax === 0 ? "<b>data parallel</b>: x rows split, W replicated → matmul (reshape/permute/mul/reduce over the contraction axis 1, not sharded) is piecewise. Only copies: broadcasting W to the devices." : ax === 1 ? "x is split on the <b>contraction</b> axis but W is whole → alu_multi takes W's per-shard sub-view; the reduce over the sharded axis needs an allreduce of the (R,K) partial products." : "Both replicated: each device computes the full matmul; copies only broadcast W.";
+    if (op === "x @ W  (W axis=0)") return ax === 1 ? "<b>model (tensor) parallel</b>: x split on columns and W on rows — both on the contraction dimension. Each device computes a full-size partial product, then an allreduce sums them. (The real schedule also includes resharding work, because the multiply's broadcast shapes don't line up axis-for-axis.)" : "Shardings don't line up (x not split on the contraction axis the same way) → <b>shard_srcs</b> reshards: copy_multi gathers/broadcasts one side, then the contraction reduce needs an allreduce.";
+    if (op === "x @ W  (W axis=1)") return "W split on its output columns → the result is sharded on axis 1. x must be whole on every device: if x is sharded, copy_multi gathers it first (the extra copies).";
+    return "";
+  }
+  function draw() {
+    const R = +G.$("#v-r").value, C = +G.$("#v-c").value, n = +G.$("#v-n").value, axis = G.$("#v-a").value, op = opSel.value;
+    const ax = axis === "None" ? null : +axis;
+    const svg = el("svg", { viewBox: `0 0 460 ${40 + R * Math.min(24, 300 / Math.max(R, C)) + 26 + n * 20 + 34}` });
+    const err = ax !== null && ([R, C][ax] % n !== 0);
+    const cell = Math.min(24, 300 / Math.max(R, C));
+    const x0 = 20, y0 = 40;
+    svg.append(el("text", { x: x0, y: 24, fill: "#e6e6e6", "font-size": 13, "font-family": "monospace" }, `x: (${R}, ${C}) sharded axis=${axis} over ${n} devices`));
+    const devOf = (r, c) => (ax === null ? -1 : ax === 0 ? Math.floor(r / (R / n)) : Math.floor(c / (C / n)));
+    for (let r = 0; r < R; r++) for (let c = 0; c < C; c++) {
+      const d = err ? -2 : devOf(r, c);
+      const fill = d === -2 ? "#3a1f22" : d === -1 ? "url(#rep)" : DEVCOL[d] + "77";
+      svg.append(el("rect", { x: x0 + c * cell, y: y0 + r * cell, width: cell - 1.5, height: cell - 1.5, rx: 2, fill, stroke: d >= 0 ? DEVCOL[d] : "#555" }));
+    }
+    const pat = document.createElementNS("http://www.w3.org/2000/svg", "pattern");
+    Object.entries({ id: "rep", width: 9, height: 9, patternUnits: "userSpaceOnUse", patternTransform: "rotate(45)" }).forEach(([k, v]) => pat.setAttribute(k, v));
+    for (let i = 0; i < n; i++) pat.append(el("rect", { x: i * 9 / n, y: 0, width: 9 / n, height: 9, fill: DEVCOL[i] + "99" }));
+    svg.prepend(el("defs", {}, pat));
+    // legend / per device storage
+    const ly = y0 + R * cell + 26;
+    for (let d = 0; d < n; d++) {
+      const shard = ax === null ? `(${R}, ${C}) full copy` : ax === 0 ? `(${R / n}, ${C})` : `(${R}, ${C / n})`;
+      svg.append(el("rect", { x: x0, y: ly + d * 20 - 11, width: 14, height: 14, rx: 3, fill: DEVCOL[d] + "aa" }));
+      svg.append(el("text", { x: x0 + 22, y: ly + d * 20, fill: "#c9d1d9", "font-size": 12, "font-family": "monospace" }, `${d === 0 ? "CPU  " : "CPU:" + d}  shard ${err ? "—" : shard}` + (ax !== null && !err ? `  = ${["rows", "cols"][ax]} [${d * [R, C][ax] / n}, ${(d + 1) * [R, C][ax] / n})` : "")));
+    }
+    // result layout
+    const key = `${n}|${axis}|${op}`, rec = grid[key];
+    if (rec && !rec.error && !err) {
+      const oax = rec.out_axis;
+      const outTxt = Array.isArray(rec.out_device) ? (oax === null ? "replicated on all devices" : `sharded on axis ${oax}`) : `on ${rec.out_device}`;
+      svg.append(el("text", { x: x0, y: ly + n * 20 + 16, fill: "#F4D345", "font-size": 12.5, "font-family": "monospace" }, `result: ${outTxt}`));
+    }
+    const host = G.$("#v-svg"); host.innerHTML = ""; host.append(svg);
+    const ex = G.$("#v-expl"), callsEl = G.$("#v-calls");
+    if (err) { ex.innerHTML = `<span class="err">RuntimeError: multi axis uneven: self.shape[axis]=${[R, C][ax]} axis=${ax} dcount=${n}</span><br>_shard requires the sharded dimension to be divisible by the number of devices.`; callsEl.innerHTML = ""; return; }
+    ex.innerHTML = explain(R, C, n, axis, op);
+    if (!rec || rec.error) { callsEl.textContent = rec ? rec.error : "(no capture)"; return; }
+    const nk = rec.calls.filter((c) => c.k === "kernel").length, nc = rec.calls.length - nk;
+    callsEl.innerHTML = `<div style="color:var(--yellow)">real schedule (12×12, ${n} devices): ${nk} kernel CALLs, ${nc} copies · correct=${rec.ok}</div>` +
+      rec.calls.map((c, i) => c.k === "kernel" ? `<div class="k">${String(i).padStart(2)} KERNEL ${c.name.padEnd(10)} on ${Array.isArray(c.dev) ? "all " + c.dev.length + " devices" : c.dev}</div>` : `<div class="c">${String(i).padStart(2)} COPY   ${String(c.n).padStart(4)}B  ${c.src} → ${c.dst}</div>`).join("");
+  }
+  draw();
+})();
+
+// ---------------- demo 2: ring allreduce ----------------
+(function () {
+  let stepper = null;
+  function chunksOf(N, n) {
+    const factor = [32, 16, 8, 4, 2].find((f) => N % f === 0) || 1;
+    const base = Math.floor(Math.floor(N / factor) / n), left = Math.floor(N / factor) % n;
+    const sizes = [...Array(left).fill((base + 1) * factor), ...Array(n - left).fill(base * factor)];
+    const bounds = []; let s = 0; for (const z of sizes) { bounds.push([s, s + z]); s += z; }
+    return { factor, bounds };
+  }
+  function build() {
+    const n = +G.$("#r-n").value, N = Math.max(2, +G.$("#r-N").value | 0);
+    G.$("#r-nv").textContent = n;
+    const { factor, bounds } = chunksOf(N, n);
+    // state[d][i] = set of contributors for chunk i on device d ; "have" = whether device holds a (partial) reduced copy
+    const steps = [];
+    let state = Array.from({ length: n }, (_, d) => Array.from({ length: n }, () => new Set([d])));
+    const snap = (cap, arrows, phase) => steps.push({ caption: cap, st: state.map((r) => r.map((s) => new Set(s))), arrows, phase });
+    snap(`<b>start</b> — each device holds its own full buffer (N=${N}), cut into ${n} chunks of [${bounds.map(([a, b]) => b - a).join(", ")}] elements (factor=${factor}).`, [], "init");
+    // reduce-scatter: for chunk i, step: src=(i+step)%n -> dest=(i+step+1)%n; reduced = cp + local chunk at dest
+    for (let step = 0; step < n - 1; step++) {
+      const arrows = [];
+      const next = state.map((r) => r.map((s) => new Set(s)));
+      for (let i = 0; i < n; i++) {
+        const src = (i + step) % n, dest = (i + step + 1) % n;
+        arrows.push([src, dest, i]);
+        next[dest][i] = new Set([...state[src][i], ...state[dest][i]]);
+      }
+      state = next;
+      snap(`<b>reduce-scatter, hop ${step + 1}/${n - 1}</b> — for every chunk i: <code>cp = reduced.mselect((i+${step})%n).copy_to_device((i+${step + 1})%n)</code>, then <code>reduced = cp + chunk.mselect(dest)</code>. ${n} copies in parallel, each ${bounds[0][1] - bounds[0][0]} elements.`, arrows, "rs");
+    }
+    // after RS: chunk i fully reduced on device (i+n-1)%n = (i-1)%n
+    const full = new Set([...Array(n).keys()]);
+    for (let step = 0; step < n - 1; step++) {
+      const arrows = [];
+      const next = state.map((r) => r.map((s) => new Set(s)));
+      for (let i = 0; i < n; i++) {
+        const from = (i - 1 + step + n) % n, to = (i + step) % n;
+        arrows.push([from, to, i]);
+        next[to][i] = new Set(full);
+      }
+      state = next;
+      snap(`<b>allgather, hop ${step + 1}/${n - 1}</b> — <code>chain.append(rc := rc.copy_to_device((i+${step})%n))</code>: the reduced chunk i moves one more device along the ring.`, arrows, "ag");
+    }
+    snap(`<b>reassemble</b> — <code>MSTACK(chain[(j-i+1)%n] for j)</code> gives every device all chunks; <code>usum(c.pad(...))</code> stitches them back into shape. Every device now holds the full sum.`, [], "done");
+    const host = G.$("#r-stepper"); host.innerHTML = "";
+    const naiveSend = (n - 1) * N, ringSend = 2 * (n - 1) * N / n;
+    G.$("#r-stats").innerHTML = `<span>copies: ring <b>${2 * n * (n - 1)}</b> (each ~N/${n}) · naive <b>${n * (n - 1)}</b> (each N)</span><span>elements sent per device: ring <b>${Math.round(ringSend).toLocaleString()}</b> · naive <b>${naiveSend.toLocaleString()}</b></span><span>default choice: <b>${n > 2 && N > 256000 ? "RING" : "NAIVE"}</b>${n > 2 && N > 256000 ? "" : " (force with RING=2)"}</span>`;
+    stepper = G.stepper(host, steps, (k, s) => draw(n, bounds, s), { autoplayMs: 1800 });
+  }
+  function draw(n, bounds, s) {
+    const W = 760, rowH = 46, L = 80, T = 30, cw = (W - L - 20) / n;
+    const H = T + n * rowH + 20;
+    const svg = el("svg", { viewBox: `0 0 ${W} ${H}` });
+    svg.append(el("defs", {}, el("marker", { id: "a19", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 6, markerHeight: 6, orient: "auto-start-reverse" }, el("path", { d: "M0,0 L10,5 L0,10 z", fill: "#F4D345" }))));
+    for (let i = 0; i < n; i++) svg.append(el("text", { x: L + i * cw + cw / 2, y: 18, "text-anchor": "middle", fill: "#9aa3ad", "font-size": 11.5, "font-family": "monospace" }, `chunk ${i} [${bounds[i][0]}:${bounds[i][1]}]`));
+    for (let d = 0; d < n; d++) {
+      const y = T + d * rowH;
+      svg.append(el("text", { x: 10, y: y + 26, fill: DEVCOL[d], "font-size": 13, "font-weight": 700, "font-family": "monospace" }, d === 0 ? "CPU" : "CPU:" + d));
+      for (let i = 0; i < n; i++) {
+        const set = s.st[d][i], full = set.size === n;
+        const g = el("g", {});
+        g.append(el("rect", { x: L + i * cw + 4, y: y + 4, width: cw - 8, height: rowH - 8, rx: 6, fill: full ? "#83C16755" : set.size > 1 ? "#F4D34533" : "#23272e", stroke: full ? "#83C167" : set.size > 1 ? "#F4D345" : "#2f343c" }));
+        // contributor dots
+        [...set].sort().forEach((c, k) => g.append(el("circle", { cx: L + i * cw + 16 + k * 13, cy: y + rowH / 2, r: 5, fill: DEVCOL[c] })));
+        g.append(el("text", { x: L + i * cw + cw - 10, y: y + rowH / 2 + 4, "text-anchor": "end", fill: "#c9d1d9", "font-size": 10.5, "font-family": "monospace" }, full ? "Σ all" : set.size > 1 ? `Σ ${set.size}` : "own"));
+        svg.append(g);
+      }
+    }
+    for (const [a, b, i] of s.arrows) {
+      const x = L + i * cw + cw / 2, y1 = T + a * rowH + rowH / 2, y2 = T + b * rowH + rowH / 2;
+      const bend = (b > a ? 1 : -1) * Math.min(cw / 3, 40);
+      svg.append(el("path", { d: `M${x - 6},${y1 + (b > a ? 12 : -12)} C${x + bend},${y1} ${x + bend},${y2} ${x + 6},${y2 + (b > a ? -12 : 12)}`, stroke: "#F4D345", "stroke-width": 2, fill: "none", "marker-end": "url(#a19)" }));
+    }
+    const host = G.$("#r-svg"); host.innerHTML = ""; host.append(svg);
+  }
+  G.$("#r-n").addEventListener("input", build);
+  G.$("#r-N").addEventListener("change", build);
+  build();
+})();
+
+// ---------------- demo 3: schedule viewer ----------------
+(async function () {
+  const data = await G.loadJSON("../data/ch19_schedules.json");
+  const pick = G.$("#s-pick");
+  data.forEach((p, i) => pick.append(el("button", { onclick: () => show(i), "data-i": i }, p.label)));
+  const devIdx = (d) => (d === "CPU" ? 0 : +d.split(":")[1]);
+  function show(pi) {
+    G.$$("button", pick).forEach((b) => b.classList.toggle("active", +b.dataset.i === pi));
+    const p = data[pi];
+    const devs = new Set();
+    p.calls.forEach((c) => { if (c.kind === "copy") { [c.src.device, c.dst.device].flat().forEach((d) => devs.add(d)); } else [c.device].flat().forEach((d) => devs.add(d)); });
+    const nd = Math.max(...[...devs].map(devIdx)) + 1;
+    const colW = Math.max(46, Math.min(90, 680 / p.calls.length)), L = 70, rowH = 52, T = 24;
+    const W = L + colW * p.calls.length + 20, H = T + nd * rowH + 14;
+    const svg = el("svg", { viewBox: `0 0 ${Math.max(W, 500)} ${H}` });
+    svg.append(el("defs", {}, el("marker", { id: "a19s", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 6, markerHeight: 6, orient: "auto-start-reverse" }, el("path", { d: "M0,0 L10,5 L0,10 z", fill: "#F0AC5F" }))));
+    for (let d = 0; d < nd; d++) {
+      const y = T + d * rowH;
+      svg.append(el("line", { x1: L, x2: W - 10, y1: y + rowH / 2, y2: y + rowH / 2, stroke: "#23272e" }));
+      svg.append(el("text", { x: 8, y: y + rowH / 2 + 4, fill: DEVCOL[d], "font-size": 12.5, "font-weight": 700, "font-family": "monospace" }, d === 0 ? "CPU" : "CPU:" + d));
+    }
+    p.calls.forEach((c, i) => {
+      const x = L + i * colW;
+      svg.append(el("text", { x: x + colW / 2, y: 14, "text-anchor": "middle", fill: "#7b8590", "font-size": 10, "font-family": "monospace" }, i));
+      if (c.kind === "kernel") {
+        const ds = [c.device].flat().map(devIdx);
+        const lo = Math.min(...ds), hi = Math.max(...ds);
+        const g = el("g", { style: "cursor:pointer", onclick: () => { G.$("#s-src").textContent = c.source.trim(); G.$("#s-info").innerHTML = `<b>call ${i}</b>: kernel <code>${c.name}</code> launched on ${ds.length > 1 ? ds.length + " devices (one CALL, MultiBuffer args)" : c.device}${c.device_num ? " · reads <code>_device_num</code>" : ""}<br>args: ${c.args.map((a) => `<code>${[...a.via, JSON.stringify(a.device)].join("·")}</code>`).join(", ")}`; } });
+        ds.forEach((d) => g.append(el("rect", { x: x + 4, y: T + d * rowH + 8, width: colW - 8, height: rowH - 16, rx: 6, fill: DEVCOL[d] + "33", stroke: DEVCOL[d] })));
+        if (hi > lo && ds.length > 1) g.append(el("line", { x1: x + colW / 2, x2: x + colW / 2, y1: T + lo * rowH + rowH - 8, y2: T + hi * rowH + 8, stroke: "#9aa3ad", "stroke-dasharray": "3 3" }));
+        ds.forEach((d) => g.append(el("text", { x: x + colW / 2, y: T + d * rowH + rowH / 2 + 4, "text-anchor": "middle", fill: "#e6e6e6", "font-size": colW < 60 ? 8.5 : 10, "font-family": "monospace" }, c.name)));
+        svg.append(g);
+      } else {
+        const s = Array.isArray(c.src.device) ? devIdx(c.src.device[+((c.src.via.find((v) => v.startsWith("MSELECT")) || "MSELECT(0)").match(/\d+/)[0])]) : devIdx(c.src.device);
+        const dd = devIdx([c.dst.device].flat()[0]);
+        const y1 = T + s * rowH + rowH / 2, y2 = T + dd * rowH + rowH / 2;
+        svg.append(el("circle", { cx: x + colW / 2, cy: y1, r: 5, fill: "#F0AC5F" }));
+        svg.append(el("path", { d: `M${x + colW / 2},${y1} L${x + colW / 2},${y2 + (y2 > y1 ? -6 : 6)}`, stroke: "#F0AC5F", "stroke-width": 2.2, "marker-end": "url(#a19s)" }));
+        svg.append(el("text", { x: x + colW / 2 + 5, y: (y1 + y2) / 2, fill: "#F0AC5F", "font-size": 9.5, "font-family": "monospace" }, c.nbytes + "B"));
+      }
+    });
+    const host = G.$("#s-svg"); host.innerHTML = ""; host.append(svg);
+    const nk = p.calls.filter((c) => c.kind === "kernel").length;
+    G.$("#s-info").innerHTML = `<code>${G.escape(p.code)}</code> → ${nk} kernel CALLs, ${p.calls.length - nk} copies · value ${G.escape(JSON.stringify(p.value)).slice(0, 120)}`;
+    G.$("#s-src").textContent = "click a kernel…";
+  }
+  show(4);
+})();
+</script>
+</body>
+</html>

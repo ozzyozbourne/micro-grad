@@ -1,0 +1,502 @@
+{
+ "linear_stages": [
+  {
+   "title": "weight.transpose()",
+   "graph": {
+    "nodes": [
+     {
+      "id": "n1",
+      "op": "BUFFER",
+      "dtype": "dtypes.f32",
+      "arg": "ParamArg(8, dtypes.f32, device='CPU', buffer=UOp.new_buffer\u2026",
+      "shape": "(6,)"
+     },
+     {
+      "id": "n5",
+      "op": "RESHAPE",
+      "dtype": "dtypes.f32",
+      "arg": "None",
+      "shape": "(2, 3)"
+     },
+     {
+      "id": "n9",
+      "op": "PERMUTE",
+      "dtype": "dtypes.f32",
+      "arg": "None",
+      "shape": "(3, 2)"
+     }
+    ],
+    "edges": [
+     [
+      "n1",
+      "n5",
+      0
+     ],
+     [
+      "n5",
+      "n9",
+      0
+     ]
+    ]
+   }
+  },
+  {
+   "title": "x * w (broadcast MUL)",
+   "graph": {
+    "nodes": [
+     {
+      "id": "n11",
+      "op": "BUFFER",
+      "dtype": "dtypes.f32",
+      "arg": "ParamArg(11, dtypes.f32, device='CPU', buffer=UOp.new_buffe\u2026",
+      "shape": "(12,)"
+     },
+     {
+      "id": "n14",
+      "op": "RESHAPE",
+      "dtype": "dtypes.f32",
+      "arg": "None",
+      "shape": "(4, 3)"
+     },
+     {
+      "id": "n16",
+      "op": "RESHAPE",
+      "dtype": "dtypes.f32",
+      "arg": "None",
+      "shape": "(4, 1, 3)"
+     },
+     {
+      "id": "n1",
+      "op": "BUFFER",
+      "dtype": "dtypes.f32",
+      "arg": "ParamArg(8, dtypes.f32, device='CPU', buffer=UOp.new_buffer\u2026",
+      "shape": "(6,)"
+     },
+     {
+      "id": "n5",
+      "op": "RESHAPE",
+      "dtype": "dtypes.f32",
+      "arg": "None",
+      "shape": "(2, 3)"
+     },
+     {
+      "id": "n9",
+      "op": "PERMUTE",
+      "dtype": "dtypes.f32",
+      "arg": "None",
+      "shape": "(3, 2)"
+     },
+     {
+      "id": "n18",
+      "op": "RESHAPE",
+      "dtype": "dtypes.f32",
+      "arg": "None",
+      "shape": "(1, 3, 2)"
+     },
+     {
+      "id": "n20",
+      "op": "PERMUTE",
+      "dtype": "dtypes.f32",
+      "arg": "None",
+      "shape": "(1, 2, 3)"
+     },
+     {
+      "id": "n21",
+      "op": "MUL",
+      "dtype": "dtypes.f32",
+      "arg": "None",
+      "shape": "(4, 2, 3)"
+     }
+    ],
+    "edges": [
+     [
+      "n11",
+      "n14",
+      0
+     ],
+     [
+      "n14",
+      "n16",
+      0
+     ],
+     [
+      "n1",
+      "n5",
+      0
+     ],
+     [
+      "n5",
+      "n9",
+      0
+     ],
+     [
+      "n9",
+      "n18",
+      0
+     ],
+     [
+      "n18",
+      "n20",
+      0
+     ],
+     [
+      "n16",
+      "n21",
+      0
+     ],
+     [
+      "n20",
+      "n21",
+      1
+     ]
+    ]
+   }
+  },
+  {
+   "title": "(x*w).sum(-1)  == x.dot(w.T)",
+   "graph": {
+    "nodes": [
+     {
+      "id": "n11",
+      "op": "BUFFER",
+      "dtype": "dtypes.f32",
+      "arg": "ParamArg(11, dtypes.f32, device='CPU', buffer=UOp.new_buffe\u2026",
+      "shape": "(12,)"
+     },
+     {
+      "id": "n14",
+      "op": "RESHAPE",
+      "dtype": "dtypes.f32",
+      "arg": "None",
+      "shape": "(4, 3)"
+     },
+     {
+      "id": "n16",
+      "op": "RESHAPE",
+      "dtype": "dtypes.f32",
+      "arg": "None",
+      "shape": "(4, 1, 3)"
+     },
+     {
+      "id": "n1",
+      "op": "BUFFER",
+      "dtype": "dtypes.f32",
+      "arg": "ParamArg(8, dtypes.f32, device='CPU', buffer=UOp.new_buffer\u2026",
+      "shape": "(6,)"
+     },
+     {
+      "id": "n5",
+      "op": "RESHAPE",
+      "dtype": "dtypes.f32",
+      "arg": "None",
+      "shape": "(2, 3)"
+     },
+     {
+      "id": "n9",
+      "op": "PERMUTE",
+      "dtype": "dtypes.f32",
+      "arg": "None",
+      "shape": "(3, 2)"
+     },
+     {
+      "id": "n18",
+      "op": "RESHAPE",
+      "dtype": "dtypes.f32",
+      "arg": "None",
+      "shape": "(1, 3, 2)"
+     },
+     {
+      "id": "n20",
+      "op": "PERMUTE",
+      "dtype": "dtypes.f32",
+      "arg": "None",
+      "shape": "(1, 2, 3)"
+     },
+     {
+      "id": "n21",
+      "op": "MUL",
+      "dtype": "dtypes.f32",
+      "arg": "None",
+      "shape": "(4, 2, 3)"
+     },
+     {
+      "id": "n23",
+      "op": "PERMUTE",
+      "dtype": "dtypes.f32",
+      "arg": "None",
+      "shape": "(3, 4, 2)"
+     },
+     {
+      "id": "n24",
+      "op": "REDUCE",
+      "dtype": "dtypes.f32",
+      "arg": "(Ops.ADD, 1)",
+      "shape": "(4, 2)"
+     }
+    ],
+    "edges": [
+     [
+      "n11",
+      "n14",
+      0
+     ],
+     [
+      "n14",
+      "n16",
+      0
+     ],
+     [
+      "n1",
+      "n5",
+      0
+     ],
+     [
+      "n5",
+      "n9",
+      0
+     ],
+     [
+      "n9",
+      "n18",
+      0
+     ],
+     [
+      "n18",
+      "n20",
+      0
+     ],
+     [
+      "n16",
+      "n21",
+      0
+     ],
+     [
+      "n20",
+      "n21",
+      1
+     ],
+     [
+      "n21",
+      "n23",
+      0
+     ],
+     [
+      "n23",
+      "n24",
+      0
+     ]
+    ]
+   }
+  },
+  {
+   "title": "+ bias  == nn.Linear(3,2)(x)",
+   "graph": {
+    "nodes": [
+     {
+      "id": "n11",
+      "op": "BUFFER",
+      "dtype": "dtypes.f32",
+      "arg": "ParamArg(11, dtypes.f32, device='CPU', buffer=UOp.new_buffe\u2026",
+      "shape": "(12,)"
+     },
+     {
+      "id": "n14",
+      "op": "RESHAPE",
+      "dtype": "dtypes.f32",
+      "arg": "None",
+      "shape": "(4, 3)"
+     },
+     {
+      "id": "n16",
+      "op": "RESHAPE",
+      "dtype": "dtypes.f32",
+      "arg": "None",
+      "shape": "(4, 1, 3)"
+     },
+     {
+      "id": "n1",
+      "op": "BUFFER",
+      "dtype": "dtypes.f32",
+      "arg": "ParamArg(8, dtypes.f32, device='CPU', buffer=UOp.new_buffer\u2026",
+      "shape": "(6,)"
+     },
+     {
+      "id": "n5",
+      "op": "RESHAPE",
+      "dtype": "dtypes.f32",
+      "arg": "None",
+      "shape": "(2, 3)"
+     },
+     {
+      "id": "n9",
+      "op": "PERMUTE",
+      "dtype": "dtypes.f32",
+      "arg": "None",
+      "shape": "(3, 2)"
+     },
+     {
+      "id": "n18",
+      "op": "RESHAPE",
+      "dtype": "dtypes.f32",
+      "arg": "None",
+      "shape": "(1, 3, 2)"
+     },
+     {
+      "id": "n20",
+      "op": "PERMUTE",
+      "dtype": "dtypes.f32",
+      "arg": "None",
+      "shape": "(1, 2, 3)"
+     },
+     {
+      "id": "n21",
+      "op": "MUL",
+      "dtype": "dtypes.f32",
+      "arg": "None",
+      "shape": "(4, 2, 3)"
+     },
+     {
+      "id": "n23",
+      "op": "PERMUTE",
+      "dtype": "dtypes.f32",
+      "arg": "None",
+      "shape": "(3, 4, 2)"
+     },
+     {
+      "id": "n24",
+      "op": "REDUCE",
+      "dtype": "dtypes.f32",
+      "arg": "(Ops.ADD, 1)",
+      "shape": "(4, 2)"
+     },
+     {
+      "id": "n25",
+      "op": "BUFFER",
+      "dtype": "dtypes.f32",
+      "arg": "ParamArg(10, dtypes.f32, device='CPU', buffer=UOp.new_buffe\u2026",
+      "shape": "(2,)"
+     },
+     {
+      "id": "n26",
+      "op": "ADD",
+      "dtype": "dtypes.f32",
+      "arg": "None",
+      "shape": "(4, 2)"
+     }
+    ],
+    "edges": [
+     [
+      "n11",
+      "n14",
+      0
+     ],
+     [
+      "n14",
+      "n16",
+      0
+     ],
+     [
+      "n1",
+      "n5",
+      0
+     ],
+     [
+      "n5",
+      "n9",
+      0
+     ],
+     [
+      "n9",
+      "n18",
+      0
+     ],
+     [
+      "n18",
+      "n20",
+      0
+     ],
+     [
+      "n16",
+      "n21",
+      0
+     ],
+     [
+      "n20",
+      "n21",
+      1
+     ],
+     [
+      "n21",
+      "n23",
+      0
+     ],
+     [
+      "n23",
+      "n24",
+      0
+     ],
+     [
+      "n24",
+      "n26",
+      0
+     ],
+     [
+      "n25",
+      "n26",
+      1
+     ]
+    ]
+   }
+  }
+ ],
+ "linear_uir": "%0 = buffer 8 : dtype=f32 slot=55 device=CPU\n%1 = reshape %0, (4, 2)",
+ "kernel_rows": [
+  {
+   "layer": "Linear(3,2)(x)",
+   "kernels": [
+    "r_4_2_3"
+   ]
+  },
+  {
+   "layer": "LayerNorm(16)(x[5,16])",
+   "kernels": [
+    "r_5_16",
+    "r_5_16",
+    "E_5_4_4"
+   ]
+  },
+  {
+   "layer": "BatchNorm(3)(x[8,3,4,4])  (eval)",
+   "kernels": [
+    "E_8_3_4_4"
+   ]
+  },
+  {
+   "layer": "BatchNorm(3)(x[8,3,4,4])  (TRAINING=1)",
+   "kernels": [
+    "r_3_8_16",
+    "r_3_8_16",
+    "E_8_3_4_4"
+   ]
+  },
+  {
+   "layer": "Embedding(10,4)(idx[4])",
+   "kernels": [
+    "E_4_4"
+   ]
+  },
+  {
+   "layer": "Conv2d(3,4,3)(x[8,3,4,4])",
+   "kernels": [
+    "r_8_4_2_2_3_3_3"
+   ]
+  },
+  {
+   "layer": "Linear(3,8) -> relu -> Linear(8,2)",
+   "kernels": [
+    "r_4_8_3",
+    "r_4_2_8"
+   ]
+  }
+ ]
+}

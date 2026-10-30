@@ -1,0 +1,1091 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>4. UOp: the one IR — tinygrad internals</title>
+<link rel="stylesheet" href="../assets/vendor/hljs-dark.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/vendor/highlight.min.js"></script>
+<script src="../assets/vendor/dagre.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/chapters.js"></script>
+<script src="../assets/guide.js"></script>
+<style>
+.ch04-tri { display:grid; grid-template-columns: repeat(3, 1fr); gap:12px; margin:18px 0; }
+.ch04-tri > div { background:var(--bg2); border:1px solid var(--line); border-radius:10px; padding:12px 14px; font-size:14px; }
+.ch04-tri h4 { margin:0 0 6px; }
+.ch04-tri code { font-size:12px; }
+.ch04-anatomy { display:flex; gap:10px; flex-wrap:wrap; margin:16px 0; font-family:var(--mono); }
+.ch04-anatomy > div { flex:1 1 180px; border-radius:10px; padding:12px; border:2px solid; }
+.ch04-anatomy b { display:block; font-size:18px; margin-bottom:4px; }
+.ch04-anatomy small { color:var(--dim); font-family:var(--sans); font-size:13px; }
+.ch04-play .ops button { font-family:var(--mono); font-size:13px; }
+.ch04-play .cache { font-family:var(--mono); font-size:12px; max-height:300px; overflow:auto; background:#0d0f12; border:1px solid var(--line); border-radius:8px; }
+.ch04-play .cache table { margin:0; width:100%; }
+.ch04-play .cache td, .ch04-play .cache th { padding:3px 8px; font-size:12px; }
+.ch04-play .cache tr.hit td { background:rgba(131,193,103,.25); transition: background .2s; }
+.ch04-play .cache tr.miss td { background:rgba(244,211,69,.22); }
+.ch04-play .log { font-family:var(--mono); font-size:12.5px; min-height:3.4em; background:var(--bg3); border-radius:6px; padding:6px 10px; margin:8px 0; white-space:pre-wrap; }
+.ch04-play .handles span { display:inline-flex; align-items:center; gap:4px; background:var(--bg3); border:1px solid var(--line); border-radius:12px; padding:1px 8px; margin:2px; font-family:var(--mono); font-size:12px; cursor:pointer; }
+.ch04-play .handles span.sel { border-color:var(--yellow); color:var(--yellow); }
+.ch04-play .handles span.dropped { opacity:.35; text-decoration:line-through; }
+.ch04-atlas table { width:100%; font-size:12.5px; }
+.ch04-atlas td { padding:4px 7px; }
+.ch04-atlas td.tags { white-space:nowrap; }
+.ch04-atlas td.nm { font-family:var(--mono); font-weight:700; white-space:nowrap; }
+.ch04-atlas td.mono { font-family:var(--mono); font-size:11.5px; }
+.ch04-atlas tr.arow { cursor:pointer; }
+.ch04-atlas tr.arow:hover td { background:var(--bg3); }
+.ch04-atlas tr.detail td { background:#0d0f12; color:var(--dim); font-size:12.5px; }
+.ch04-atlas .tag { display:inline-block; font-size:10.5px; border-radius:4px; padding:0 5px; margin:1px; border:1px solid var(--line); color:var(--dim); font-family:var(--mono); }
+.ch04-atlas .tag.on { color:#000; border-color:transparent; }
+.ch04-atlas .scroll { max-height:620px; overflow:auto; border:1px solid var(--line); border-radius:8px; }
+.ch04-atlas thead th { position:sticky; top:0; z-index:2; }
+.ch04-atlas .count { font-family:var(--mono); font-size:12px; color:var(--dim); }
+.ch04-topo .lists { display:grid; grid-template-columns: 1fr 1fr; gap:10px; font-family:var(--mono); font-size:12.5px; }
+.ch04-topo .lists > div { background:#0d0f12; border:1px solid var(--line); border-radius:8px; padding:8px; min-height:120px; }
+.ch04-topo .lists h5 { margin:0 0 6px; color:var(--gold); font-family:var(--sans); font-size:12.5px; }
+.ch04-topo .chip { display:inline-block; padding:1px 7px; margin:2px; border-radius:10px; border:1px solid var(--line); background:var(--bg3); }
+.ch04-topo .chip.v { border-color:var(--purple); color:var(--purple); }
+.ch04-topo .chip.new { border-color:var(--yellow); color:var(--yellow); }
+.ch04-alt pre { max-height:420px; font-size:12px; }
+.ch04-alt .uopgraph svg, .ch04-topo .uopgraph svg, .ch04-play .uopgraph svg { height:auto; }
+.ch04-badge { display:inline-block; font-family:var(--mono); font-size:12px; padding:2px 8px; border-radius:5px; background:rgba(131,193,103,.15); color:var(--green); border:1px solid rgba(131,193,103,.4); }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="sidebar" id="sidebar"></nav>
+<main>
+  <h1><span class="chnum">CHAPTER 04</span>UOp: the one IR</h1>
+  <p class="lede">Every stage of tinygrad, from <code>a + b</code> on a Tensor to a line of generated C or an AMD instruction, is a graph of
+  one Python class: <code>UOp</code>. This chapter takes that class apart: its three fields, the hash-consing that makes equal graphs
+  the <em>same object</em>, the derived properties (dtype, shape, key, vmin/vmax), all 75 members of the <code>Ops</code> enum, and the
+  same computation shown as a real tensor graph, a real kernel AST, and a real linearized program.</p>
+
+  <!-- ===================================================================== -->
+  <h2 id="intuition"><span class="sec">4.1</span>Intuition: one kind of brick</h2>
+  <p>Most compilers have several intermediate representations, each with its own classes: an AST, a high-level graph IR, a
+  low-level SSA IR, machine instructions. Every boundary between two IRs needs a translator and a printer, and the
+  optimization machinery gets written once per IR. tinygrad has <b>one</b> IR. A tensor expression, a scheduled kernel, a list of
+  loads and stores ready to print as C, and the schedule itself (a list of kernel <em>calls</em>) are all trees of the same object:</p>
+
+  <div class="ch04-anatomy">
+    <div style="border-color:var(--blue)"><b class="hl-blue">op</b>an <code>Ops</code> enum member<br><small>what this node <em>is</em>: ADD, RESHAPE, RANGE, STORE, SINK…</small></div>
+    <div style="border-color:var(--green)"><b class="hl-green">src</b>a tuple of UOps<br><small>the inputs; this is what makes it a DAG</small></div>
+    <div style="border-color:var(--gold)"><b class="hl-gold">arg</b>any hashable Python value<br><small>op-specific payload: a constant, a DType, a <code>ParamArg</code>, an axis tuple…</small></div>
+  </div>
+
+  <div class="callout analogy"><span class="title">Analogy: LEGO with one brick shape</span>
+  Every brick has the same studs (<code>op/src/arg</code>), so every tool works on every model: the pattern matcher (Chapter 5), the
+  printer, toposort, VIZ, caching by <code>key</code>. What changes from stage to stage is <em>which ops</em> appear. The tensor graph uses
+  RESHAPE and PERMUTE. The kernel AST has none of those, but has RANGE and INDEX. The final program has LOAD, STORE and casts to
+  <code>int</code>. Compiling means repeatedly swapping one vocabulary of bricks for another by graph rewriting.</div>
+
+  <div class="ch04-tri">
+    <div><h4>① tensor graph</h4>Built by <code>Tensor</code> methods. Nodes have <b>shapes</b>; movement ops (RESHAPE, PERMUTE, EXPAND, PAD, SHRINK) are views; there are no loops. <br><code>BUFFER → RESHAPE → MUL → ADD → PERMUTE → REDUCE</code></div>
+    <div><h4>② kernel AST</h4>One kernel after scheduling (<a href="10-rangeify.html">Ch 10</a>–<a href="13-kernel-ast.html">13</a>). Shapes are replaced by <b>RANGE</b> loop variables and <b>INDEX</b> expressions.<br><code>PARAM, RANGE, INDEX, REDUCE, STORE, END, SINK</code></div>
+    <div><h4>③ linear program</h4>After codegen (<a href="15-lowering.html">Ch 15</a>–<a href="16-linearize-render.html">16</a>). A <b>flat, ordered list</b> of UOps (a <code>LINEAR</code>) with explicit LOAD/STORE, accumulators and int casts. It prints straight to C.</div>
+  </div>
+  <p>Section <a href="#altitudes">4.11</a> shows all three, captured from one real computation, in a morphing graph.</p>
+
+  <!-- ===================================================================== -->
+  <h2 id="anatomy"><span class="sec">4.2</span>Anatomy of the class</h2>
+  <p>The definition is short. Only <code>op</code>, <code>src</code> and <code>arg</code> are stored; every other attribute is
+  <em>computed</em> from them on demand and cached in the instance <code>__dict__</code>. Source:
+  <a class="src" data-path="tinygrad/uop/ops.py" data-line="226">class UOp</a>.</p>
+  <div class="codecap"><b>tinygrad/uop/ops.py:226–243</b></div>
+  <pre><code class="language-python"># NOTE: this should be frozen, but frozen is slower
+@dataclass(eq=False, slots=True)
+class UOp(RandMixin, metaclass=UOpMetaClass):
+  op:Ops
+  src:tuple[UOp, ...] = tuple()
+  arg:Any = None
+  @recursive_property
+  def dtype(self) -&gt; DType: return dtype_from_uop(self.op, self.src, self.arg)
+  def __del__(self):
+    # NOTE: getattr because this object may be partially constructed (e.g. if __init__ raised, like the BEAM timeout SIGALRM)
+    try: del UOpMetaClass.ucache[(self.op, self.src, self.arg, type(self.arg))]
+    except (AttributeError, KeyError): pass
+  def __reduce__(self): return UOp, (self.op, self.src, self.arg)
+  def replace(self, **kwargs) -&gt; UOp:
+    new_args = (kwargs.pop(&quot;op&quot;, self.op), kwargs.pop(&quot;src&quot;, self.src), kwargs.pop(&quot;arg&quot;, self.arg))
+    assert len(kwargs) == 0, f&quot;unused kwargs in replace {list(kwargs)}&quot;
+    if (self.op, self.src, self.arg) == new_args: return self
+    return UOp(*new_args)</code></pre>
+  <p>Note what is <em>not</em> a field: <b>dtype</b>. It is a <code>recursive_property</code> computed by the total function
+  <a class="src" data-path="tinygrad/uop/ops.py" data-line="115">dtype_from_uop</a>, one big <code>match</code> over every op:
+  STORE/SINK/LINEAR/… are <code>void</code>; comparisons are <code>bool</code>; CAST/BITCAST take their arg; CONST derives the dtype from the
+  <em>Python type</em> of its value (<code>int → weakint</code>, <code>float → weakfloat</code>, <code>bool → bool</code>; <a href="03-dtypes.html">Chapter 3</a>);
+  binary ops promote their sources; LOAD, REDUCE, RANGE and AFTER pass through <code>src[0].dtype</code>.</p>
+  <div class="codecap"><b>tinygrad/uop/ops.py:115–137</b> — the first rules of <code>dtype_from_uop</code></div>
+  <pre><code class="language-python">def dtype_from_uop(op:Ops, src:tuple[UOp,...], arg:Any) -&gt; DType:
+  # here are the dtype production rules, total over all Ops
+  match op:
+    case Ops.STORE | Ops.LINEAR | Ops.SINK | Ops.PROGRAM | Ops.SOURCE | \
+         Ops.BACKEDGE | Ops.BARRIER | Ops.IF | Ops.ENDIF | Ops.NOOP | \
+         Ops.REWRITE_ERROR | Ops.PYLITERAL:
+      # always void
+      return dtypes.void
+    case Ops.CALL:
+      # a call has the dtype of its body, void for opaque bodies
+      return src[0].dtype
+    case Ops.CUSTOM_FUNCTION:
+      # an external function states its return dtype in the arg
+      return arg.dtype
+    case Ops.CUSTOM | Ops.CUSTOMI:
+      assert isinstance(arg, tuple) and len(arg) == 2 and isinstance(arg[1], DType), f&quot;CUSTOM/CUSTOMI arg must be (str, DType), got {arg}&quot;
+      return arg[1]
+    case Ops.INS:
+      # arg is (instruction, dtype, *registers), a queue command or an asm line is void
+      assert isinstance(arg, tuple) and len(arg) &gt;= 2 and isinstance(arg[1], DType), f&quot;INS arg must be (instruction, DType, *registers), got {arg}&quot;
+      return arg[1]
+    case Ops.INDEX:
+      # an image access is always float, no matter the storage dtype</code></pre>
+  <details class="deep-dive"><summary>Deep dive: why <code>recursive_property</code> and not <code>functools.cached_property</code>?</summary>
+  <p>A property like <code>dtype</code> of a node depends on the same property of its sources. With <code>cached_property</code>, evaluating
+  it on the root of a 100k-node chain recurses 100k Python frames deep, which raises <code>RecursionError</code>. <code>recursive_property</code>
+  (<a class="src" data-path="tinygrad/uop/ops.py" data-line="206">ops.py:206</a>) instead walks the graph with the iterative
+  <code>toposort</code>, gated to visit only nodes that don't have the value cached yet, and fills it in from the leaves up. So the recursion
+  in the definition never becomes recursion on the Python stack. <code>dtype</code>, <code>key</code>, <code>_shape</code>, <code>device</code>,
+  <code>_ranges</code> and <code>addrspace</code> are all defined this way.</p>
+  <pre><code class="language-python">class recursive_property:
+  def __init__(self, fxn):
+    self.fxn = fxn
+    self.nm = fxn.__name__
+    self.__doc__ = fxn.__doc__
+  def __get__(self, x:UOp|None, owner=None):
+    if x is None: return self
+    for node in x.toposort(gate=lambda node: self.nm not in node.__dict__, enter_calls=True): node.__dict__[self.nm] = self.fxn(node)
+    return x.__dict__[self.nm]
+</code></pre></details>
+
+  <p>Here is the start of the chapter's first example. It builds UOps directly, with no Tensor involved:</p>
+  <div class="codecap"><b>examples/04_uop_basics.py</b> — run with <code>DEV=CPU python3 examples/04_uop_basics.py</code> (full file below in 4.7)</div>
+  <pre class="output"><code>=== 1. a UOp is (op, src, arg); dtype is DERIVED, not stored ===
+e.op  = Ops.ADD
+e.src = [Ops.MUL, Ops.CONST]
+e.arg = None
+e.dtype = dtypes.weakint   (computed by dtype_from_uop, cached in e.__dict__)
+fields stored on the dataclass: dict_keys([&#x27;op&#x27;, &#x27;src&#x27;, &#x27;arg&#x27;])
+
+=== 2. CONST dtype comes from the Python value; a typed const is CAST(CONST) ===
+dtypes.weakint dtypes.weakfloat dtypes.bool
+UOp(Ops.CAST, arg=dtypes.i32, src=(
+  UOp(Ops.CONST, arg=3, src=()),))</code></pre>
+  <div class="callout note"><code>UOp.const(3, dtypes.int32)</code> is <b>two</b> nodes: a bare <code>CONST 3</code> (weakint) under a
+  <code>CAST</code> to <code>i32</code>. The CONST stores a mathematical value and the CAST states the width it lives at. That is why
+  <code>dtype</code> can be derived even for constants. See <a class="src" data-path="tinygrad/uop/ops.py" data-line="601">UOp.const</a>.</div>
+
+  <!-- ===================================================================== -->
+  <h2 id="hashcons"><span class="sec">4.3</span>Hash-consing: equal means identical</h2>
+  <p>UOps are <b>hash-consed</b>, also called interned: building a UOp with an <code>(op, src, arg)</code> triple that already exists
+  returns the existing object. The mechanism is a metaclass whose <code>__call__</code> runs <em>before</em> the dataclass
+  <code>__init__</code> and checks a global cache first:</p>
+  <div class="codecap"><b>tinygrad/uop/ops.py:190–204</b> — <a class="src" data-path="tinygrad/uop/ops.py" data-line="190">UOpMetaClass</a></div>
+  <pre><code class="language-python">class UOpMetaClass(type):
+  ucache:dict[tuple, weakref.ReferenceType[UOp]] = {}
+  def __call__(cls, op:Ops, src:tuple[UOp,...]=tuple(), arg:Any=None):
+    # NOTE: the key must separate nodes of different dtype: a CONST&#x27;s dtype is the type of its arg, and True == 1 as dict keys
+    if (wret:=UOpMetaClass.ucache.get(key:=(op, src, arg, type(arg)), None)) is not None and (ret:=wret()) is not None: return ret
+    UOpMetaClass.ucache[key] = weakref.ref(created:=super().__call__(op, src, arg))
+    if SPEC &gt; 1:
+      from tinygrad.uop.spec import spec_full
+      if SPEC &gt; 2:
+        # SPEC=3 checks the shape
+        _ = created._shape
+      with Context(CHECK_OOB=0): fret = cast(bool|None, spec_full.rewrite(created))
+      if fret is not True: raise RuntimeError(f&quot;SPEC ISSUE {fret}: {created}&quot;)
+    return created
+</code></pre>
+  <p>Three details are worth reading closely:</p>
+  <ul>
+    <li><b>The key is <code>(op, src, arg, type(arg))</code></b>. Since <code>src</code> is a tuple of already-interned UOps, hashing it hashes
+    object identities, so building a node costs O(#src) and never walks the whole subgraph. <code>type(arg)</code> is included because
+    <code>1 == 1.0 == True</code> in Python, but those are three different constants (weakint, weakfloat, bool).</li>
+    <li><b>The cache holds <code>weakref</code>s.</b> It doesn't keep nodes alive. If the weakref is dead, the node is simply rebuilt.</li>
+    <li><b><code>SPEC&gt;1</code></b> type-checks every newly created node against <code>spec_full</code> (a PatternMatcher, Chapter 5).
+    Because every node is created exactly once, that check also runs exactly once per node.</li>
+  </ul>
+  <pre class="output"><code>=== 3. hash-consing: same (op, src, arg) -&gt; the SAME Python object ===
+a is b: True   id(a)==id(b): True
+UOp.const(1) is UOp.const(1):    True
+UOp.const(1) is UOp.const(True): False  (type(arg) is part of the cache key)
+UOp.const(1) is UOp.const(1.0):  False
+
+=== 4. the cache holds WEAK references: nodes vanish when nobody uses them ===
+new cache entries after building q*7+3: 5
+after `del` + gc:                        0 (UOp.__del__ removed them)</code></pre>
+  <p>When the last strong reference dies, <code>UOp.__del__</code> removes the cache entry (<a class="src" data-path="tinygrad/uop/ops.py" data-line="234">ops.py:234</a>).
+  Only 5 entries appeared for <code>q*7+3</code> although it has 6 nodes, because the empty <code>STACK</code> under every Variable already
+  existed: it is shared.</p>
+
+  <div class="callout aha"><span class="title">What hash-consing buys</span>
+  <ol style="margin:4px 0">
+    <li><b>Equality is identity.</b> <code>a is b</code> is an O(1) structural-equality test. Pattern rules such as <code>x//x → 1</code> can check
+    "both sources are the same expression" with <code>is</code>.</li>
+    <li><b>Common subexpression elimination is free.</b> <code>(x+y)*(x+y)</code> contains <em>one</em> ADD node with two edges to the MUL.</li>
+    <li><b>UOps are cheap, safe dict keys.</b> Every graph pass keeps <code>dict[UOp, …]</code> memo tables (the rewrite engine's
+    <code>replace</code> dict, the kernel cache, <code>tensor_map</code>s).</li>
+    <li><b>Immutability is forced.</b> You can't mutate a shared node without corrupting every graph that contains it, so you never mutate:
+    you <code>replace</code> (4.7).</li>
+  </ol></div>
+
+  <div class="demo ch04-play" id="demo-play">
+    <div class="demo-title">Demo · UOp constructor playground (a JS mirror of UOpMetaClass)</div>
+    <div class="demo-desc">Build nodes from leaves and operators. Each <i>build</i> looks up the key <code>(op, src ids, arg, type(arg))</code> in the
+    cache table on the right: a <span class="hl-green">green</span> row is a <b>hit</b> (you got the existing object back), a <span class="hl-yellow">yellow</span>
+    row is a <b>miss</b> (a new node). Try <i>build x*2+1 twice</i>, or compare <code>1</code>, <code>1.0</code> and <code>True</code>. Click a handle to
+    pick an operand (yellow = selected, in order). <i>drop</i> deletes a handle; <i>gc</i> then removes every node no live handle reaches,
+    which is what the weakrefs plus <code>__del__</code> do.</div>
+    <div class="controls ops">
+      <b style="font-size:13px;color:var(--dim)">leaves:</b>
+      <button data-leaf="x">var x</button><button data-leaf="y">var y</button>
+      <button data-leaf="i1">const 1</button><button data-leaf="f1">const 1.0</button><button data-leaf="b1">const True</button><button data-leaf="i2">const 2</button>
+      <span style="width:12px"></span><b style="font-size:13px;color:var(--dim)">op on selected:</b>
+      <button data-op="ADD">ADD</button><button data-op="MUL">MUL</button><button data-op="MAX">MAX</button><button data-op="CMPLT">CMPLT</button><button data-op="WHERE">WHERE</button>
+    </div>
+    <div class="controls"><button class="primary" id="ch04-twice">build x*2+1 twice</button><button id="ch04-cse">build (x+y)*(x+y)</button>
+      <button id="ch04-drop">drop selected</button><button id="ch04-gc">gc</button><button id="ch04-reset">reset</button></div>
+    <div class="handles" id="ch04-handles"></div>
+    <div class="log" id="ch04-log">Click "var x" to start.</div>
+    <div class="row">
+      <div class="col" style="flex:2 1 420px"><div id="ch04-pgraph"></div></div>
+      <div class="col" style="flex:1 1 300px"><div class="cache" id="ch04-cache"></div></div>
+    </div>
+  </div>
+
+  <div class="quiz" data-answer="2">
+    <div class="q">You run <code>a = UOp.const(1)</code>, then <code>b = UOp.const(True)</code>. What is <code>a is b</code>, and why?</div>
+    <button class="opt">True: <code>1 == True</code> in Python, so the dict lookup finds the same entry</button>
+    <button class="opt">True: both are CONSTs with no src</button>
+    <button class="opt">False: the cache key contains <code>type(arg)</code>, and <code>int</code> ≠ <code>bool</code></button>
+    <button class="opt">False: CONST nodes are never cached</button>
+    <div class="explain">The key is <code>(op, src, arg, type(arg))</code>. Without <code>type(arg)</code>, <code>True</code> would collide with <code>1</code>
+    and get the wrong dtype: the comment in <code>UOpMetaClass.__call__</code> exists exactly for this case. The example prints
+    <code>False</code> for both <code>1 vs True</code> and <code>1 vs 1.0</code>.</div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <h2 id="key"><span class="sec">4.4</span><code>key</code>: a content hash that survives processes</h2>
+  <p>Identity works within one process. To cache compiled kernels on disk, or to compare graphs across runs (process replay), you need a
+  stable name for a graph's <em>content</em>. That is <code>key</code>, a sha256 over <code>(op, dtype, arg)</code> plus the keys of the sources,
+  computed bottom-up (it is a <code>recursive_property</code> too):</p>
+  <pre><code class="language-python">  def is_invalid(self) -&gt; bool: return self.op is Ops.CONST and self.val is Invalid
+  @recursive_property
+  def key(self) -&gt; bytes:
+    return hashlib.sha256(str((self.op, self.dtype, self.arg)).encode() + b&quot;&quot;.join([s.key for s in self.src])).digest()</code></pre>
+  <pre class="output"><code>=== 5. key: a sha256 content hash, stable across processes ===
+a.key = 16fb0beebcbf6cfc2d46853976ab577b0598f044caa604179219b9d6c9a6c148
+same expression, same key: True | different expression: False</code></pre>
+  <p>Where it is used: <a class="src" data-path="tinygrad/codegen/__init__.py" data-line="505">to_program_key</a> starts with <code>ast.key</code>.
+  That is the compiled-program cache: two identical kernel ASTs, whether from different Tensors or different runs, compile once.
+  <code>to_elf</code> and the schedule cache use it as well.</p>
+
+  <!-- ===================================================================== -->
+  <h2 id="ops"><span class="sec">4.5</span>The <code>Ops</code> enum: the vocabulary</h2>
+  <p><a class="src" data-path="tinygrad/uop/__init__.py" data-line="13">class Ops</a> has 75 members, grouped into seven commented sections.
+  It is a <code>FastEnum</code>, an <code>IntEnum</code> whose <code>auto()</code> values are unique across subclasses. The first comment in
+  the class is a design statement:</p>
+  <pre><code class="language-python"># the order of these Ops controls the order of the toposort
+class Ops(FastEnum):
+  # ** 1 -- defines/special **
+
+  # this is a RANGE for GPU dimensions, similar to symbolic shapes but not exactly
+  SPECIAL = auto()
+
+  # BUFFER references bound storage; ALLOC declares unbound global storage
+  BUFFER = auto(); ALLOC = auto()</code></pre>
+  <p>The order is <em>semantic</em>: low numbers are "defines" (SPECIAL, BUFFER, PARAM), then structure (CALL, PROGRAM, SINK, AFTER), then
+  memory (INDEX, LOAD, STORE), math, control flow and CONST, and finally the ops that only exist in the tensor graph (movement, COPY, REDUCE).
+  In this version the order shows up through <code>tuplize</code>, a sort key that starts with <code>op.value</code>:</p>
+  <pre><code class="language-python">  @functools.cached_property
+  def tuplize(self) -&gt; _UOpTuple:
+    # arg goes through repr: args of different types (None, str, tuple) must stay mutually comparable for the sort
+    return _UOpTuple((self.op.value, repr(self.arg), self.dtype,)+tuple([x.tuplize for x in self.src]))</code></pre>
+  <p><code>tuplize</code> is the tie-breaker in the linearizer's priority sort (<a class="src" data-path="tinygrad/codegen/late/linearizer.py" data-line="36">linearizer.py:36</a>,
+  on by default via <code>TUPLE_ORDER=1</code>) and the canonical order for commutative index math
+  (<a class="src" data-path="tinygrad/uop/symbolic.py" data-line="237">symbolic.py:237</a>, which flips <code>a+b</code> so the smaller tuplize comes first).
+  Since <code>Ops.CONST</code> (57) sorts after <code>PARAM</code> (6) and <code>RANGE</code> (52), constants always end up on the right:
+  <code>2*x</code> becomes <code>x*2</code>. Many pattern rules rely on that and only match <code>x*c</code>, never <code>c*x</code>.</p>
+  <pre class="output"><code>=== 9. Ops enum order is semantic: tuplize puts CONSTs last ===
+Ops.PARAM = 6  Ops.ADD = 30  Ops.CONST = 57
+2*x as built: (2*x) -&gt; after symbolic: (x*2)</code></pre>
+
+  <h3>GroupOp: named sets</h3>
+  <p>Patterns rarely name single ops; they name families. <a class="src" data-path="tinygrad/uop/__init__.py" data-line="103">GroupOp</a> defines them:</p>
+  <pre class="output"><code>=== 12. GroupOp: named sets of Ops used by patterns ===
+  Unary        [&#x27;EXP2&#x27;, &#x27;LOG2&#x27;, &#x27;NEG&#x27;, &#x27;RECIP&#x27;, &#x27;SIN&#x27;, &#x27;SQRT&#x27;, &#x27;TRUNC&#x27;]
+  Binary       [&#x27;ADD&#x27;, &#x27;AND&#x27;, &#x27;CMPEQ&#x27;, &#x27;CMPLT&#x27;, &#x27;CMPNE&#x27;, &#x27;DIV&#x27;, &#x27;FDIV&#x27;, &#x27;MAX&#x27;, &#x27;MOD&#x27;, &#x27;MUL&#x27;, &#x27;OR&#x27;, &#x27;POW&#x27;, &#x27;SHL&#x27;, &#x27;SHR&#x27;, &#x27;SUB&#x27;, &#x27;THREEFRY&#x27;, &#x27;TRUNCDIV&#x27;, &#x27;TRUNCMOD&#x27;, &#x27;XOR&#x27;]
+  Ternary      [&#x27;MULACC&#x27;, &#x27;WHERE&#x27;]
+  Movement     [&#x27;EXPAND&#x27;, &#x27;PAD&#x27;, &#x27;PERMUTE&#x27;, &#x27;RESHAPE&#x27;, &#x27;SHRINK&#x27;]
+  Commutative  [&#x27;ADD&#x27;, &#x27;AND&#x27;, &#x27;CMPEQ&#x27;, &#x27;CMPNE&#x27;, &#x27;MAX&#x27;, &#x27;MUL&#x27;, &#x27;OR&#x27;, &#x27;XOR&#x27;]
+  Associative  [&#x27;ADD&#x27;, &#x27;AND&#x27;, &#x27;MAX&#x27;, &#x27;MUL&#x27;, &#x27;OR&#x27;, &#x27;XOR&#x27;]
+  Idempotent   [&#x27;AND&#x27;, &#x27;MAX&#x27;, &#x27;OR&#x27;]
+  Comparison   [&#x27;CMPEQ&#x27;, &#x27;CMPLT&#x27;, &#x27;CMPNE&#x27;]
+  Defines      [&#x27;ALLOC&#x27;, &#x27;BUFFER&#x27;, &#x27;PARAM&#x27;]
+  Irreducible  [&#x27;CONST&#x27;, &#x27;GETADDR&#x27;, &#x27;PARAM&#x27;, &#x27;RANGE&#x27;, &#x27;SPECIAL&#x27;]</code></pre>
+  <p>These sets carry algebraic facts. <code>Commutative</code> tells <code>UPat</code> to try both source orders.
+  <code>Associative</code> drives the "two-stage ALU folding" rules (<code>(x+c1)+c2 → x+(c1+c2)</code>). <code>Idempotent</code> gives
+  <code>max(x,x) → x</code>. <code>Irreducible</code> lists the leaves of index math.</p>
+
+  <h3>The atlas</h3>
+  <p>The table below lists every member of <code>Ops</code>. The <b>family</b> colors are the same ones every graph in this guide uses.
+  The <b>home</b> column says where the op belongs in the compiler: <i>tensor</i> (only before scheduling), <i>kernel</i> (kernel ASTs),
+  <i>program</i> (linearized programs), <i>everywhere</i>, <i>schedule/runtime</i> (the containers that hold kernels), or <i>meta</i> (tooling). It is checked
+  against the two specs in <a class="src" data-path="tinygrad/uop/spec.py" data-line="144">spec.py</a>: an op whose rules live only in
+  <code>spec_tensor</code> (like RESHAPE, which <code>spec_program</code> explicitly rejects with <code>lambda: False</code>) can't
+  survive into a program. The <b>observed</b> column is measured, not asserted: <code>examples/04_capture_data.py</code> runs 21 small programs
+  (elementwise, reduce, matmul, conv2d, pad/flip, casts, transcendentals, rand, gather, symbolic shapes, backward, assign, multi-device…) under
+  <code>TRACK_MATCH_STATS=2</code> and records which ops appear in each stage's graphs.</p>
+
+  <div class="demo ch04-atlas" id="demo-atlas">
+    <div class="demo-title">Demo · the Ops atlas (all 75)</div>
+    <div class="demo-desc">Filter by text, family, or home stage. Click a row for the comment from <code>uop/__init__.py</code> and the src/arg
+    contract. Tags: <span class="tag on" style="background:var(--teal)">T</span> = has rules in <code>spec_tensor</code>,
+    <span class="tag on" style="background:var(--blue)">P</span> = <code>spec_program</code>, <span class="tag on" style="background:var(--gold)">K</span> = <code>spec_kernel_graph</code>.
+    Observed stages: <span class="tag">tensor</span> graph given to the scheduler · <span class="tag">sched</span> any scheduler rewrite ·
+    <span class="tag">ast</span> kernel AST entering codegen · <span class="tag">codegen</span> any codegen rewrite · <span class="tag">prog</span> final linear program ·
+    <span class="tag">rt</span> runtime compile/link graphs.</div>
+    <div class="controls"><input type="text" id="ch04-q" placeholder="filter: e.g. RANGE, movement, arg DType…" style="width:280px">
+      <span id="ch04-fam"></span></div>
+    <div class="controls"><b style="font-size:13px;color:var(--dim)">home:</b> <span id="ch04-stage"></span> <span class="count" id="ch04-count"></span></div>
+    <div class="scroll"><table><thead><tr><th>#</th><th>op</th><th>family</th><th>home</th><th>src</th><th>arg</th><th>spec</th><th>observed</th></tr></thead><tbody id="ch04-atlas-body"></tbody></table></div>
+  </div>
+  <div class="callout warn">The "observed" column comes from a finite corpus, so blank cells mean "not exercised by these 21 programs", not
+  "impossible". SPECIAL, BARRIER and IF need a GPU-style renderer; WMMA needs tensor cores; INS needs an ISA renderer (e.g. the x86 one);
+  CUSTOM/CUSTOMI/PYLITERAL appear inside the pattern compiler (Chapter 5), which tracking deliberately ignores; MULACC is renderer-specific
+  fusing. REWRITE_ERROR shows up once because the tracker records a rule that raised an exception which was then caught.</div>
+
+  <div class="quiz" data-answer="1">
+    <div class="q">A RESHAPE node somehow survives into the graph handed to the renderer with <code>SPEC=1</code>. What happens?</div>
+    <button class="opt">It's rendered as a no-op, since a reshape doesn't move data</button>
+    <button class="opt"><code>type_verify(sink, spec_program)</code> fails: spec_program has <code>(UPat(GroupOp.Movement), lambda: False)</code></button>
+    <button class="opt">The C renderer emits a <code>memcpy</code></button>
+    <div class="explain">Movement ops "only exist in the tensor graph" (the comment in the enum). Rangeify (Chapter 10) turns them into index
+    arithmetic, and <code>full_rewrite_to_sink</code> ends with <code>type_verify(sink, spec_program)</code>
+    (<a class="src" data-path="tinygrad/codegen/__init__.py" data-line="374">codegen/__init__.py</a>), where movement ops are explicitly rejected
+    (<a class="src" data-path="tinygrad/uop/spec.py" data-line="213">spec.py:213</a>).</div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <h2 id="toposort"><span class="sec">4.6</span>Toposort: walking the DAG without recursion</h2>
+  <p>Almost every analysis needs "every node, after all of its sources". <code>toposort</code> is an iterative DFS with an explicit stack of
+  <code>(node, visited)</code> pairs. The first time a node is popped, it is pushed back with <code>visited=True</code> and its sources are pushed on
+  top of it (reversed, so <code>src[0]</code> is handled first). The second time, all its sources are already done, so it is appended to the output.</p>
+  <div class="codecap"><b>tinygrad/uop/ops.py:281–293</b></div>
+  <pre><code class="language-python">  def toposort(self, gate:Callable|None=None, enter_calls=False) -&gt; dict[UOp, None]:
+    cache: dict[UOp, None] = {}
+    stack: list[tuple[UOp, bool]] = [(self, False)] # each stack entry is (node, visited_flag)
+    while stack:
+      node, visited = stack.pop()
+      if node in cache: continue
+      if not visited:
+        if gate is None or gate(node):
+          stack.append((node, True))  # push node back on stack to process after its srcs
+          for s in reversed(node.src if enter_calls else node.src_without_body):
+            stack.append((s, False)) # push srcs on the stack
+      else: cache[node] = None # second time i&#x27;m seeing this node, add it to returned toposort
+    return cache</code></pre>
+  <ul>
+    <li>The result is a <code>dict[UOp, None]</code>, an insertion-ordered set: you get O(1) membership and order together.
+    <code>backward_slice</code> is this dict minus the node itself.</li>
+    <li><code>gate</code> prunes the walk: a node for which <code>gate(node)</code> is false is neither emitted nor entered.
+    <code>recursive_property</code> uses that to stop at nodes that already have the value cached.</li>
+    <li><code>src_without_body</code>: a CALL's first source is the kernel body. It is not entered unless <code>enter_calls=True</code>, so a schedule
+    walk doesn't descend into every kernel's AST.</li>
+  </ul>
+  <div class="demo ch04-topo" id="demo-topo">
+    <div class="demo-title">Demo · toposort, one stack operation at a time</div>
+    <div class="demo-desc">The graph is the real <code>(x+y)*(x+y) + x*2</code> (captured from tinygrad; note the single shared <code>x+y</code>
+    node and the shared empty STACK under both Variables). The stepper executes the exact loop above. The current node is highlighted,
+    <span class="chip v">purple</span> stack entries have <code>visited=True</code>, and the yellow chip is the node just emitted. The final
+    order is checked against tinygrad's own <code>toposort()</code> output.</div>
+    <div class="row"><div class="col"><div id="ch04-topo-graph"></div></div>
+      <div class="col"><div class="lists"><div><h5>stack (top at right)</h5><div id="ch04-stack"></div></div><div><h5>cache = output order</h5><div id="ch04-out"></div></div></div>
+      <div id="ch04-topo-step" style="margin-top:8px"></div><div id="ch04-topo-check" style="margin-top:6px"></div></div></div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <h2 id="api"><span class="sec">4.7</span>Building and changing graphs: const, variable, sink, replace, substitute</h2>
+  <p>Since nodes can't be mutated, "changing" a graph always means building a new one that shares every untouched node with the old one:</p>
+  <ul>
+    <li><a class="src" data-path="tinygrad/uop/ops.py" data-line="239">replace(**kw)</a> rebuilds one node with some fields swapped. It returns
+    <code>self</code> if nothing changed, and because of hash-consing it returns an existing node if one matches.</li>
+    <li><a class="src" data-path="tinygrad/uop/ops.py" data-line="506">substitute(dvars)</a> replaces whole subgraphs everywhere they occur.
+    It is one <code>graph_rewrite</code> with the matcher <code>_substitute = PatternMatcher([(UPat(tuple(Ops), name="x"), lambda ctx,x: ctx.get(x,None))])</code>,
+    i.e. "if this node is a key of the dict, return its value", run <code>bottom_up</code>. So the engine of Chapter 5 is also the
+    general graph-editing tool.</li>
+    <li><a class="src" data-path="tinygrad/uop/ops.py" data-line="527">UOp.sink(*srcs)</a> builds a SINK root, a void node whose sources
+    are the outputs. Every kernel AST and every multi-output graph has one.</li>
+    <li><a class="src" data-path="tinygrad/uop/ops.py" data-line="601">UOp.const(b, dtype)</a> builds a CONST, plus a CAST when the dtype isn't the
+    one CONST would derive. <a class="src" data-path="tinygrad/uop/ops.py" data-line="974">UOp.variable(name, lo, hi)</a> builds a scalar <code>PARAM</code> in the ALU address space
+    with <code>vmin_vmax</code> in its <code>ParamArg</code>. That is all a symbolic Variable is now (Chapter 6).</li>
+    <li>Operators come from mixins (<code>tinygrad/mixin/elementwise.py</code>): <code>x*2</code> calls <code>_binop(Ops.MUL, 2)</code>, which promotes
+    dtypes and calls <code>alu</code>. <code>x - y</code> is built as <code>x + y*-1</code>, so you'll see that form in renders.</li>
+  </ul>
+  <div class="codecap"><b>examples/04_uop_basics.py</b> (complete) — run with <code>DEV=CPU python3 examples/04_uop_basics.py</code></div>
+  <pre><code class="language-python"># Chapter 4 — UOp: the one IR.  Run with:  DEV=CPU python3 examples/04_uop_basics.py
+# Everything here builds UOps by hand (no Tensor), so you can see the raw IR object.
+import gc
+from tinygrad.uop import Ops, GroupOp
+from tinygrad.uop.ops import UOp, UOpMetaClass
+from tinygrad.dtype import dtypes
+
+def section(t): print(f&quot;\n=== {t} ===&quot;)
+
+section(&quot;1. a UOp is (op, src, arg); dtype is DERIVED, not stored&quot;)
+x = UOp.variable(&quot;x&quot;, 0, 10)          # a Variable is a scalar PARAM that carries a value range
+e = x * 2 + 1                          # operator overloading builds MUL and ADD nodes
+print(&quot;e.op  =&quot;, e.op)
+print(&quot;e.src =&quot;, [s.op for s in e.src])
+print(&quot;e.arg =&quot;, e.arg)
+print(&quot;e.dtype =&quot;, e.dtype, &quot;  (computed by dtype_from_uop, cached in e.__dict__)&quot;)
+print(&quot;fields stored on the dataclass:&quot;, UOp.__dataclass_fields__.keys())
+
+section(&quot;2. CONST dtype comes from the Python value; a typed const is CAST(CONST)&quot;)
+print(UOp.const(3).dtype, UOp.const(3.0).dtype, UOp.const(True).dtype)
+print(repr(UOp.const(3, dtypes.int32)))
+
+section(&quot;3. hash-consing: same (op, src, arg) -&gt; the SAME Python object&quot;)
+a = x * 2 + 1
+b = x * 2 + 1
+print(&quot;a is b:&quot;, a is b, &quot;  id(a)==id(b):&quot;, id(a) == id(b))
+print(&quot;UOp.const(1) is UOp.const(1):   &quot;, UOp.const(1) is UOp.const(1))
+print(&quot;UOp.const(1) is UOp.const(True):&quot;, UOp.const(1) is UOp.const(True), &quot; (type(arg) is part of the cache key)&quot;)
+print(&quot;UOp.const(1) is UOp.const(1.0): &quot;, UOp.const(1) is UOp.const(1.0))
+
+section(&quot;4. the cache holds WEAK references: nodes vanish when nobody uses them&quot;)
+gc.collect()
+n0 = len(UOpMetaClass.ucache)
+tmp = UOp.variable(&quot;q&quot;, 0, 5) * 7 + 3      # PARAM q, CONST 7, MUL, CONST 3, ADD (the empty STACK already exists: shared!)
+print(&quot;new cache entries after building q*7+3:&quot;, len(UOpMetaClass.ucache) - n0)
+del tmp; gc.collect()
+print(&quot;after `del` + gc:                       &quot;, len(UOpMetaClass.ucache) - n0, &quot;(UOp.__del__ removed them)&quot;)
+
+section(&quot;5. key: a sha256 content hash, stable across processes&quot;)
+print(&quot;a.key =&quot;, a.key.hex())
+print(&quot;same expression, same key:&quot;, (x * 2 + 1).key == a.key, &quot;| different expression:&quot;, (x * 3 + 1).key == a.key)
+
+section(&quot;6. toposort: every node after all of its sources&quot;)
+s = UOp.sink(a, x + 5)
+for i, u in enumerate(s.toposort()): print(f&quot;  {i}: {u.op}&quot;)
+
+section(&quot;7. replace / substitute: you never mutate a UOp, you build a new one&quot;)
+print(&quot;a.replace(op=Ops.MUL).render(simplify=False):&quot;, a.replace(op=Ops.MUL).render(simplify=False))
+four = a.substitute({x: UOp.const(4)})
+print(&quot;a.substitute({x: 4}).render(simplify=False):  &quot;, four.render(simplify=False))
+print(&quot;...then .simplify():                         &quot;, four.simplify())
+print(&quot;a is unchanged:&quot;, a.render(simplify=False))
+
+section(&quot;8. three ways to print the same UOp&quot;)
+print(&quot;-- repr (pretty_print): shared nodes get a name like x3:= --&quot;)
+print(repr(x + x))
+print(&quot;-- render_uir (SSA wire format) --&quot;)
+print((x * 2 + 1).render_uir())
+print(&quot;-- render (infix expression) --&quot;)
+print((x * 2 + 1).render())
+
+section(&quot;9. Ops enum order is semantic: tuplize puts CONSTs last&quot;)
+print(&quot;Ops.PARAM =&quot;, Ops.PARAM.value, &quot; Ops.ADD =&quot;, Ops.ADD.value, &quot; Ops.CONST =&quot;, Ops.CONST.value)
+two_x = UOp.const(2) * x
+print(&quot;2*x as built:&quot;, two_x.render(simplify=False), &quot;-&gt; after symbolic:&quot;, two_x.simplify().render(simplify=False))
+
+section(&quot;10. shapes are inferred too (_shape), and movement args are srcs&quot;)
+buf = UOp.param(0, dtypes.float, 12)                  # a flat 12-element float buffer argument
+r = buf.reshape((3, 4))
+print(&quot;RESHAPE srcs:&quot;, [u.op for u in r.src], &quot; src[1] is a STACK of CONSTs:&quot;, [c.arg for c in r.src[1].src])
+print(&quot;shapes:&quot;, buf.shape, &quot;-&gt;&quot;, r.shape, &quot;-&gt;&quot;, r.permute((1, 0)).shape, &quot;-&gt;&quot;, r.permute((1, 0)).expand((2, 4, 3)).shape)
+print(&quot;sum over axis 1 (REDUCE):&quot;, r._rop(Ops.ADD, (1,)).shape)
+
+section(&quot;11. vmin / vmax (range analysis, chapter 6)&quot;)
+print(f&quot;x in [{x.vmin}, {x.vmax}]  -&gt;  x*2+1 in [{a.vmin}, {a.vmax}]  -&gt;  (x*2+1)//4 in [{(a//4).vmin}, {(a//4).vmax}]&quot;)
+
+section(&quot;12. GroupOp: named sets of Ops used by patterns&quot;)
+for name in [&quot;Unary&quot;, &quot;Binary&quot;, &quot;Ternary&quot;, &quot;Movement&quot;, &quot;Commutative&quot;, &quot;Associative&quot;, &quot;Idempotent&quot;, &quot;Comparison&quot;, &quot;Defines&quot;, &quot;Irreducible&quot;]:
+  print(f&quot;  {name:12s}&quot;, sorted(o.name for o in getattr(GroupOp, name)))</code></pre>
+  <pre class="output"><code>=== 6. toposort: every node after all of its sources ===
+  0: Ops.STACK
+  1: Ops.PARAM
+  2: Ops.CONST
+  3: Ops.MUL
+  4: Ops.CONST
+  5: Ops.ADD
+  6: Ops.CONST
+  7: Ops.ADD
+  8: Ops.SINK
+
+=== 7. replace / substitute: you never mutate a UOp, you build a new one ===
+a.replace(op=Ops.MUL).render(simplify=False): (x*2*1)
+a.substitute({x: 4}).render(simplify=False):   (4*2+1)
+...then .simplify():                          UOp(Ops.CONST, arg=9, src=())
+a is unchanged: (x*2+1)</code></pre>
+
+  <!-- ===================================================================== -->
+  <h2 id="shape"><span class="sec">4.8</span>Shape inference (<code>_shape</code>) and args that are graphs</h2>
+  <p>In the tensor graph every node has a shape, and it is <em>derived</em>, like dtype. <a class="src" data-path="tinygrad/uop/ops.py" data-line="315">_shape</a>
+  is a big <code>match</code> that must handle every op explicitly (it ends with <code>raise NotImplementedError</code>). Late ops such as
+  SINK, IF and LINEAR have shape <code>None</code>. CONST, RANGE and SPECIAL are scalars <code>()</code>. BUFFER and PARAM get their
+  shape from their size source. Elementwise ops <b>broadcast</b> their sources' shapes. Movement ops compute a new shape from their
+  "marg" (movement arg):</p>
+  <div class="codecap"><b>tinygrad/uop/ops.py:382–398</b></div>
+  <pre><code class="language-python">    # movement ops change the shape
+    if self.op in GroupOp.Movement.union({Ops.UNSHARD, Ops.REDUCE}):
+      ps = self.src[0]._shape
+      if ps is None: raise RuntimeError(f&quot;movement op {self.op} requires shape, {self.src[0].op} doesn&#x27;t have one&quot;)
+      match self.op:
+        case Ops.RESHAPE:
+          if not all(x &gt;= 0 for x in self.marg): raise ValueError(f&quot;shape can&#x27;t contain negative numbers {self.marg}&quot;)
+          # with symbolic views prod equality can be true at runtime but unprovable, only reject provably unequal products
+          if resolve(prod(ps) != prod(self.marg), False): raise ValueError(f&quot;bad reshape: {ps} -&gt; {self.marg}&quot;)
+          return self.marg
+        case Ops.EXPAND:
+          return tuple(self.marg) + ps
+        case Ops.PERMUTE:
+          if sorted(self.marg) != list(range(len(ps))): raise ValueError(f&quot;invalid permutation {self.marg} of len {len(ps)}&quot;)
+          return tuple(ps[i] for i in self.marg)
+        case Ops.PAD:
+          # TODO: why do i need resolve here?</code></pre>
+  <p>Notice <code>self.marg</code>, not <code>self.arg</code>. In this version a movement op's parameters are <b>sources</b>, not the arg: a RESHAPE is
+  <code>RESHAPE(x, STACK(CONST 3, CONST 4))</code>, and <code>marg</code> reads them back as Python ints
+  (<a class="src" data-path="tinygrad/uop/ops.py" data-line="768">ops.py:768</a>). This is how shapes become <em>symbolic</em>: a dimension can be
+  any int-valued UOp, such as a Variable <code>n</code>, and graph rewriting simplifies it like any other expression (Chapter 6). SHRINK and PAD carry two
+  STACKs, with marg pairs <code>(offset, size)</code> and <code>(offset, new_size)</code> per axis. The user-facing <code>(start, end)</code>
+  form is converted in <code>MovementMixin</code>.</p>
+  <pre class="output"><code>=== 10. shapes are inferred too (_shape), and movement args are srcs ===
+RESHAPE srcs: [Ops.PARAM, Ops.STACK]  src[1] is a STACK of CONSTs: [3, 4]
+shapes: (12,) -&gt; (3, 4) -&gt; (4, 3) -&gt; (2, 4, 3)
+sum over axis 1 (REDUCE): (3,)</code></pre>
+
+  <!-- ===================================================================== -->
+  <h2 id="printing"><span class="sec">4.9</span>Three printers for one graph</h2>
+  <ul>
+    <li><code>repr(u)</code> → <a class="src" data-path="tinygrad/uop/render.py" data-line="7">pretty_print</a>: valid-looking Python that
+    reconstructs the graph. It first runs a DFS counting how many parents each node has; a node used more than once is printed once as
+    <code>x3:=UOp(...)</code> and afterwards just as <code>x3</code>. That is the DAG's sharing made visible.</li>
+    <li><code>u.render_uir()</code> → <a class="src" data-path="tinygrad/uop/render.py" data-line="64">render_uir</a>: an SSA "wire format",
+    one line per non-constant node in toposort order: <code>%i = op srcs : arg</code>. Constants and all-constant STACKs are inlined as
+    literals. This is the most readable format for big graphs, and what <code>DEBUG=5</code> and the VIZ CLI print.</li>
+    <li><code>u.render()</code> → an infix expression produced by the <a class="src" data-path="tinygrad/uop/render.py" data-line="101">renderer</a>
+    PatternMatcher, used for index math. By default it simplifies first; <code>render(simplify=False)</code> shows the raw graph, which this
+    guide uses to show "before" states.</li>
+  </ul>
+  <pre class="output"><code>=== 8. three ways to print the same UOp ===
+-- repr (pretty_print): shared nodes get a name like x3:= --
+UOp(Ops.ADD, arg=None, src=(
+  x0:=UOp(Ops.PARAM, arg=ParamArg(-1, dtypes.weakint, vmin_vmax=(0, 10), name=&#x27;x&#x27;, addrspace=AddrSpace.ALU), src=(
+    UOp(Ops.STACK, arg=None, src=()),)),
+  x0,))
+-- render_uir (SSA wire format) --
+%0 = param () : &quot;x&quot; dtype=weakint slot=-1 bounds=[0,10] addrspace=ALU
+%1 = mul %0, 2
+%2 = add %1, 1
+-- render (infix expression) --
+(x*2+1)</code></pre>
+  <div class="codecap"><b>tinygrad/uop/render.py:7–15</b> — the sharing-aware printer</div>
+  <pre><code class="language-python">def pretty_print(x:UOp, cache=None, d=0)-&gt;str:
+  def dfs(x:UOp, cache:dict):
+    for s in x.src:
+      cache.setdefault(s, [len(cache), 0, False])[1] += 1
+      if cache[s][1] == 1: dfs(s, cache)
+  if cache is None: dfs(x, cache:={})
+  if (cx:=cache.setdefault(x, [0,0,False]))[2]: return f&quot;{&#x27; &#x27;*d}x{cx[0]}&quot;
+  cx[2], srcs = True, (&#x27;&#x27;.join(f&#x27;\n{pretty_print(s, cache, d+2)},&#x27; for s in x.src))
+  return f&quot;{&#x27; &#x27;*d}{f&#x27;x{cx[0]}:=&#x27; * (cx[1]&gt;1)}{type(x).__name__}({x.op}, arg={x.argstr()}, src=({srcs}))&quot;</code></pre>
+
+  <!-- ===================================================================== -->
+  <h2 id="args"><span class="sec">4.10</span>The arg dataclasses</h2>
+  <p>Most ops have <code>arg=None</code> or a simple value. A few carry a frozen dataclass. All of them are hashable, since they are part of the
+  hash-consing key:</p>
+  <table>
+    <tr><th>arg type</th><th>on op</th><th>fields (abridged)</th><th>meaning</th></tr>
+    <tr><td><a class="src" data-path="tinygrad/uop/ops.py" data-line="25">ParamArg</a></td><td>PARAM, BUFFER, ALLOC</td><td><code>slot, dtype, vmin_vmax, name, addrspace, device, image, buffer, val, spec…</code></td>
+      <td>Everything about storage or an argument. <code>slot</code> is the kernel-argument position, <code>addrspace</code> is GLOBAL/LOCAL/REG/ALU.
+      A Variable is <code>ParamArg(-1, weakint, vmin_vmax=(lo,hi), name='n', addrspace=ALU)</code>, and a bound one also has <code>val</code>.
+      For a realized BUFFER, <code>buffer</code> holds the device <code>Buffer</code>: the UOp owns its memory.</td></tr>
+    <tr><td><a class="src" data-path="tinygrad/uop/ops.py" data-line="1295">KernelInfo</a></td><td>SINK (of a kernel)</td><td><code>name, applied_opts, opts_to_apply, estimates, beam, optimized</code></td>
+      <td>Kernel metadata travelling with the AST: name (<code>r_2_3</code>), which OptOps were applied (Chapter 14), whether to skip optimization.</td></tr>
+    <tr><td><a class="src" data-path="tinygrad/uop/ops.py" data-line="1306">ProgramInfo</a></td><td>PROGRAM</td><td><code>global_size, local_size, params, globals, outs, ins, target</code></td>
+      <td>Launch information derived from the final sink by <code>ProgramInfo.from_sink</code>: launch dims (from SPECIALs), which slots are read and written.</td></tr>
+    <tr><td><a class="src" data-path="tinygrad/uop/ops.py" data-line="1351">CallInfo</a></td><td>CALL</td><td><code>grad_fxn, name, precompile, precompile_backward, aux</code></td>
+      <td>How to call a body: custom gradient, a name, whether to compile it ahead of time.</td></tr>
+    <tr><td><a class="src" data-path="tinygrad/uop/ops.py" data-line="17">AxisType</a> (enum, inside the RANGE arg)</td><td>RANGE</td><td><code>(AxisType, axis_id, …)</code></td>
+      <td>A loop's role: <code>DEVICE GLOBAL LOCAL WARP WEAK LOOP UPCAST PLACEHOLDER</code>. The order is the nesting order. The rendered letters
+      <code>d g l w L L u</code> are where kernel loop names such as <code>Lidx1</code> come from.</td></tr>
+    <tr><td><code>DType</code></td><td>CAST, BITCAST</td><td></td><td>The target dtype; the node's dtype is its arg.</td></tr>
+    <tr><td><code>(Ops, int)</code></td><td>REDUCE</td><td><code>(op, num_axes)</code></td><td>Reduce op from <code>GroupOp.Reduce</code>. In the tensor graph, the number of <em>leading</em> axes reduced (the input is permuted so
+      reduced axes come first, see <a class="src" data-path="tinygrad/uop/ops.py" data-line="624">_rop</a>). In kernels the reduced loops are RANGE sources and num_axes is 0.</td></tr>
+  </table>
+  <div class="codecap"><b>tinygrad/uop/ops.py:1294–1303</b></div>
+  <pre><code class="language-python">@dataclass(frozen=True)
+class KernelInfo:
+  name: str = &quot;test&quot;            # name of the kernel
+  applied_opts: tuple = tuple()
+  opts_to_apply: tuple|None = None
+  estimates: Estimates|None = None
+  beam: int = 0
+  optimized: bool = False       # the AST has been through the optimizer, skip re-optimization
+  @property
+  def function_name(self): return to_function_name(self.name)</code></pre>
+
+  <!-- ===================================================================== -->
+  <h2 id="altitudes"><span class="sec">4.11</span>The same IR at three altitudes (real captures)</h2>
+  <p>Now one computation, followed from Tensor to C. Every graph and listing below is a real capture from this tinygrad checkout:</p>
+  <div class="codecap"><b>examples/04_three_altitudes.py</b> — run with <code>DEV=CPU python3 examples/04_three_altitudes.py</code></div>
+  <pre><code class="language-python"># Chapter 4 — the SAME IR (UOp) at three altitudes.  Run with:  DEV=CPU python3 examples/04_three_altitudes.py
+#   altitude 1: the tensor graph   (what Tensor ops build: BUFFER, RESHAPE, PERMUTE, REDUCE ... shapes, no loops)
+#   altitude 2: the kernel AST     (after scheduling: PARAM, RANGE, INDEX, REDUCE, STORE, END, SINK ... loops, no shapes)
+#   altitude 3: the linear program (after codegen: a flat list of UOps, LOAD/STORE, accumulators, ready to print as C)
+from tinygrad import Tensor, Device, Context
+from tinygrad.uop.ops import Ops
+from tinygrad.codegen import to_program
+from tinygrad.engine.realize import run_linear
+
+a = Tensor([[1., 2, 3], [4, 5, 6]]).realize()   # realize so the inputs are plain BUFFERs on CPU
+b = Tensor([10., 20, 30]).realize()
+c = (a * 2 + b).sum(axis=1)                       # expected: [2+4+6+60, 8+10+12+60] = [72, 90]
+
+print(&quot;=== altitude 1: tensor graph (c.uop) ===&quot;)
+print(c.uop.render_uir())
+
+print(&quot;\n=== altitude 2: kernel AST (src[0] of the CALL in the schedule) ===&quot;)
+linear = c.schedule_linear()                       # LINEAR( CALL(SINK ast, buffers...), ... )
+call = linear.src[-1]
+ast = call.src[0]
+print(&quot;schedule:&quot;, linear.op, &quot;with&quot;, len(linear.src), &quot;CALL(s); the CALL&#x27;s srcs:&quot;, [s.op for s in call.src])
+print(ast.render_uir())
+
+print(&quot;\n=== altitude 3: linearized program (PROGRAM.src[1] is a LINEAR of UOps) ===&quot;)
+with Context(NOOPT=1):                             # no optimizations so the program stays readable
+  prg = to_program(ast, Device[&quot;CPU&quot;].renderer)
+print(&quot;PROGRAM srcs:&quot;, [s.op for s in prg.src])
+lin = prg.src[1].src
+for i, u in enumerate(lin):
+  srcs = &quot;, &quot;.join(f&quot;%{lin.index(s)}&quot; for s in u.src)
+  arg = &quot;&quot; if u.arg is None else f&quot;  : {u.arg if u.op is not Ops.SINK else u.arg.name}&quot;
+  print(f&quot;%{i:&lt;3}{u.op.name.lower():7s} {str(u.dtype.name):9s} {srcs}{arg}&quot;)
+
+print(&quot;\n=== ...which renders to C (PROGRAM.src[2] is a SOURCE) ===&quot;)
+print(prg.src[2].arg)
+
+run_linear(linear)                                 # schedule_linear only PLANS the work; this runs it
+print(&quot;result:&quot;, c.tolist())</code></pre>
+  <pre class="output"><code>=== altitude 1: tensor graph (c.uop) ===
+%0 = buffer 6 : dtype=f32 slot=1 device=CPU
+%1 = reshape %0, (2, 3)
+%2 = mul %1, 2.0
+%3 = buffer 3 : dtype=f32 slot=3 device=CPU
+%4 = add %2, %3
+%5 = permute %4, (1, 0)
+%6 = reduce %5 : op=add pop=1
+
+=== altitude 2: kernel AST (src[0] of the CALL in the schedule) ===
+schedule: Ops.LINEAR with 1 CALL(s); the CALL&#x27;s srcs: [Ops.SINK, Ops.BUFFER, Ops.BUFFER, Ops.BUFFER]
+%0 = param 2 : dtype=f32 slot=0 device=CPU
+%1 = range 2 : WEAK 1
+%2 = index %0, %1
+%3 = param 6 : dtype=f32 slot=1 device=CPU
+%4 = mul %1, 3
+%5 = range 3 : WEAK 0
+%6 = add %4, %5
+%7 = index %3, %6
+%8 = mul %7, 2.0
+%9 = param 3 : dtype=f32 slot=2 device=CPU
+%10 = index %9, %5
+%11 = add %8, %10
+%12 = reduce %11, %5 : op=add
+%13 = store %2, %12
+%14 = end %13, %1
+%15 = sink %14 : test
+
+=== altitude 3: linearized program (PROGRAM.src[1] is a LINEAR of UOps) ===
+PROGRAM srcs: [Ops.SINK, Ops.LINEAR, Ops.SOURCE, Ops.BINARY]
+%0  const   weakint     : 2
+%1  param   f32       %0  : ParamArg(0, dtypes.f32, device=&#x27;CPU&#x27;)
+%2  const   weakint     : 6
+%3  param   f32       %2  : ParamArg(1, dtypes.f32, device=&#x27;CPU&#x27;)
+%4  const   weakint     : 3
+%5  param   f32       %4  : ParamArg(2, dtypes.f32, device=&#x27;CPU&#x27;)
+%6  const   weakint     : 1
+%7  buffer  f32       %6  : ParamArg(0, dtypes.f32, addrspace=AddrSpace.REG)
+%8  const   weakfloat   : 0.0
+%9  cast    f32       %8  : dtypes.f32
+%10 const   weakfloat   : 2.0
+%11 cast    f32       %10  : dtypes.f32
+%12 const   weakint     : 0
+%13 cast    i32       %12  : dtypes.i32
+%14 cast    i32       %0  : dtypes.i32
+%15 cast    i32       %4  : dtypes.i32
+%16 range   i32       %14  : (AxisType.WEAK, 1)
+%17 after   i32       %15, %16
+%18 after   f32       %7, %16
+%19 index   f32       %18, %13
+%20 mul     i32       %16, %15
+%21 store   void      %19, %9
+%22 range   i32       %17  : (AxisType.WEAK, 0)
+%23 add     i32       %20, %22
+%24 index   f32       %3, %23
+%25 load    f32       %24
+%26 index   f32       %5, %22
+%27 load    f32       %26
+%28 after   f32       %7, %21, %22
+%29 index   f32       %28, %13
+%30 load    f32       %29
+%31 mul     f32       %25, %11
+%32 add     f32       %31, %27
+%33 add     f32       %30, %32
+%34 store   void      %29, %33
+%35 end     void      %34, %22
+%36 after   f32       %7, %35
+%37 index   f32       %36, %13
+%38 load    f32       %37
+%39 index   f32       %1, %16
+%40 store   void      %39, %38
+%41 end     void      %40, %16
+%42 sink    void      %41  : r_2_3
+
+=== ...which renders to C (PROGRAM.src[2] is a SOURCE) ===
+
+struct r_2_3_args { float* arg0; float* arg1; float* arg2; };
+void r_2_3(const struct r_2_3_args* args) {
+  float* data0_2 = args-&gt;arg0;
+  float* data1_6 = args-&gt;arg1;
+  float* data2_3 = args-&gt;arg2;
+  float buf0[1];
+  for (int Lidx1 = 0; Lidx1 &lt; 2; Lidx1++) {
+    *(buf0+0) = 0.0f;
+    for (int Lidx0 = 0; Lidx0 &lt; 3; Lidx0++) {
+      float val0 = (*(data1_6+((Lidx1*3)+Lidx0)));
+      float val1 = (*(data2_3+Lidx0));
+      *(buf0+0) = ((*(buf0+0))+(val0*2.0f)+val1);
+    }
+    *(data0_2+Lidx1) = (*(buf0+0));
+  }
+}
+
+result: [72.0, 90.0]</code></pre>
+
+  <div class="demo ch04-alt" id="demo-alt">
+    <div class="demo-title">Demo · switch altitude: tensor graph ⇄ kernel AST ⇄ linear program</div>
+    <div class="demo-desc">All three graphs were dumped with one shared id map (<code>tools/uop2json.py</code>), so the switch <b>morphs</b>: a node that
+    exists at two altitudes (thanks to hash-consing: e.g. the CONST <code>3</code>, the CONST <code>2.0</code>) keeps its id and slides to its new position.
+    Nodes that disappear were rewritten away. Hover any node for its full <code>UOp(...)</code> summary. Data:
+    <code>data/ch04_altitudes.json</code>, from <code>examples/04_capture_data.py</code>.</div>
+    <div id="ch04-pipe"></div>
+    <div id="ch04-altnote" style="font-size:14px;margin:6px 0 10px;min-height:3em"></div>
+    <div id="ch04-altgraph"></div>
+    <pre class="output"><code id="ch04-alttext"></code></pre>
+  </div>
+
+  <h3>Hammer it: what changed between the altitudes, op by op</h3>
+  <table>
+    <tr><th></th><th>① tensor graph</th><th>② kernel AST</th><th>③ linear program</th></tr>
+    <tr><td>storage</td><td><code>BUFFER</code> with a real device Buffer in its ParamArg</td><td><code>PARAM slot=0,1,2</code>: abstract kernel arguments</td><td>same PARAMs, plus a <code>BUFFER addrspace=REG</code> (the accumulator <code>buf0[1]</code>)</td></tr>
+    <tr><td>layout</td><td><code>RESHAPE</code> (6,)→(2,3), <code>PERMUTE</code> (1,0)</td><td>gone, replaced by the index <code>r1*3 + r0</code></td><td>the same arithmetic, now in <code>i32</code> (<code>CAST</code>s)</td></tr>
+    <tr><td>iteration</td><td>implicit in shapes</td><td><code>RANGE</code> ×2 + <code>END</code></td><td><code>RANGE</code>/<code>END</code>, sequenced by <code>AFTER</code></td></tr>
+    <tr><td>the sum</td><td><code>REDUCE (ADD, 1)</code>, a shape-level reduce of 1 leading axis</td><td><code>REDUCE(x, r0)</code>, a reduce over a loop variable</td><td>no REDUCE: <code>STORE 0</code> into the accumulator, then load/add/store in the loop</td></tr>
+    <tr><td>memory access</td><td>implicit</td><td><code>INDEX</code> (a pointer, no load yet)</td><td><code>INDEX</code> → <code>LOAD</code>, <code>STORE</code></td></tr>
+    <tr><td>structure</td><td>a DAG</td><td>a DAG rooted at <code>SINK(KernelInfo)</code></td><td>a <b>list</b> (<code>LINEAR</code>) in execution order (still UOps, srcs still point at earlier lines)</td></tr>
+  </table>
+  <div class="callout aha"><span class="title">The SINK is the same kind of object as the kernel</span>
+  The schedule is a UOp too: <code>LINEAR</code> of <code>CALL</code>s, where each CALL's <code>src[0]</code> is the kernel AST and the rest are the
+  BUFFERs it runs on. Compiling the CALL replaces its body: <code>SINK</code> becomes <code>PROGRAM(SINK, LINEAR, SOURCE, BINARY)</code>
+  (<a class="src" data-path="tinygrad/codegen/__init__.py" data-line="469">do_to_program</a>). Each stage appends a source to the PROGRAM, and the
+  PatternMatcher <code>pm_to_program</code> picks the next step by matching how many sources the PROGRAM already has.</div>
+
+  <!-- ===================================================================== -->
+  <h2 id="vminmax"><span class="sec">4.12</span>A preview: every int UOp knows its range</h2>
+  <p>One more derived property matters everywhere: <code>vmin</code>/<code>vmax</code>, a conservative interval for the node's value, computed by
+  <a class="src" data-path="tinygrad/uop/ops.py" data-line="1054">_min_max</a> from the sources' intervals. A Variable's interval is in its
+  ParamArg, a RANGE's is <code>[0, end-1]</code>, and ADD, MUL, DIV and MOD combine them. That lets symbolic simplification prove facts like "this mod is
+  a no-op". <a href="06-symbolic.html">Chapter 6</a> covers it fully.</p>
+  <pre class="output"><code>=== 11. vmin / vmax (range analysis, chapter 6) ===
+x in [0, 10]  -&gt;  x*2+1 in [1, 21]  -&gt;  (x*2+1)//4 in [0, 5]</code></pre>
+
+  <!-- ===================================================================== -->
+  <h2 id="quiz"><span class="sec">4.13</span>Check yourself</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q">Why can't you just do <code>u.src = (a, b)</code> to edit a graph?</div>
+    <button class="opt">Because <code>src</code> is a tuple, and tuples are immutable</button>
+    <button class="opt">Because <code>UOp</code> is a frozen dataclass</button>
+    <button class="opt">Because <code>u</code> may be shared by many graphs (hash-consing), its cache key would go stale, and cached derived properties (dtype, key, shape) would be wrong</button>
+    <div class="explain">Assigning a new tuple to the attribute is technically possible (the comment says <i>"this should be frozen, but frozen is slower"</i>),
+    but it breaks every invariant: the ucache entry is keyed on the old <code>(op, src, arg)</code>, every parent sharing <code>u</code> silently changes, and
+    <code>__dict__</code>-cached properties are stale. Use <code>replace</code>/<code>substitute</code>/<code>graph_rewrite</code>.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">In <code>(x+y)*(x+y)</code>, how many ADD nodes exist, and how does <code>repr</code> show it?</div>
+    <button class="opt">One ADD; pretty_print names it once with <code>x2:=</code> and reuses the name</button>
+    <button class="opt">Two identical ADDs that compare equal with <code>==</code></button>
+    <button class="opt">One ADD, but only after running symbolic CSE</button>
+    <div class="explain">The second <code>x+y</code> returns the cached object at construction, so no pass is needed. In the toposort demo the MUL has two edges to the same ADD.</div>
+  </div>
+  <div class="quiz" data-answer="3">
+    <div class="q">Which of these is stored as a field on a UOp (not derived)?</div>
+    <button class="opt">dtype</button><button class="opt">shape</button><button class="opt">key</button><button class="opt">arg</button>
+    <div class="explain"><code>UOp.__dataclass_fields__</code> is exactly <code>op, src, arg</code>. dtype comes from <code>dtype_from_uop</code>, shape from <code>_shape</code>, key from sha256;
+    all are cached in <code>__dict__</code> the first time they're read.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">A kernel AST built in one process and an identical one built a week later in another process: what guarantees they share the compiled-program cache entry?</div>
+    <button class="opt"><code>id()</code> of the SINK</button>
+    <button class="opt"><code>ast.key</code>, a sha256 over op/dtype/arg and the sources' keys, used by <code>to_program_key</code></button>
+    <button class="opt">The kernel name in <code>KernelInfo</code></button>
+    <div class="explain">Identity is per-process; <code>key</code> is content-addressed. The name is part of the arg, so it is part of the key, but on its own it is not enough.</div>
+  </div>
+
+  <div class="summary-box"><h3>Chapter summary</h3><ul>
+    <li>A <b>UOp</b> stores only <code>op</code>, <code>src</code>, <code>arg</code>. dtype, shape, key, device, ranges and vmin/vmax are derived, cached, and
+    computed iteratively (<code>recursive_property</code>).</li>
+    <li><b>Hash-consing</b> (<code>UOpMetaClass.ucache</code>, keyed on <code>(op, src, arg, type(arg))</code>, holding weakrefs) makes structural equality the same as identity,
+    gives free CSE and cheap dict keys, and forces immutability. <code>__del__</code> evicts dead entries.</li>
+    <li><b><code>key</code></b> is a content hash for caches that cross processes, such as the compiled-program cache.</li>
+    <li><b>Ops</b> is ordered by role. The order matters through <code>tuplize</code> (linearizer tie-breaks, commutative canonicalization: consts go right).
+    <b>GroupOp</b> names the families and algebraic properties that patterns match on.</li>
+    <li><b>toposort</b> is an iterative DFS returning an ordered dict. <code>replace</code>/<code>substitute</code> build new graphs that share untouched nodes.</li>
+    <li>Movement args are <b>sources</b> (STACKs of CONSTs), which is what makes symbolic shapes possible.</li>
+    <li>The same class spans the <b>tensor graph</b> (shapes, movement), the <b>kernel AST</b> (RANGE/INDEX/STORE/SINK), and the <b>linear program</b>
+    (LOAD/STORE/casts in a LINEAR). The schedule (LINEAR of CALLs) and PROGRAM are UOps too. Next: the engine that transforms one into the other,
+    <a href="05-pattern-matching.html">Chapter 5</a>.</li>
+  </ul></div>
+</main>
+</div>
+<script>
+(function () {
+const G = Guide;
+
+// ------------------------------------------------------------------ Demo: constructor playground
+// mirrors UOpMetaClass.__call__: key = (op, src ids, arg, type(arg)); weak cache; gc = drop unreachable
+(function () {
+  const root = G.$("#demo-play");
+  let cache, nodes, handles, sel, nid;
+  const LEAVES = { x: ["PARAM", "x", "var", "weakint"], y: ["PARAM", "y", "var", "weakint"], i1: ["CONST", 1, "int", "weakint"],
+    f1: ["CONST", 1, "float", "weakfloat"], b1: ["CONST", true, "bool", "bool"], i2: ["CONST", 2, "int", "weakint"] };
+  const promo = (ds) => ds.includes("weakfloat") ? "weakfloat" : ds.every(d => d === "bool") ? "bool" : "weakint";
+  function reset() { cache = new Map(); nodes = new Map(); handles = []; sel = []; nid = 0; render(); log("Cache empty. Click a leaf to build a node."); }
+  function fmtArg(arg, t) { return t === "float" ? Number(arg).toFixed(1) : t === "var" ? `ParamArg(name='${arg}')` : String(arg === true ? "True" : arg); }
+  function make(op, src, arg, t) {
+    const key = JSON.stringify([op, src.map(s => s.id), arg ?? null, t]);
+    const keyStr = `(${op}, (${src.map(s => s.id).join(", ")}${src.length === 1 ? "," : ""}), ${arg === undefined ? "None" : fmtArg(arg, t)}, ${t || "NoneType"})`;
+    let n = cache.get(key), hit = !!n;
+    if (!n) {
+      const dtype = op === "CMPLT" ? "bool" : op === "PARAM" || op === "CONST" ? LEAVES_DT(t) : op === "WHERE" ? promo(src.slice(1).map(s => s.dtype)) : promo(src.map(s => s.dtype));
+      n = { id: "u" + (nid++), op, src, arg, t, dtype, key, keyStr };
+      n.expr = op === "PARAM" ? arg : op === "CONST" ? fmtArg(arg, t) : op === "ADD" ? `(${src[0].expr}+${src[1].expr})` : op === "MUL" ? `(${src[0].expr}*${src[1].expr})` :
+        op === "MAX" ? `max(${src[0].expr}, ${src[1].expr})` : op === "CMPLT" ? `(${src[0].expr}<${src[1].expr})` : `(${src[1].expr} if ${src[0].expr} else ${src[2].expr})`;
+      cache.set(key, n); nodes.set(n.id, n);
+    }
+    return { n, hit };
+  }
+  function LEAVES_DT(t) { return t === "float" ? "weakfloat" : t === "bool" ? "bool" : "weakint"; }
+  const flash = [];
+  function build(op, src, arg, t, quiet) {
+    const { n, hit } = make(op, src, arg, t);
+    flash.push([n.key, hit]);
+    const h = { name: "h" + handles.length, node: n, alive: true }; handles.push(h);
+    if (!quiet) log(`${h.name} = UOp(Ops.${op}${src.length ? ", src=(" + src.map(s => s.id).join(", ") + ")" : ""}${arg !== undefined ? ", arg=" + fmtArg(arg, t) : ""})\n→ key ${n.keyStr} … ${hit ? "HIT: returned existing object " + n.id : "MISS: created " + n.id}`);
+    return h;
+  }
+  function leaf(k) { const [op, arg, t] = LEAVES[k]; return build(op, [], arg, t); }
+  function log(s) { G.$("#ch04-log", root).textContent = s; }
+  function live() { const s = new Set(); const st = handles.filter(h => h.alive).map(h => h.node); while (st.length) { const n = st.pop(); if (s.has(n)) continue; s.add(n); st.push(...n.src); } return s; }
+  let gctl = null;
+  function render() {
+    const hs = G.$("#ch04-handles", root); hs.innerHTML = "";
+    hs.append(G.el("b", { style: "font-size:12px;color:var(--dim);margin-right:6px" }, "handles (Python variables):"));
+    handles.forEach(h => hs.append(G.el("span", { class: (sel.includes(h) ? "sel " : "") + (h.alive ? "" : "dropped"), onclick: () => { if (!h.alive) return; sel = sel.includes(h) ? sel.filter(x => x !== h) : [...sel, h]; render(); } },
+      `${h.name}→${h.node.id}`, G.el("small", { style: "color:var(--dim)" }, " " + h.node.expr.slice(0, 22)))));
+    const ct = G.$("#ch04-cache", root); ct.innerHTML = "";
+    const tb = G.el("table", {}, G.el("tr", {}, G.el("th", {}, "id"), G.el("th", {}, "ucache key (op, src, arg, type)"), G.el("th", {}, "dtype")));
+    const fl = new Map(flash.splice(0));
+    for (const n of cache.values()) tb.append(G.el("tr", { class: fl.has(n.key) ? (fl.get(n.key) ? "hit" : "miss") : "" }, G.el("td", {}, n.id), G.el("td", {}, n.keyStr), G.el("td", {}, n.dtype)));
+    ct.append(G.el("div", { style: "padding:4px 8px;color:var(--dim)" }, `len(ucache) = ${cache.size}`), tb);
+    const g = { nodes: [...cache.values()].map(n => ({ id: n.id, op: n.op, label: `${n.op} ${n.id}`, sub: n.expr.slice(0, 26) + "  " + n.dtype, dtype: "dtypes." + n.dtype, arg: n.arg === undefined ? "None" : fmtArg(n.arg, n.t),
+      note: "key " + n.keyStr })), edges: [] };
+    for (const n of cache.values()) n.src.forEach((s, i) => g.edges.push([s.id, n.id, i]));
+    if (!g.nodes.length) g.nodes.push({ id: "empty", op: "NOOP", label: "(empty cache)" });
+    if (!gctl) gctl = G.uopGraph("#ch04-pgraph", g, { legend: false, height: 340 }); else gctl.setGraph(g);
+    const s = new Set(sel.map(h => h.node.id)); gctl.highlight([...s], { dimOthers: false });
+  }
+  G.$$("[data-leaf]", root).forEach(b => b.onclick = () => { leaf(b.dataset.leaf); render(); });
+  G.$$("[data-op]", root).forEach(b => b.onclick = () => {
+    const op = b.dataset.op, need = op === "WHERE" ? 3 : 2;
+    if (sel.length !== need) { log(`select exactly ${need} handles first (click them, in order) — you have ${sel.length}`); return; }
+    if (op === "WHERE" && sel[0].node.dtype !== "bool") { log("RuntimeError: where cond must be bool (dtype_from_uop) — pick a CMPLT or True first"); return; }
+    build(op, sel.map(h => h.node)); sel = []; render();
+  });
+  G.$("#ch04-twice").onclick = () => {
+    const x = build("PARAM", [], "x", "var", true), two = build("CONST", [], 2, "int", true), one = build("CONST", [], 1, "int", true);
+    const m = build("MUL", [x.node, two.node], undefined, undefined, true), a = build("ADD", [m.node, one.node], undefined, undefined, true);
+    const x2 = build("PARAM", [], "x", "var", true), two2 = build("CONST", [], 2, "int", true), one2 = build("CONST", [], 1, "int", true);
+    const m2 = build("MUL", [x2.node, two2.node], undefined, undefined, true), b = build("ADD", [m2.node, one2.node], undefined, undefined, true);
+    log(`a = x*2+1  →  ${a.node.id}\nb = x*2+1  →  ${b.node.id}      a is b: ${a.node === b.node ? "True" : "False"}   (the second build hit the cache 5 times)`); render();
+  };
+  G.$("#ch04-cse").onclick = () => {
+    const x = build("PARAM", [], "x", "var", true), y = build("PARAM", [], "y", "var", true);
+    const s1 = build("ADD", [x.node, y.node], undefined, undefined, true), s2 = build("ADD", [x.node, y.node], undefined, undefined, true);
+    const m = build("MUL", [s1.node, s2.node], undefined, undefined, true);
+    log(`(x+y)*(x+y): the second ADD was a HIT (${s2.node.id}), so the MUL's two srcs are the same object → free CSE`); render();
+  };
+  G.$("#ch04-drop").onclick = () => { if (!sel.length) { log("select handle(s) to drop"); return; } sel.forEach(h => h.alive = false); log(`del ${sel.map(h => h.name).join(", ")}   (the cache only holds weakrefs; press gc)`); sel = []; render(); };
+  G.$("#ch04-gc").onclick = () => { const l = live(); const dead = [...cache.values()].filter(n => !l.has(n)); dead.forEach(n => { cache.delete(n.key); nodes.delete(n.id); });
+    log(`gc.collect(): ${dead.length} node(s) unreachable from live handles → UOp.__del__ removed their ucache entries: ${dead.map(n => n.id).join(", ") || "(none)"}`); render(); };
+  G.$("#ch04-reset").onclick = reset;
+  reset();
+})();
+
+// ------------------------------------------------------------------ Demo: Ops atlas
+const INFO = {
+  SPECIAL: ["program", "(bound,)", "str name e.g. 'gidx0'", "A GPU launch index (global/local id). pm_range_to_special turns GLOBAL/LOCAL RANGEs into SPECIALs late in codegen."],
+  BUFFER: ["everywhere", "(size, [DEVICE range])", "ParamArg (with .buffer)", "Bound storage. In the tensor graph it owns a real device Buffer; in programs, REG/LOCAL scratch buffers (accumulators, shared memory)."],
+  ALLOC: ["schedule", "(size, [DEVICE range])", "ParamArg (no buffer)", "Declared, not yet bound storage (call outputs). Lowered to BUFFER at linearization (pm_alloc_to_buf)."],
+  NOOP: ["everywhere", "0..n", "None", "Placeholder that renders to nothing (e.g. the result of folding a self-store)."],
+  REWRITE_ERROR: ["meta", "srcs of the failing node", "str traceback", "Created only by TrackedPatternMatcher when a rule raises, so VIZ can show where the rewrite crashed."],
+  PARAM: ["everywhere", "(size or empty STACK,)", "ParamArg", "A kernel/function argument (by slot). With addrspace=ALU and vmin_vmax it is a symbolic Variable."],
+  CALL: ["schedule", "(body, *args)", "CallInfo", "Invoke a body (SINK/PROGRAM/LINEAR/STORE/CUSTOM_FUNCTION) on argument UOps. One kernel launch = one CALL."],
+  PROGRAM: ["schedule", "(SINK, [LINEAR], [SOURCE], [BINARY])", "ProgramInfo", "A kernel growing through codegen: each stage appends a src."],
+  LINEAR: ["schedule", "ordered list", "None / name", "An ordered list of UOps: the schedule (list of CALLs) or a linearized program."],
+  SOURCE: ["schedule", "()", "str", "Rendered source code (C, PTX, …)."],
+  BINARY: ["schedule", "()", "bytes", "Compiled machine code."],
+  SINK: ["everywhere", "outputs", "None / KernelInfo", "Void root that groups outputs. A kernel AST is a SINK with KernelInfo."],
+  AFTER: ["everywhere", "(value, *deps)", "None", "Passes src[0] through but orders it after src[1:] (a store, a loop): explicit side-effect sequencing."],
+  STACK: ["everywhere", "elements", "None", "Vector creation/selection; also shape args (STACK of CONSTs). Empty STACK = the () shape."],
+  GETADDR: ["program", "(buffer,)", "device", "The uint64 device address of a buffer (HCQ command queues)."],
+  INDEX: ["kernel", "(buf, *idx)", "None", "Pointer arithmetic: 'BinaryOp similar to ADD, but on pointers'. No memory access by itself."],
+  SHRINK: ["tensor", "(x, offsets STACK, sizes STACK)", "None (marg=(offset,size))", "Movement: crop. Also allowed in programs as a sub-buffer view of a buffer."],
+  LOAD: ["program", "(index, [alt, gate])", "None", "Read memory through an INDEX (optionally gated, with an alternative value)."],
+  STORE: ["everywhere", "(target, value, [gate])", "None", "Write. In the tensor graph an assign; in kernels the output write."],
+  WMMA: ["program", "(a, b, acc)", "(dims, dtype_in, threads, upcast_axes)", "Tensor-core matrix multiply-accumulate (Chapter 14)."],
+  CAST: ["everywhere", "(x,)", "DType", "Value conversion; also how a CONST states its width."],
+  BITCAST: ["everywhere", "(x,)", "DType", "Reinterpret bits."],
+  EXP2: ["everywhere", "(x,)", "None", "2**x (float)."], LOG2: ["everywhere", "(x,)", "None", "log2 x (float)."], SIN: ["everywhere", "(x,)", "None", "sin x (float)."],
+  SQRT: ["everywhere", "(x,)", "None", "sqrt."], RECIP: ["everywhere", "(x,)", "None", "1/x."],
+  NEG: ["program", "(x,)", "None", "-x; created by decompositions when the renderer supports it (x*-1 in the graph otherwise)."],
+  TRUNC: ["everywhere", "(x,)", "None", "Round toward zero."],
+  ADD: ["everywhere", "(a, b)", "None", "a+b (also index math)."], MUL: ["everywhere", "(a, b)", "None", "a*b."],
+  SHL: ["everywhere", "(a, b)", "None", "Shift left (ints)."], SHR: ["everywhere", "(a, b)", "None", "Shift right (ints)."],
+  TRUNCDIV: ["program", "(a, b)", "None", "C-style truncating int division; DIV is lowered to it in decompositions."],
+  MAX: ["everywhere", "(a, b)", "None", "max(a,b)."],
+  TRUNCMOD: ["program", "(a, b)", "None", "C-style remainder (sign of a)."],
+  CMPLT: ["everywhere", "(a, b)", "None", "a<b → bool."], CMPNE: ["program", "(a, b)", "None", "a!=b; in the graph != is built as NOT(a==b) and folded back late when supported."],
+  CMPEQ: ["everywhere", "(a, b)", "None", "a==b → bool."], XOR: ["everywhere", "(a, b)", "None", "bitwise/bool xor."], OR: ["everywhere", "(a, b)", "None", "bitwise/bool or."], AND: ["everywhere", "(a, b)", "None", "bitwise/bool and."],
+  THREEFRY: ["tensor", "(x, key)", "None", "Threefry2x32 random bits (uint64); decomposed into ALU ops before programs."],
+  SUB: ["program", "(a, b)", "None", "a-b; Tensor/UOp subtraction builds a+(-1*b), SUB appears via decompositions."],
+  FDIV: ["program", "(a, b)", "None", "Float division a/b; created from x*(1/y) when the renderer has a divide."],
+  POW: ["tensor", "(base, exp)", "None", "Power; lowered by xpow/xpow_int in `sym`."],
+  DIV: ["kernel", "(a, b)", "None", "Floor division (Python //) for ints; index math lives in DIV/MOD."],
+  MOD: ["kernel", "(a, b)", "None", "Floor modulo (Python %)."],
+  WHERE: ["everywhere", "(cond, t, f)", "None", "Select. With f = CONST Invalid it is a 'valid' gate (Chapter 6)."],
+  MULACC: ["program", "(a, b, c)", "None", "Fused a*b+c, renderer-specific."],
+  BARRIER: ["program", "srcs", "None", "Workgroup synchronization (local memory)."],
+  RANGE: ["kernel", "(bound,)", "(AxisType, axis_id, …)", "A loop variable in [0, bound). Appears in the tensor graph only for multi-device DEVICE ranges and shard indices."],
+  IF: ["program", "(gate, index)", "None", "Begin a guarded block (gated stores on targets without predication)."],
+  END: ["kernel", "(effect, *ranges)", "None", "Closes loops around a void effect (a STORE)."],
+  ENDIF: ["program", "(IF,)", "None", "Ends an IF block."],
+  BACKEDGE: ["program", "(body, unbounded RANGE, cond)", "None", "Conditional loop: repeat while cond."],
+  CONST: ["everywhere", "()", "Python value / Invalid", "A constant; dtype derived from the Python type (int→weakint, float→weakfloat, bool→bool)."],
+  CUSTOM: ["program", "srcs", "(format str, DType)", "Emit a custom statement into generated code."],
+  CUSTOMI: ["program", "srcs", "(format str, DType)", "Same, inline expression. Also used as IR inside the UPat compiler."],
+  INS: ["program", "srcs / regs", "(instruction, DType, *regs)", "A machine instruction (ISA renderers, e.g. x86, AMD asm)."],
+  CONTIGUOUS_BACKWARD: ["tensor", "(x,)", "None", "Make the gradient contiguous (affects the backward schedule)."],
+  DETACH: ["tensor", "(x,)", "None", "Stop gradients."],
+  STAGE: ["tensor", "(x, *ranges)", "None / BufferizeOpts", "A materialization point: Tensor.contiguous() creates one; rangeify turns it into a real buffer."],
+  COPY: ["tensor", "(x, [DEVICE range])", "device str", "Copy to another device."],
+  MSELECT: ["schedule", "(multi,)", "int", "Pick one device's buffer from a multi-device buffer."],
+  MSTACK: ["schedule", "per-device buffers", "None", "Combine per-device buffers into one multi-buffer."],
+  CUSTOM_FUNCTION: ["schedule", "args", "CustomFunction(name, dtype)", "Reference to an external function, called via CALL."],
+  RESHAPE: ["tensor", "(x, shape STACK)", "None (marg = new shape)", "Movement: reinterpret shape."],
+  PERMUTE: ["tensor", "(x, order STACK)", "None (marg = order)", "Movement: reorder axes."],
+  EXPAND: ["tensor", "(x, shape STACK)", "None (marg = new leading dims)", "Movement: broadcast (adds leading dims in this version)."],
+  PAD: ["tensor", "(x, offsets, sizes)", "None (marg=(offset,new_size))", "Movement: zero-pad."],
+  UNSHARD: ["tensor", "(x, *shard ranges)", "tuple of axes", "'really a movement op': a value sharded over a range (multi-device, Chapter 19)."],
+  REDUCE: ["tensor", "(x, *ranges)", "(op, num_axes)", "Reduce by ADD/MUL/MAX. Tensor graph: leading axes; kernel: over RANGE srcs. Removed in codegen (accumulators)."],
+  ALLREDUCE: ["tensor", "(x,)", "(op, device)", "Cross-device reduce."],
+  PYLITERAL: ["meta", "()", "Python literal", "Pattern-compiler IR only (upat.py)."],
+};
+const famOf = {}; for (const [k, g] of Object.entries(G.OP_GROUPS)) for (const o of g.ops) famOf[o] = k;
+const FAMS = { buffer: "buffers", movement: "movement", alu: "ALU", reduce: "reduce", memory: "load/store/index", control: "control", const: "const/misc", other: "other" };
+const SEEN = { tensor: "tensor", schedule: "sched", ast: "ast", codegen: "codegen", program: "prog", runtime: "rt" };
+G.loadJSON("../data/ch04_ops_atlas.json").then(d => {
+  const body = G.$("#ch04-atlas-body");
+  let fam = null, stage = null;
+  const famBar = G.$("#ch04-fam"), stBar = G.$("#ch04-stage");
+  const mkBtns = (bar, items, get, set) => { bar.innerHTML = ""; [["all", null], ...items].forEach(([lab, v]) => bar.append(G.el("button", { class: get() === v ? "active" : "", style: "font-size:12px;padding:2px 8px", onclick: () => { set(v); draw(); } }, lab))); };
+  function draw() {
+    mkBtns(famBar, Object.entries(FAMS).map(([k, v]) => [v, k]), () => fam, v => fam = v);
+    mkBtns(stBar, ["tensor", "kernel", "program", "everywhere", "schedule", "meta"].map(s => [s, s]), () => stage, v => stage = v);
+    const q = G.$("#ch04-q").value.toLowerCase(); body.innerHTML = ""; let n = 0;
+    for (const o of d.ops) {
+      const inf = INFO[o.name] || ["?", "?", "?", ""], f = famOf[o.name] || "other";
+      const text = [o.name, FAMS[f], inf.join(" "), o.comment, o.section, o.groups.join(" ")].join(" ").toLowerCase();
+      if (q && !text.includes(q)) continue; if (fam && f !== fam) continue; if (stage && inf[0] !== stage) continue;
+      n++;
+      const col = G.opColor(o.name);
+      const spec = G.el("td", { class: "tags" }, [["T", o.spec_tensor, "var(--teal)"], ["P", o.spec_program, "var(--blue)"], ["K", o.spec_kernel_graph, "var(--gold)"]].map(([l, on, c]) => G.el("span", { class: "tag" + (on ? " on" : ""), style: on ? `background:${c}` : "" }, l)));
+      const seen = G.el("td", { class: "tags" }, Object.entries(SEEN).map(([k, l]) => G.el("span", { class: "tag" + (o.seen.includes(k) ? " on" : ""), style: o.seen.includes(k) ? "background:var(--green)" : "opacity:.35" }, l)));
+      const tr = G.el("tr", { class: "arow" }, G.el("td", { class: "mono" }, o.value), G.el("td", { class: "nm", style: `color:${col}` }, o.name),
+        G.el("td", {}, G.el("span", { style: `display:inline-block;width:9px;height:9px;border-radius:2px;background:${col};margin-right:5px` }), FAMS[f]),
+        G.el("td", {}, inf[0]), G.el("td", { class: "mono" }, inf[1]), G.el("td", { class: "mono" }, inf[2]), spec, seen);
+      const det = G.el("tr", { class: "detail", style: "display:none" }, G.el("td", { colspan: 8, html:
+        `<b style="color:${col}">${o.name}</b> — ${G.escape(inf[3])}<br><span style="color:var(--gold)">enum section:</span> ${G.escape(o.section)} &nbsp; ` +
+        (o.comment ? `<span style="color:var(--gold)">source comment:</span> <i>${G.escape(o.comment)}</i> &nbsp; ` : "") +
+        (o.groups.length ? `<span style="color:var(--gold)">GroupOp:</span> ${o.groups.join(", ")}` : "") }));
+      tr.onclick = () => det.style.display = det.style.display === "none" ? "" : "none";
+      body.append(tr, det);
+    }
+    G.$("#ch04-count").textContent = `${n} / ${d.ops.length} ops shown`;
+  }
+  G.$("#ch04-q").addEventListener("input", draw);
+  draw();
+});
+
+// ------------------------------------------------------------------ Demo: toposort animation
+G.loadJSON("../data/ch04_toposort.json").then(d => {
+  const g = d.graph; const by = new Map(g.nodes.map(n => [n.id, n]));
+  const ctl = G.uopGraph("#ch04-topo-graph", g, { rankdir: "BT", legend: false, height: 420 });
+  const name = id => `${by.get(id).op}:${by.get(id).sub}`.slice(0, 18);
+  // exact port of UOp.toposort (gate=None, enter_calls irrelevant here)
+  const steps = []; const cache = []; const inCache = new Set(); const stack = [[d.root, false]];
+  steps.push({ caption: `start: <code>stack = [(root, False)]</code>`, stack: stack.slice(), out: [], cur: null, ev: null });
+  while (stack.length) {
+    const [node, visited] = stack.pop();
+    if (inCache.has(node)) { steps.push({ caption: `pop <b>${G.escape(name(node))}</b>: already in cache → <code>continue</code> (a shared node, reached twice)`, stack: stack.slice(), out: cache.slice(), cur: node }); continue; }
+    if (!visited) {
+      stack.push([node, true]);
+      const srcs = d.src_order[node];
+      for (const s of srcs.slice().reverse()) stack.push([s, false]);
+      steps.push({ caption: `pop <b>${G.escape(name(node))}</b> (first visit): push it back with visited=True, then push its ${srcs.length} src(s) reversed so src[0] is on top`, stack: stack.slice(), out: cache.slice(), cur: node });
+    } else { cache.push(node); inCache.add(node); steps.push({ caption: `pop <b>${G.escape(name(node))}</b> (visited=True): all srcs done → <code>cache[node] = None</code> (emit #${cache.length - 1})`, stack: stack.slice(), out: cache.slice(), cur: node, ev: node }); }
+  }
+  G.stepper("#ch04-topo-step", steps, (i, s) => {
+    ctl.highlight(s.cur ? [s.cur, ...s.out] : s.out, { dimOthers: true });
+    G.$("#ch04-stack").innerHTML = ""; s.stack.forEach(([id, v]) => G.$("#ch04-stack").append(G.el("span", { class: "chip" + (v ? " v" : "") }, name(id))));
+    G.$("#ch04-out").innerHTML = ""; s.out.forEach((id, k) => G.$("#ch04-out").append(G.el("span", { class: "chip" + (id === s.ev ? " new" : "") }, `${k}:${name(id)}`)));
+  }, { autoplayMs: 1100 });
+  const ok = JSON.stringify(cache) === JSON.stringify(d.order);
+  G.$("#ch04-topo-check").innerHTML = `<span class="ch04-badge">${ok ? "✓ JS order == tinygrad toposort() order" : "✗ mismatch"}</span>`;
+});
+
+// ------------------------------------------------------------------ Demo: three altitudes
+G.loadJSON("../data/ch04_altitudes.json").then(d => {
+  const progText = d.program_list.map(u => `%${String(u.i).padEnd(3)}${u.op.toLowerCase().padEnd(7)} ${u.dtype.padEnd(9)} ${u.src.map(s => "%" + s).join(", ")}${u.arg ? "  : " + u.arg : ""}`).join("\n");
+  const S = [
+    { name: "① tensor graph", sub: "c.uop", g: d.tensor, text: d.tensor_uir, note: "What <code>(a*2+b).sum(axis=1)</code> builds. Shapes everywhere, BUFFERs own memory, RESHAPE/PERMUTE are views, REDUCE reduces a leading axis. No loops, no kernels." },
+    { name: "② kernel AST", sub: "CALL.src[0]", g: d.ast, text: d.ast_uir, note: "After the scheduler (rangeify, Ch 10–13): movement ops became the index <code>r1*3+r0</code>, REDUCE now reduces over RANGE r0, the output is a STORE through an INDEX, closed by END and rooted at SINK." },
+    { name: "③ linear program", sub: "PROGRAM.src[1]", g: d.program, text: progText, note: "After codegen with NOOPT=1 (Ch 15–16): the REDUCE became a REG accumulator (BUFFER + STOREs + LOADs), indices are CAST to i32, AFTER orders effects. Labels show the line number in the LINEAR list." },
+    { name: "C source", sub: "PROGRAM.src[2]", g: d.program, text: d.c_source, note: "The renderer walks the LINEAR list and prints one C statement per UOp (inlining single-use ALU expressions). Same graph as ③." },
+  ];
+  const ctl = G.uopGraph("#ch04-altgraph", S[0].g, { legend: true, height: 640, compact: true });
+  const pipe = G.pipeline("#ch04-pipe", S.map(s => ({ name: s.name, sub: s.sub })), (i) => {
+    ctl.setGraph(S[i].g); ctl.clear();
+    G.$("#ch04-alttext").textContent = S[i].text; G.$("#ch04-altnote").innerHTML = S[i].note;
+  });
+  pipe.select(0);
+});
+})();
+</script>
+</body>
+</html>

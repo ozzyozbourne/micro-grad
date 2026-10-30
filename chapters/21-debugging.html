@@ -1,0 +1,1295 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>21. Debugging &amp; introspection — tinygrad internals</title>
+<link rel="stylesheet" href="../assets/vendor/hljs-dark.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/vendor/highlight.min.js"></script>
+<script src="../assets/vendor/dagre.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/chapters.js"></script>
+<script src="../assets/guide.js"></script>
+<style>
+.ch21-dbg { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 12px; }
+@media (max-width: 1000px) { .ch21-dbg { grid-template-columns: 1fr; } }
+.ch21-term { background: #0a0c0e; border: 1px solid var(--line); border-radius: 8px; font-family: var(--mono); font-size: 12px; line-height: 1.45; max-height: 520px; overflow: auto; padding: 8px 0; }
+.ch21-term div { padding: 0 12px 0 26px; white-space: pre; position: relative; cursor: default; }
+.ch21-term div::before { content: attr(data-g); position: absolute; left: 8px; color: var(--green); }
+.ch21-term div:hover { background: rgba(255,255,255,.06); }
+.ch21-term div.new { background: rgba(244,211,69,.07); }
+.ch21-term .k-tqdm { color: #9aa3ad; } .ch21-term .k-device { color: var(--purple); } .ch21-term .k-schedule { color: var(--gold); }
+.ch21-term .k-kernel-run { color: var(--green); } .ch21-term .k-dlopen { color: #6b7580; } .ch21-term .k-opts { color: var(--pink); }
+.ch21-term .k-code\/asm { color: #cfd8dc; } .ch21-term .k-uir { color: var(--blue); } .ch21-term .k-alloc { color: var(--brown); }
+.ch21-term .k-system { color: var(--teal); } .ch21-term .k-sqlite { color: var(--red); } .ch21-term .k-result { color: var(--yellow); font-weight: 700; }
+.ch21-note { background: var(--bg3); border-radius: 8px; padding: 10px 12px; font-size: 13.5px; min-height: 120px; }
+.ch21-note h4 { margin: 0 0 6px; }
+.ch21-levels { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+.ch21-levels input { width: 260px; }
+.ch21-legend span { font-family: var(--mono); font-size: 11.5px; margin-right: 10px; }
+.ch21-trace { display: grid; grid-template-columns: 290px minmax(0, 1fr); gap: 12px; }
+@media (max-width: 1000px) { .ch21-trace { grid-template-columns: 1fr; } }
+.ch21-steps { max-height: 640px; overflow: auto; background: #0d0f12; border: 1px solid var(--line); border-radius: 8px; font-size: 12.5px; font-family: var(--mono); }
+.ch21-steps .grp { color: var(--gold); padding: 6px 8px; cursor: pointer; border-top: 1px solid var(--line); font-weight: 700; }
+.ch21-steps .st { padding: 2px 8px 2px 18px; color: var(--dim); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ch21-steps .st.has { color: var(--fg); }
+.ch21-steps .st.has b { color: var(--yellow); font-weight: 500; }
+.ch21-steps .st.sel { background: rgba(88,196,221,.18); color: var(--blue); }
+.ch21-steps .st:hover { background: var(--bg3); }
+.ch21-match { font-family: var(--mono); font-size: 12px; background: #0d0f12; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin: 8px 0; white-space: pre-wrap; }
+.ch21-match .loc { color: var(--gold); } .ch21-match .del { color: var(--red); } .ch21-match .add { color: var(--green); }
+.ch21-spec { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 1000px) { .ch21-spec { grid-template-columns: 1fr; } }
+.ch21-case { border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; margin: 4px 0; cursor: pointer; font-size: 13.5px; }
+.ch21-case.ok { border-left: 4px solid var(--green); } .ch21-case.bad { border-left: 4px solid var(--red); }
+.ch21-case.sel { background: var(--bg3); }
+.ch21-verdict { font-family: var(--mono); font-size: 12.5px; padding: 8px 10px; border-radius: 6px; margin-top: 8px; white-space: pre-wrap; }
+.ch21-verdict.ok { background: rgba(131,193,103,.12); border: 1px solid var(--green); }
+.ch21-verdict.bad { background: rgba(252,98,85,.12); border: 1px solid var(--red); }
+.ch21-builder .row { display: flex; gap: 8px; align-items: center; margin: 6px 0; flex-wrap: wrap; font-size: 13.5px; }
+.ch21-play select { min-width: 360px; }
+.ch21-recipe { background: var(--bg2); border-left: 4px solid var(--teal); padding: 10px 14px; border-radius: 6px; margin-top: 10px; }
+.ch21-recipe ol { margin: 4px 0; padding-left: 20px; } .ch21-recipe li { margin: 4px 0; }
+.ch21-shot { width: 100%; border: 1px solid var(--line); border-radius: 8px; }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="sidebar" id="sidebar"></nav>
+<main>
+  <h1><span class="chnum">CHAPTER 21</span>Debugging &amp; introspection</h1>
+  <p class="lede">tinygrad is small enough to read, and it comes with tools to <i>watch</i> itself: environment variables that print every stage
+  (<code>DEBUG</code>), a trace of every graph rewrite and every pattern match (<code>VIZ</code>, <code>TRACK_MATCH_STATS</code>), a type system for
+  the IR (<code>SPEC</code>), knobs that switch the optimizer off or turn it into a search (<code>NOOPT</code>, <code>BEAM</code>), and a regression
+  system that proves a refactor did not change any generated kernel (process replay). This chapter runs each one on the same small program and shows
+  the real output. It ends with a playbook for answering any "why does tinygrad do X?" question yourself.</p>
+
+  <h2 id="target"><span class="sec">21.1</span>The specimen, and how the switches work</h2>
+  <p>Every tool in this chapter is pointed at this three-line program: a 2×4 Python list, <code>x*2+1</code>, a row sum. It is small enough to read
+  the whole output and still goes through every stage: a host-to-device copy, a fused elementwise+reduce kernel, an optimization, C codegen and clang.</p>
+  <div class="codecap"><b>examples/21_debug_target.py</b> — run with <code>DEV=CPU python3 examples/21_debug_target.py</code></div>
+  <pre><code class="language-python"># Chapter 21 — the tiny program every introspection tool in this chapter is pointed at
+# Run: DEV=CPU DEBUG=2 python3 examples/21_debug_target.py     (try DEBUG=1..7, VIZ=-1, NOOPT=1, BEAM=2 ...)
+from tinygrad import Tensor
+x = Tensor([[1., 2., 3., 4.], [5., 6., 7., 8.]])   # python list -&gt; a PYTHON-device buffer, copied to CPU
+y = (x * 2 + 1).sum(axis=1)                          # one fused elementwise+reduce kernel
+print(y.tolist())                                    # .tolist() realizes: schedule -&gt; codegen -&gt; run</code></pre>
+  <pre class="output"><code>[24.0, 56.0]</code></pre>
+  <p>All the switches are <a class="src" data-path="tinygrad/helpers.py" data-line="180">ContextVar</a>s in <code>helpers.py</code>, read from the
+  environment once at import: <code>DEBUG, BEAM, NOOPT</code> (<a class="src" data-path="tinygrad/helpers.py" data-line="237">helpers.py:237</a>),
+  <code>VIZ</code> and <code>PROFILE</code> (<a class="src" data-path="tinygrad/helpers.py" data-line="272">272–276</a>), <code>SPEC</code>
+  (<a class="src" data-path="tinygrad/helpers.py" data-line="277">277</a>), <code>CAPTURE_PROCESS_REPLAY</code>
+  (<a class="src" data-path="tinygrad/helpers.py" data-line="257">257</a>). Because they are ContextVars, you can also change most of them for a
+  region of code with <code>with Context(DEBUG=4): ...</code> or <code>@Context(BEAM=2)</code>. <code>sz.py</code> counts them: <b>53 flags</b> in this
+  version (21.9). <code>docs/env_vars.md</code> lists the public ones.</p>
+  <div class="callout warn">Some flags only take effect at import time: <code>VIZ</code>/<code>TRACK_MATCH_STATS</code> decide whether
+  <code>PatternMatcher</code> is replaced by <code>TrackedPatternMatcher</code> when <code>uop/ops.py</code> is imported
+  (<a class="src" data-path="tinygrad/uop/ops.py" data-line="1690">ops.py:1690</a>). Set those in the environment, not with <code>Context</code>.</div>
+
+  <!-- ===================================================================================== -->
+  <h2 id="debug"><span class="sec">21.2</span>Every DEBUG level, verified</h2>
+  <p>Do not trust memory or old docs for what each level prints. The script below runs the specimen at <code>DEBUG=0..8</code>, each in a fresh
+  process, and classifies every printed line. The classification is the most reliable summary there is:</p>
+  <div class="codecap"><b>examples/21_debug_levels.py</b> — run with <code>DEV=CPU python3 examples/21_debug_levels.py</code></div>
+  <pre><code class="language-python"># Chapter 21 — what does every DEBUG level print? Run the same program at DEBUG=0..8 and capture it.
+# Run: DEV=CPU python3 examples/21_debug_levels.py
+#
+# Each level is a separate process (DEBUG is read once, at import, into a ContextVar in helpers.py).
+# NO_COLOR=1 strips the ANSI colors so the text is easy to store; the chapter's slider replays data/ch21_debug_levels.json.
+import json, os, re, subprocess, sys
+HERE = os.path.dirname(os.path.abspath(__file__))
+target = os.path.join(HERE, "21_debug_target.py")
+levels = {}
+KINDS = [  # (regex, short name) -- the same buckets the chapter's slider uses for its hover annotations
+  (r"^compiling ", "tqdm"), (r"^opened device", "device"), (r"^loading ", "dlopen"), (r"^scheduled ", "schedule"),
+  (r"^\*\*\* ", "kernel-run"), (r"^\S+ +opts: ", "opts"), (r"^%\d+ = ", "uir"), (r"^buffer: ", "alloc"),
+  (r"^system: ", "system"), (r"^SELECT |^INSERT |^CREATE |^BEGIN|^COMMIT", "sqlite"), (r"^\[", "result")]
+def kind(l:str) -&gt; str: return next((n for r, n in KINDS if re.search(r, l)), "code/asm")
+for d in range(0, 9):
+  env = {**os.environ, "DEV": "CPU", "DEBUG": str(d), "NO_COLOR": "1"}
+  p = subprocess.run([sys.executable, target], env=env, capture_output=True, text=True, cwd=HERE)
+  # tqdm's "compiling" bar goes to stderr with carriage returns: keep only its final state
+  err = "\n".join(l.split("\r")[-1] for l in p.stderr.splitlines() if l.strip())
+  out = (err + "\n" if err else "") + p.stdout
+  out = re.sub(r"pid:\d+", "pid:N", out).replace(HERE, "examples")
+  levels[d] = out.rstrip("\n")
+  kinds = {}
+  for l in levels[d].splitlines(): kinds[kind(l)] = kinds.get(kind(l), 0) + 1
+  print(f"DEBUG={d}: {len(levels[d].splitlines()):3d} lines  " + ", ".join(f"{k}:{v}" for k, v in kinds.items()))
+json.dump(levels, open(os.path.join(HERE, "..", "data", "ch21_debug_levels.json"), "w"), indent=1)
+print("wrote data/ch21_debug_levels.json")</code></pre>
+  <pre class="output"><code>DEBUG=0:   1 lines  result:1
+DEBUG=1:   5 lines  tqdm:1, device:2, schedule:1, result:1
+DEBUG=2:   7 lines  tqdm:1, device:2, schedule:1, kernel-run:2, result:1
+DEBUG=3:  13 lines  tqdm:1, dlopen:5, device:2, schedule:1, opts:1, kernel-run:2, result:1
+DEBUG=4:  24 lines  tqdm:1, dlopen:5, device:2, schedule:1, opts:1, code/asm:11, kernel-run:2, result:1
+DEBUG=5:  38 lines  tqdm:1, dlopen:5, device:2, schedule:1, uir:14, opts:1, code/asm:11, kernel-run:2, result:1
+DEBUG=6:  38 lines  tqdm:1, dlopen:5, device:2, schedule:1, uir:14, opts:1, code/asm:11, kernel-run:2, result:1
+DEBUG=7:  83 lines  tqdm:1, alloc:14, dlopen:5, device:2, schedule:1, uir:14, opts:1, code/asm:41, system:1, kernel-run:2, result:1
+DEBUG=8:  94 lines  tqdm:1, alloc:14, dlopen:5, device:2, schedule:1, uir:14, opts:1, code/asm:51, sqlite:1, system:1, kernel-run:2, result:1
+wrote data/ch21_debug_levels.json</code></pre>
+  <p>Each new kind of line comes from a <code>DEBUG &gt;= n</code> check in the source. Here is where each one lives (found with
+  <code>grep -rn "DEBUG >=" tinygrad</code>):</p>
+  <table>
+    <tr><th>level</th><th>adds (for this program)</th><th>printed by</th></tr>
+    <tr><td>1</td><td><code>opened device X</code>; one <code>scheduled N kernels in … ms | CACHE MISS key | … uops in cache | file:line</code> per realize with more than one kernel; the <code>compiling</code> progress bar (stderr); <code>memory reduced from …</code> when the planner saves memory; <code>JIT captured …</code>/<code>jit execs …</code></td>
+      <td><a class="src" data-path="tinygrad/device.py" data-line="43">device.py:43</a> <a class="src" data-path="tinygrad/schedule/__init__.py" data-line="138">schedule/__init__.py:138</a> <a class="src" data-path="tinygrad/engine/realize.py" data-line="253">realize.py:253</a> <a class="src" data-path="tinygrad/schedule/memory.py" data-line="58">memory.py:58</a> <a class="src" data-path="tinygrad/engine/jit.py" data-line="144">jit.py:144</a></td></tr>
+    <tr><td>2</td><td>one <code>*** DEVICE  n  name  arg  mem  tm  (GFLOPS GB/s)</code> line per executed kernel or copy (and DEBUG≥2 synchronizes after each kernel to time it); <code>function … in … ms</code> for <code>@function</code>; BEAM search progress</td>
+      <td><a class="src" data-path="tinygrad/engine/realize.py" data-line="83">realize.py:83–100</a> <a class="src" data-path="tinygrad/function.py" data-line="92">function.py:92</a> <a class="src" data-path="tinygrad/codegen/opt/search.py" data-line="121">search.py:121</a></td></tr>
+    <tr><td>3</td><td><code>name opts: (Opt(...),)</code> = the OptOps the optimizer applied; shared-library loading; the <code>scheduled</code> line even for 1-kernel schedules; heuristic decisions; on a spec failure, the whole failing program</td>
+      <td><a class="src" data-path="tinygrad/codegen/__init__.py" data-line="422">codegen/__init__.py:422</a> <a class="src" data-path="tinygrad/runtime/support/c.py" data-line="118">c.py:118</a> <a class="src" data-path="tinygrad/uop/spec.py" data-line="41">spec.py:41</a></td></tr>
+    <tr><td>4</td><td>the <b>generated source</b> (C here; PTX/Metal/… elsewhere; the assembly for ISA renderers)</td>
+      <td><a class="src" data-path="tinygrad/codegen/__init__.py" data-line="454">codegen/__init__.py:454</a> (and 435, 445)</td></tr>
+    <tr><td>5</td><td>the <b>kernel AST</b> as UIR before codegen (<code>render_uir(ast)</code>); the name is still the placeholder <code>test</code></td>
+      <td><a class="src" data-path="tinygrad/codegen/__init__.py" data-line="254">full_rewrite_to_sink</a></td></tr>
+    <tr><td>6</td><td>nothing new on CPU in core tinygrad (only a libusb log level and the CUDA/DSP runtimes check ≥5/6). It matters to <code>viz.cli</code>, where DEBUG=6 prints every UOp graph.</td><td><a class="src" data-path="tinygrad/viz/cli.py" data-line="1">viz/cli.py</a></td></tr>
+    <tr><td>7</td><td><code>buffer: allocate/deallocate N bytes</code>; the <b>disassembly</b> of the compiled kernel (here via <code>objdump -d</code>, plus a <code>system: …</code> line)</td>
+      <td><a class="src" data-path="tinygrad/device.py" data-line="167">device.py:167,194</a> <a class="src" data-path="tinygrad/codegen/__init__.py" data-line="456">codegen/__init__.py:456</a></td></tr>
+    <tr><td>8</td><td>every SQL statement sent to the disk cache (<code>SELECT val FROM 'compile_clang_obj_…'</code>)</td><td><a class="src" data-path="tinygrad/helpers.py" data-line="408">helpers.py:408</a></td></tr>
+  </table>
+
+  <div class="demo" id="demo-debug">
+    <div class="demo-title">DEBUG level slider (real captured output)</div>
+    <div class="demo-desc">Move the slider. Lines that are new compared with the previous level are marked with <b>+</b> and a yellow tint. Hover any line to see
+    what printed it and why. The text is the exact stdout+stderr of <code>examples/21_debug_target.py</code> at that level, from <code>data/ch21_debug_levels.json</code>.</div>
+    <div class="ch21-levels"><b>DEBUG=</b><input type="range" min="0" max="8" value="2" class="lvl"><span class="lvlv ch20-stat"></span></div>
+    <div class="ch21-legend"></div>
+    <div class="ch21-dbg"><div class="ch21-term"></div><div class="ch21-note">Hover a line.</div></div>
+  </div>
+
+  <div class="quiz" data-answer="2">
+    <div class="q">You want to see the C code tinygrad generates for a kernel and the OptOps the optimizer chose, but not the kernel AST. Which level?</div>
+    <button class="opt">DEBUG=2</button><button class="opt">DEBUG=3</button><button class="opt">DEBUG=4</button><button class="opt">DEBUG=5</button>
+    <div class="explain">Opts appear at 3 and source at 4. Level 5 adds the UIR of the AST. Levels are cumulative.</div>
+  </div>
+
+  <!-- ===================================================================================== -->
+  <h2 id="viz"><span class="sec">21.3</span>VIZ: every graph rewrite, recorded</h2>
+  <p>Every compiler pass in tinygrad is a <code>graph_rewrite</code> with a <code>PatternMatcher</code> (<a href="05-pattern-matching.html">Chapter 5</a>).
+  That makes one generic tracer enough for the whole compiler. With <code>VIZ</code> set, <code>TRACK_MATCH_STATS</code> defaults to 2
+  (<a class="src" data-path="tinygrad/uop/ops.py" data-line="1572">ops.py:1572</a>) and three things change:</p>
+  <ul>
+    <li><code>PatternMatcher</code> becomes <a class="src" data-path="tinygrad/uop/ops.py" data-line="1659">TrackedPatternMatcher</a>, which records every
+      successful match as <code>(uop_before, uop_after, upat_location, seconds)</code>.</li>
+    <li>Every function decorated with <a class="src" data-path="tinygrad/uop/ops.py" data-line="1618">@rewrite_group</a> (for example
+      <code>linear_with_vars</code> → "Schedule 1 -&gt; 2 n1", or <code>do_to_program</code> → the kernel name) opens a <b>group</b>. Every
+      <code>graph_rewrite(..., name=...)</code> inside it appends a <a class="src" data-path="tinygrad/uop/ops.py" data-line="1581">TrackedGraphRewrite</a>
+      (location, input sink, matches, name, depth).</li>
+    <li>At exit, an atexit hook pickles all of this to <code>$TMPDIR/rewrites.pkl.&lt;user&gt;</code> (UOps are stored as integer trace numbers plus a
+      <code>uop_fields</code> table so they can be rebuilt), and <code>PROFILE</code> (implied by VIZ) writes <code>profile.pkl.&lt;user&gt;</code>.</li>
+  </ul>
+  <p><code>VIZ=1</code> then <code>exec</code>s into <code>tinygrad/viz/serve.py</code> if stdout is a terminal, a web UI on port 8000. <code>VIZ=-1</code>
+  only saves the files and prints <code>saved viz files, view using: python -m tinygrad.viz.cli</code>. Here is the real web UI on the specimen, with group
+  <code>r_2_4</code> → rewrite <code>postopt symbolic</code> → match 1 selected:</p>
+  <img class="ch21-shot" src="../data/ch21_viz_match.jpg" alt="tinygrad VIZ web UI showing the postopt symbolic rewrite of kernel r_2_4">
+  <p>The left column lists the groups and, inside each group, every <code>graph_rewrite</code> with its number of matches (<code>- 4</code>). The middle is the graph
+  after the selected match. On the right: the call site (<code>__init__.py:282</code>, the <code>graph_rewrite(..., name="postopt symbolic")</code> line), the
+  UIR, the match selector <code>0 1 2 3 4</code>, the rule that fired (<code>symbolic.py:288</code>: <i>a RANGE whose vmin equals its vmax is a
+  constant</i>) and the diff it made (<code>-%0 = range 1 : WEAK 0</code>). That size-1 range was left behind by the UPCAST of 4 on a reduce of 4
+  (<a href="14-optimizations.html">Chapter 14</a>). The UI also has View Source / View Disassembly per kernel:</p>
+  <img class="ch21-shot" src="../data/ch21_viz_source.jpg" alt="tinygrad VIZ web UI showing the generated C source of r_2_4">
+
+  <h3>The same thing in a terminal: <code>python -m tinygrad.viz.cli</code></h3>
+  <p><a class="src" data-path="tinygrad/viz/cli.py" data-line="1">viz/cli.py</a> reads the same pickles. With no arguments it prints the whole timeline:
+  every USER Tensor method call (PROFILE wraps them, <code>tensor.py</code> <code>_profile_wrapper</code>), every TINY compiler span and every kernel run.
+  <code>-s NAME</code> selects a source (or a kernel inside it, and then a rewrite inside that), <code>-q REGEX</code> searches event and rewrite names and prints
+  the matching graphs, <code>-t [N]</code> aggregates, and <code>--json</code> emits one JSON object per line. DEBUG levels add detail: 3 = base AST, 4 = source,
+  5 = rewrite steps with match counts, 6 = all graphs, 7 = all rewrites.</p>
+  <div class="codecap"><b>examples/21_viz_cli.py</b> — run with <code>DEV=CPU python3 examples/21_viz_cli.py</code></div>
+  <pre><code class="language-python"># Chapter 21 — VIZ=-1 (save traces, no web server) + `python -m tinygrad.viz.cli` to read them in a terminal
+# Run: DEV=CPU python3 examples/21_viz_cli.py
+#
+# VIZ=-1 makes helpers.PROFILE and uop/ops.TRACK_MATCH_STATS=2 on, and at exit pickles
+#   rewrites.pkl.&lt;user&gt; (every graph_rewrite + every pattern match) and profile.pkl.&lt;user&gt; (timeline events)
+# into tempfile.gettempdir(). We point TMPDIR at a private directory so concurrent runs don't overwrite each other.
+import os, re, shutil, subprocess, sys, tempfile
+HERE = os.path.dirname(os.path.abspath(__file__))
+tmp = tempfile.mkdtemp(prefix="ch21viz_")
+env = {**os.environ, "DEV": "CPU", "NO_COLOR": "1", "TMPDIR": tmp}
+
+def run(title:str, args:list[str], extra_env:dict|None=None, max_lines=40, grep:str|None=None):
+  p = subprocess.run(args, env={**env, **(extra_env or {})}, capture_output=True, text=True, cwd=HERE)
+  out = (p.stdout + p.stderr).replace(tmp, "$TMPDIR")
+  lines = [l for l in out.splitlines() if grep is None or re.search(grep, l)]
+  print(f"$ {' '.join((f'{k}={v} ' for k, v in (extra_env or {}).items()))}{title}")
+  print("\n".join(lines[:max_lines]) + (f"\n... ({len(lines) - max_lines} more lines)" if len(lines) &gt; max_lines else ""))
+  print()
+
+cli = [sys.executable, "-m", "tinygrad.viz.cli"]
+run("python3 21_debug_target.py", [sys.executable, "21_debug_target.py"], {"VIZ": "-1"})
+run("python -m tinygrad.viz.cli --list", cli + ["--list"])
+run("python -m tinygrad.viz.cli -t 8", cli + ["-t", "8"])
+run("python -m tinygrad.viz.cli -s TINY   (first 24 events)", cli + ["-s", "TINY"], max_lines=24)
+run("python -m tinygrad.viz.cli -s CPU", cli + ["-s", "CPU"])
+run("python -m tinygrad.viz.cli -s CPU   (DEBUG=5 adds every rewrite step, '- N' = matches)", cli + ["-s", "CPU"], {"DEBUG": "5"}, max_lines=80)
+run("python -m tinygrad.viz.cli -q 'kernel split'", cli + ["-q", "kernel split"], max_lines=30)
+run("python -m tinygrad.viz.cli -s CPU r_2_4 'postopt symbolic'   (the matches of one rewrite)", cli + ["-s", "CPU", "r_2_4", "postopt symbolic"], max_lines=40)
+run("python -m tinygrad.viz.cli --json -s CPU", cli + ["--json", "-s", "CPU"], max_lines=3)
+shutil.rmtree(tmp)</code></pre>
+  <div class="tabs">
+    <div class="tabpane" data-title="save + --list + -t"><pre class="output"><code>$ VIZ=-1 python3 21_debug_target.py
+[24.0, 56.0]
+rewrote 4 graphs and matched 146 times, saved to $TMPDIR/rewrites.pkl.user
+saved viz files, view using: python -m tinygrad.viz.cli
+
+$ python -m tinygrad.viz.cli --list
+ALL
+USER
+TINY
+CPU
+CPU:COPY
+PYTHON:COPY
+CPU Memory
+PYTHON Memory
+
+$ python -m tinygrad.viz.cli -t 8
+USER    tolist                            159.25ms       1  14.64%
+USER    data                              158.80ms       1  14.59%
+USER    _buffer                           158.70ms       1  14.59%
+USER    realize                           155.93ms       1  14.33%
+TINY    do_to_program for r_2_4            75.45ms       1   6.93%
+USER    __wrapper                          71.64ms       1   6.58%
+TINY    Schedule 1 -&gt; 2 n1                 71.23ms       1   6.55%
+TINY    schedule to linear                 38.56ms       1   3.54%
+Other                                     198.52ms     131  18.25%
+
+… (181 more lines)</code></pre></div>
+    <div class="tabpane" data-title="-s TINY"><pre class="output"><code>… (26 earlier lines omitted)
+$ python -m tinygrad.viz.cli -s TINY   (first 24 events)
+*** TINY    Schedule 1 -&gt; 2 n1                             tm     71.23ms/   164.03ms (loc tensor.py:544 _wrapper)
+*** TINY    View Tensor Graph                              tm     66.00us/   164.10ms
+*** TINY    drop after                                     tm   1320.00us/   164.45ms
+*** TINY    bufferize                                      tm     71.00us/   166.24ms (loc tensor.py:544 _wrapper)
+*** TINY    substitute bufferize                           tm     16.00us/   166.28ms
+*** TINY    View Graph                                     tm     38.00us/   166.32ms
+*** TINY    early transform tensor graph                   tm     16.22ms/   172.13ms
+*** TINY    contiguous_view_offset                         tm   2309.00us/   172.84ms
+*** TINY    replace bufs                                   tm    748.00us/   188.40ms
+*** TINY    View Call                                      tm     19.00us/   189.30ms
+*** TINY    schedule to linear                             tm     38.56ms/   189.33ms
+*** TINY    prepare_rangeify                               tm   6213.00us/   190.66ms
+*** TINY    multi_pm                                       tm    711.00us/   190.72ms
+*** TINY    inline calls                                   tm    766.00us/   191.46ms
+*** TINY    earliest rewrites                              tm   4596.00us/   192.27ms
+*** TINY    get_kernel_graph                               tm     30.52ms/   196.90ms
+*** TINY    run_rangeify                                   tm   6979.00us/   196.90ms
+*** TINY    get realize                                    tm    705.00us/   196.91ms
+*** TINY    consumer map in rangeify                       tm     99.00us/   197.63ms
+*** TINY    reshape                                        tm   2922.00us/   198.52ms
+*** TINY    apply rangeify                                 tm   2089.00us/   201.64ms
+*** TINY    add device to deviceless                       tm     65.00us/   203.81ms
+*** TINY    symbolic+reduce_collapse+debuf                 tm     14.96ms/   204.18ms
+*** TINY    reduce_collapse                                tm   9860.00us/   209.20ms
+... (71 more lines)
+
+… (154 more lines)</code></pre></div>
+    <div class="tabpane" data-title="DEBUG=5 -s CPU"><pre class="output"><code>… (53 earlier lines omitted)
+$ python -m tinygrad.viz.cli -s CPU
+*** CPU     r_2_4                                          tm      9.00us/   319.19ms (0 GFLOPS        0 GB/s mem      0 GB/s lds    )
+
+$ DEBUG=5 python -m tinygrad.viz.cli -s CPU   (DEBUG=5 adds every rewrite step, '- N' = matches)
+*** CPU     r_2_4                                          tm      9.00us/   319.19ms (0 GFLOPS        0 GB/s mem      0 GB/s lds    )
+%0 = param 2 : dtype=f32 slot=0 device=CPU
+%1 = range 2 : WEAK 1
+%2 = index %0, %1
+%3 = param 8 : dtype=f32 slot=1 device=CPU
+%4 = mul %1, 4
+%5 = range 4 : WEAK 0
+%6 = add %4, %5
+%7 = index %3, %6
+%8 = mul %7, 2.0
+%9 = add %8, 1.0
+%10 = reduce %9, %5 : op=add
+%11 = store %2, %10
+%12 = end %11, %1
+%13 = sink %12 : test
+View Base AST
+lower calls
+multi_pm
+early movement ops
+load collapse
+ reduce_collapse - 6
+split ranges
+initial symbolic
+simplify ranges
+graph_rewrite
+graph_rewrite
+graph_rewrite
+graph_rewrite
+graph_rewrite
+shift (0,) 4 upcast - 2
+postopt symbolic - 4
+expander - 2
+remove reduces - 1
+add local buffers
+group gpudims
+*** expand broadcast / add loads - 5
+devectorize2 - 33
+ reshape
+early symbolic - 12
+memory coalescing - 4
+add images
+extra symbolic
+lower all index dtypes - 9
+final symbolic
+cast float alu operands
+early decompositions
+late decompositions - 1
+decomp dtypes
+move gates from index
+final rewrite
+cast consts - 6
+add implicit barriers
+range to special
+add control flow
+number variables
+View Output AST
+linearize/render - 4
+View UOp List
+typedef float float4 __attribute__((aligned(4),ext_vector_type(4)));
+struct r_2_4_args { float* arg0; float* arg1; };
+void r_2_4(const struct r_2_4_args* args) {
+  float* data0_2 = args-&gt;arg0;
+  float* data1_8 = args-&gt;arg1;
+  for (int Lidx1 = 0; Lidx1 &lt; 2; Lidx1++) {
+    float4 val0 = (*((float4*)((data1_8+(Lidx1&lt;&lt;2)))));
+    *(data0_2+Lidx1) = ((val0[3]*2.0f)+(val0[2]*2.0f)+(val0[1]*2.0f)+(val0[0]*2.0f)+4.0f);
+  }
+}
+
+View Source
+View Disassembly
+View Program
+precompile kernels - 1
+
+… (76 more lines)</code></pre></div>
+    <div class="tabpane" data-title="-q 'kernel split'"><pre class="output"><code>… (131 earlier lines omitted)
+$ python -m tinygrad.viz.cli -q 'kernel split'
+%0 = param 2 : dtype=f32 slot=0 device=CPU
+%1 = range 2 : WEAK 0
+%2 = index %0, %1
+%3 = alloc 8 : dtype=f32 slot=2 device=CPU
+%4 = range 8 : WEAK 2
+%5 = index %3, %4
+%6 = param 8 : dtype=f32 slot=1 device=PYTHON
+%7 = index %6, %4
+%8 = store %5, %7
+%9 = end %8, %4
+%10 = after %3, %9
+%11 = mul %1, 4
+%12 = range 4 : WEAK 1
+%13 = add %11, %12
+%14 = index %10, %13
+%15 = mul %14, 2.0
+%16 = add %15, 1.0
+%17 = reduce %16, %12 : op=add
+%18 = store %2, %17
+%19 = end %18, %1
+%0 = alloc 8 : dtype=f32 slot=2 device=CPU
+%1 = range 8 : WEAK 2
+%2 = index %0, %1
+%3 = param 8 : dtype=f32 slot=1 device=PYTHON
+%4 = index %3, %1
+%5 = store %2, %4
+%6 = end %5, %1
+*** TINY    kernel split                                   tm   2407.00us/   221.60ms
+*** TINY    kernel split                                   tm     88.00us/   224.73ms
+
+… (45 more lines)</code></pre></div>
+    <div class="tabpane" data-title="-s CPU r_2_4 'postopt symbolic'"><pre class="output"><code>… (162 earlier lines omitted)
+$ python -m tinygrad.viz.cli -s CPU r_2_4 'postopt symbolic'   (the matches of one rewrite)
+*** CPU     r_2_4                                          tm      9.00us/   319.19ms (0 GFLOPS        0 GB/s mem      0 GB/s lds    )
+%0 = param 2 : dtype=f32 slot=0 device=CPU
+%1 = range 2 : WEAK 1
+%2 = index %0, %1
+%3 = param 8 : dtype=f32 slot=1 device=CPU
+%4 = mul %1, 4
+%5 = range 1 : WEAK 0
+%6 = mul %5, 4
+%7 = range 4 : UPCAST 2
+%8 = add %6, %7
+%9 = add %4, %8
+%10 = index %3, %9
+%11 = mul %10, 2.0
+%12 = add %11, 1.0
+%13 = reduce %12, %5, %7 : op=add
+%14 = store %2, %13
+%15 = end %14, %1
+%16 = sink %15 : r_2_4
+%0 = param 2 : dtype=f32 slot=0 device=CPU
+%1 = range 2 : WEAK 1
+%2 = index %0, %1
+%3 = param 8 : dtype=f32 slot=1 device=CPU
+%4 = mul %1, 4
+%5 = range 1 : WEAK 0
+%6 = mul %5, 4
+%7 = range 4 : UPCAST 2
+%8 = add %6, %7
+%9 = add %4, %8
+%10 = index %3, %9
+%11 = mul %10, 2.0
+%12 = add %11, 1.0
+%13 = reduce %12, %5, %7 : op=add
+%14 = store %2, %13
+%15 = end %14, %1
+%16 = sink %15 : r_2_4
+uop/symbolic.py:288
+# 15.68 us
+(UPat(Ops.RANGE, src=(UPat.cvar().or_casted(),), name="x"), lambda x: x.const_like(x.vmin) if x.vmin == x.vmax else None),
+-%0 = range 1 : WEAK 0
+%0 = param 2 : dtype=f32 slot=0 device=CPU
+... (67 more lines)
+
+… (2 more lines)</code></pre></div>
+    <div class="tabpane" data-title="--json"><pre class="output"><code>… (205 earlier lines omitted)
+$ python -m tinygrad.viz.cli --json -s CPU
+{"device": "CPU", "name": "r_2_4", "dur_ms": 0.009000000000000001, "st_ms": 319.192, "fmt": {"FLOPS": 1777777, "B/s mem": 4444444, "B/s lds": 4444444}, "ref": 1, "ext": ""}</code></pre></div>
+  </div>
+  <p>Read the <code>DEBUG=5 -s CPU</code> tab as the table of contents of <a href="15-lowering.html">Chapter 15</a>: every named pass that
+  <code>full_rewrite_to_sink</code> runs, in order, with how many rules fired in each (<code>devectorize2 - 33</code> is the busiest). The
+  <code>-q 'kernel split'</code> tab answers "why 2 kernels?" directly: the first graph is the compute kernel, which reads an <code>alloc 8</code> that a
+  second, copy-shaped graph fills from the PYTHON-device <code>param 8</code>.</p>
+
+  <h3>PROFILE: the timeline without the rewrites</h3>
+  <p><code>PROFILE</code> defaults to <code>abs(VIZ)</code> (<a class="src" data-path="tinygrad/helpers.py" data-line="276">helpers.py:276</a>), and you can also set it on its own.
+  It records three kinds of events into <code>profile.pkl</code>: every public <code>Tensor</code> method call (via
+  <a class="src" data-path="tinygrad/tensor.py" data-line="539">_profile_wrapper</a>; the USER source in the <code>--list</code> tab), compiler spans
+  (TINY), and device kernel runs with real timestamps (CPU). Call <a class="src" data-path="tinygrad/helpers.py" data-line="381">profile_marker("name")</a> in your
+  program to drop named markers. <code>viz.cli --interval START [END]</code> then restricts <code>-t</code> or the timeline to events between two markers. That is how you time
+  "step 10 to step 20 of training" while excluding warm-up.</p>
+  <h3>Replaying the trace yourself</h3>
+  <p>The pickle is not a black box. The next script captures it (<code>TRACK_MATCH_STATS=2</code> without the server) and decodes it with the viz server's own
+  <a class="src" data-path="tinygrad/viz/serve.py" data-line="69">load_rewrites</a> and <a class="src" data-path="tinygrad/viz/serve.py" data-line="186">get_full_rewrite</a>,
+  in a fresh process, as the server does. It writes every step that had matches to JSON for the browser below.</p>
+  <div class="codecap"><b>examples/21_rewrite_trace.py</b> — run with <code>DEV=CPU python3 examples/21_rewrite_trace.py</code></div>
+  <pre><code class="language-python"># Chapter 21 — capture the tracked rewrites (what VIZ shows) for the debug target, and turn them into JSON
+# Run: DEV=CPU python3 examples/21_rewrite_trace.py
+#
+# TRACK_MATCH_STATS=2 (implied by VIZ) swaps PatternMatcher for TrackedPatternMatcher (uop/ops.py) and makes every
+# @rewrite_group / graph_rewrite call append a TrackedGraphRewrite(loc, sink, matches, name, depth, ...) to
+# uop.ops.tracked_ctxs. A match is (uop_before, uop_after, upat_location, seconds), stored as integer trace numbers;
+# uop_fields maps trace numbers back to (op, src, arg). At exit the RewriteTrace is pickled to rewrites.pkl.&lt;user&gt;.
+# Like the real viz server/CLI we decode that pickle in a *fresh* process with tinygrad/viz/serve.py's own
+# load_rewrites + get_full_rewrite (rebuilding the UOps in the process that made them is not supported).
+import os, sys, json, subprocess, tempfile, getpass, shutil
+HERE = os.path.dirname(os.path.abspath(__file__))
+tmp = tempfile.mkdtemp(prefix="ch21trace_")      # private TMPDIR: rewrites.pkl.&lt;user&gt; lands here, not in the shared /tmp
+env = {**os.environ, "DEV": "CPU", "TRACK_MATCH_STATS": "2", "PRINT_MATCH_STATS": "0", "TMPDIR": tmp}
+p = subprocess.run([sys.executable, os.path.join(HERE, "21_debug_target.py")], env=env, capture_output=True, text=True)
+print(p.stdout.replace(tmp, "$TMPDIR").strip())
+
+os.environ["VIZ"] = "0"
+from tinygrad.uop.ops import RewriteTrace
+from tinygrad.viz import serve as viz
+trace = viz.load_pickle(os.path.join(tmp, f"rewrites.pkl.{getpass.getuser()}"), default=RewriteTrace([], [], {}))
+shutil.rmtree(tmp)
+data = viz.VizData(trace)
+viz.load_rewrites(data)
+nodes: dict[str, dict] = {}          # one global node table: id -&gt; {label, src}; UOps are hash-consed so ids are stable
+short: dict[str, str] = {}           # node signature (label + srcs) -&gt; short id. python id()s can be reused once a
+def add_graph(g:dict) -&gt; dict[int, str]:  # frame's UOps are freed, so identity is the content, exactly like hash-consing
+  local: dict[int, str] = {}
+  for k, v in g.items():             # g is in toposort order (viz.uop_to_json walks x.toposort())
+    if v["exclude"]: continue
+    label, srcs = viz.ansistrip(v["label"]), [local[s] for _, s in v["src"] if s in local]
+    local[k] = short.setdefault(label + "|" + ",".join(srcs), f"u{len(short)}")
+    nodes.setdefault(local[k], {"label": label, "src": srcs})
+  return local
+
+groups, total, failed = [], 0, []
+for ci, ctx in enumerate(data.ctxs):
+  steps = []
+  for si, rw in enumerate(data.trace.rewrites[ci]):
+    frames = []
+    if rw.matches:
+     try:
+      for f in viz.get_full_rewrite(data, rw):
+        local = add_graph(f["graph"])
+        frames.append({"nodes": list(local.values()), "change": [local[c] for c in (f["change"] or []) if c in local],
+                       "upat": None if f["upat"] is None else {"loc": f"{f['upat'][0][0].split('tinygrad/')[-1]}:{f['upat'][0][1]}", "code": f["upat"][1]},
+                       "diff": f["diff"]})
+        total += 1
+     except Exception as e:  # a few intermediate graphs can't be re-labelled by viz's uop_to_json; keep the frames we got
+      failed.append(f"{ctx['name']} / {rw.name}: {type(e).__name__} {e}")
+    steps.append({"name": rw.name, "depth": rw.depth, "matches": len(rw.matches), "loc": f"{rw.loc[0].split('tinygrad/')[-1]}:{rw.loc[1]}",
+                  "bottom_up": rw.bottom_up, "frames": frames})
+  groups.append({"name": viz.ansistrip(ctx["name"]), "steps": steps})
+  print(f"group {ci}: {groups[-1]['name']!r:28s} {len(steps):3d} rewrites, {sum(s['matches'] for s in steps):4d} matches")
+out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "ch21_trace.json")
+json.dump({"groups": groups, "nodes": nodes}, open(out, "w"))
+for f in failed: print("could not replay:", f)
+print(f"{total} frames, {len(nodes)} distinct UOps -&gt; data/ch21_trace.json ({os.path.getsize(out)//1024} KB)")</code></pre>
+  <pre class="output"><code>[24.0, 56.0]
+rewrote 4 graphs and matched 146 times, saved to $TMPDIR/rewrites.pkl.user
+group 0: 'Schedule 1 -&gt; 2 n1'          32 rewrites,   49 matches
+group 1: 'r_2_4'                       41 rewrites,   90 matches
+group 2: 'HCQ Compile 2 Kernels n1'     4 rewrites,    3 matches
+group 3: 'HCQ Link 2 Kernels n1'        2 rewrites,    4 matches
+could not replay: Schedule 1 -&gt; 2 n1 / kernel split: KeyError dtypes.void
+179 frames, 1124 distinct UOps -&gt; data/ch21_trace.json (202 KB)</code></pre>
+  <div class="callout note">One rewrite ("kernel split") cannot be re-labelled by the viz decoder outside the original process (a <code>KeyError: dtypes.void</code>
+  while computing a dtype for a label), so it is skipped and reported. Everything else replays. The real UI shows the same graphs.</div>
+
+  <div class="demo" id="demo-trace">
+    <div class="demo-title">Rewrite-trace browser (a mini VIZ built from the real trace)</div>
+    <div class="demo-desc">Left: the 4 rewrite groups and their <code>graph_rewrite</code> steps. Steps in white had matches (the number is the match count); indentation is
+    nesting depth. Click one, then scrub through its matches. Each frame shows the graph after that match (the same labels as VIZ; CONSTs are folded into
+    their consumers), the rule (<code>file:line</code> and its source) and the diff. The UOps the rule changed are highlighted.
+    Try <b>r_2_4 → postopt symbolic</b> (the screenshot above), <b>devectorize2</b> (33 matches) or <b>Schedule → apply rangeify</b>.</div>
+    <div class="ch21-trace">
+      <div class="ch21-steps"></div>
+      <div>
+        <div class="controls"><button class="prev">◀</button><input type="range" class="fr" min="0" max="0" value="0" style="width:300px"><button class="next">▶</button><span class="ch20-stat frl"></span></div>
+        <div class="ch21-match">Pick a step.</div>
+        <div class="graph"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================================== -->
+  <h2 id="match-stats"><span class="sec">21.4</span>TRACK_MATCH_STATS / PRINT_MATCH_STATS: which rules fire, and what they cost</h2>
+  <p><code>TRACK_MATCH_STATS=1</code> gives you the tracking pattern matcher without the per-match graph log. For every <code>UPat</code> it counts
+  <code>[matches, attempts, time in failed attempts, time in successful matches]</code>, and <a class="src" data-path="tinygrad/uop/ops.py" data-line="1694">print_match_stats</a>
+  prints the table at exit, sorted by total time. <code>PRINT_MATCH_STATS</code> defaults to on when tracking without VIZ; set
+  <code>PRINT_MATCH_STATS=0</code> to silence it. <code>TRACK_MATCH_STATS=3</code> also prints each match's time as it happens. This is the profiler for the
+  compiler itself, and it is how you find a slow rule or a dead one.</p>
+  <div class="codecap"><b>examples/21_match_stats.py</b> — run with <code>DEV=CPU python3 examples/21_match_stats.py</code></div>
+  <pre><code class="language-python"># Chapter 21 — TRACK_MATCH_STATS=1: which rewrite rules fired, how often, and what they cost
+# Run: DEV=CPU python3 examples/21_match_stats.py
+#
+# With TRACK_MATCH_STATS&gt;=1, PatternMatcher *is* TrackedPatternMatcher (uop/ops.py). For every UPat it counts
+# [matches, attempts, time spent in failed attempts, time spent in successful matches]; an atexit hook prints the table
+# (PRINT_MATCH_STATS defaults to on unless VIZ is set). Columns:  matches / attempts -- match_ms / total_ms -- file:line  rule
+import os, re, subprocess, sys
+HERE = os.path.dirname(os.path.abspath(__file__))
+env = {**os.environ, "DEV": "CPU", "TRACK_MATCH_STATS": "1", "NO_COLOR": "1"}
+p = subprocess.run([sys.executable, os.path.join(HERE, "21_debug_target.py")], env=env, capture_output=True, text=True)
+lines = p.stdout.splitlines()
+rows = [l for l in lines if re.match(r"^\s*\d+ /\s+\d+ --", l)]
+print(lines[0])                                        # the program's own output
+print(f"{len(rows) - 1} rules were tried at least once. The 12 most expensive (the table is sorted by total time):")
+for l in rows[-13:]: print(l[:150])
+print(lines[-1])
+by_count = sorted(rows[:-1], key=lambda l: -int(l.split("/")[0]))
+print("\nmost frequently *matched* rules:")
+for l in by_count[:8]: print(l[:150])
+never = [l for l in rows[:-1] if l.strip().startswith("0 /")]
+print(f"\n{len(never)} rules were attempted but never matched, e.g.:")
+for l in never[:3]: print(l[:150])</code></pre>
+  <pre class="output"><code>[24.0, 56.0]
+226 rules were tried at least once. The 12 most expensive (the table is sorted by total time):
+     0 /     147 --      0.00 /      2.18 ms -- symbolic.py:167      (UPat(GroupOp.Binary-{Ops.THREEFRY}, src=[casted_const, bare_const], name="a"), l
+     1 /       4 --      2.83 /      2.83 ms -- __init__.py:461      (UPat(Ops.PROGRAM, src=(UPat(Ops.SINK, name="sink"), UPat(Ops.LINEAR, name="lin")
+     0 /      20 --      0.00 /      3.10 ms -- symbolic.py:259      ((UPat.var("y") + UPat.var("x") * UPat.cvar("c")) + UPat.var("x"),
+     2 /       2 --      3.41 /      3.41 ms -- rangeify.py:335      (UPat((Ops.STORE, Ops.END), name="x"), split_store),
+     0 /       4 --      0.00 /      4.36 ms -- simplify.py:107      ).reduce(UPat.var("r"), arg=Ops.ADD), lambda r,val,lower=None,upper=None:
+   884 /     884 --      4.67 /      4.67 ms -- upat.py:128          (UPat(Ops.CUSTOM, src=UPat(Ops.CUSTOMI), name="x"), lambda x: UOp(Ops.CUSTOMI, ar
+     0 /       7 --      0.00 /      4.92 ms -- symbolic.py:254      ((UPat.var("y") + UPat.var("x") * UPat.cvar("c0")) + UPat.var("x") * UPat.cvar("c
+     1 /       3 --      7.40 /      7.40 ms -- __init__.py:463      (UPat(Ops.PROGRAM, src=(UPat(), UPat(Ops.LINEAR, name="lin")), name="prg"), do_re
+   412 /    1387 --      3.73 /      9.16 ms -- upat.py:114          pm_proc = PatternMatcher([(UPat(Ops.AND, name="a"), do_process_and)], compiled=Fa
+     0 /       1 --      0.00 /     10.12 ms -- simplify.py:146      (UPat(Ops.REDUCE, src=(UPat.var("u"),), allow_any_len=True, arg=(Ops.ADD, 0), nam
+     0 /       1 --      0.00 /     15.26 ms -- __init__.py:222      (UPat((Ops.COPY, Ops.STAGE), src=(UPat(GroupOp.Movement|{Ops.BITCAST}, name="src"
+     1 /       4 --     34.83 /     34.84 ms -- __init__.py:150      (UPat(Ops.CALL, name="call"), lower_sink_to_linear),
+  2384 /    6083 --    100.70 /    221.69 ms -- TOTAL
+305 rules, 99 matched once
+
+most frequently *matched* rules:
+   884 /     884 --      4.67 /      4.67 ms -- upat.py:128          (UPat(Ops.CUSTOM, src=UPat(Ops.CUSTOMI), name="x"), lambda x: UOp(Ops.CUSTOMI, ar
+   432 /     432 --      1.81 /      1.81 ms -- upat.py:122          (UPat(Ops.PYLITERAL, name="x"), wrap),
+   412 /    1387 --      3.73 /      9.16 ms -- upat.py:114          pm_proc = PatternMatcher([(UPat(Ops.AND, name="a"), do_process_and)], compiled=Fa
+   312 /     312 --      1.86 /      1.86 ms -- upat.py:129          (UPat(Ops.INDEX, src=(UPat(Ops.CUSTOMI, name="x"), UPat(Ops.CONST, name="c"))),
+    34 /     388 --      0.18 /      1.23 ms -- upat.py:125          (UPat(Ops.AND, src=UPat(Ops.CUSTOMI), name="x"), lambda x: UOp(Ops.CUSTOMI, arg=(
+    27 /      27 --      0.39 /      0.39 ms -- spec.py:56           (UPat(Ops.CONST, src=(), name="x"), lambda x: x.is_invalid or type(x.val) is type
+    19 /     187 --      0.01 /      0.41 ms -- ops.py:1860          _substitute = PatternMatcher([(UPat(tuple(Ops), name="x"), lambda ctx,x: ctx.get(
+    16 /      16 --      0.26 /      0.26 ms -- spec.py:74           (UPat(GroupOp.ALU, name="x"), lambda x: all(matches_dtype(y, x.dtype) or y.dtype 
+
+127 rules were attempted but never matched, e.g.:
+     0 /       2 --      0.00 /      0.00 ms -- rangeify.py:307      (UPat(Ops.PARAM, name="buf"), lambda ctx, buf:
+     0 /       3 --      0.00 /      0.00 ms -- rangeify.py:305      (UPat((Ops.BUFFER, Ops.ALLOC, Ops.MSTACK, Ops.MSELECT), name="buf"), add_buf),
+     0 /       3 --      0.00 /      0.19 ms -- rangeify.py:315      (UPat(Ops.RANGE, name="r"), lambda ctx, r: ctx.ranges.setdefault(r.arg)),</code></pre>
+  <ul>
+    <li>The single most expensive rule is <code>lower_sink_to_linear</code> (<code>schedule/__init__.py:150</code>, 35 of the 222 ms TOTAL). Its time <i>includes</i> the whole
+      scheduler it calls, because its rule body runs the nested rewrites. Read the ms column as inclusive.</li>
+    <li>The most frequently matched rules live in <code>uop/upat.py</code>: that is the <b>UPat compiler</b> (<code>UPAT_COMPILE=1</code>, the default), which
+      itself uses PatternMatchers to turn each UPat into Python source the first time it is used. The tracker sees the compiler compiling its own patterns.</li>
+    <li>The spec rules (<code>spec.py:56</code>, <code>:74</code>) show up because <code>type_verify</code> runs at the default <code>SPEC=1</code> (next section).</li>
+    <li>127 rules were attempted and never matched for this program. That is normal: a PatternMatcher is a bag of rules for every situation. The cost is kept
+      low by indexing rules by <code>Op</code> (<code>pdict</code>) and by the <code>early_reject</code> set of required source ops.</li>
+  </ul>
+
+  <!-- ===================================================================================== -->
+  <h2 id="spec"><span class="sec">21.5</span>SPEC and type_verify: the IR has a type system</h2>
+  <p>A UOp is just <code>(op, dtype, src, arg)</code>, and nothing in the constructor stops you from building nonsense. The spec is what does.
+  <a class="src" data-path="tinygrad/uop/spec.py" data-line="1">uop/spec.py</a> defines it <i>as PatternMatchers whose rules return <code>True</code> (valid),
+  <code>False</code> (invalid) or <code>None</code> (no opinion)</i>, the same machinery as everything else:</p>
+  <table>
+    <tr><th>spec</th><th>for</th><th>checked by (when <code>SPEC≥1</code>, the default)</th></tr>
+    <tr><td><a class="src" data-path="tinygrad/uop/spec.py" data-line="48">spec_shared</a></td><td>rules valid everywhere: SINK, CONST, ALU dtype agreement, comparisons, WHERE, CAST</td><td>(included in the others)</td></tr>
+    <tr><td><a class="src" data-path="tinygrad/uop/spec.py" data-line="144">spec_tensor</a></td><td>the tensor graph: movement ops, BUFFER/ALLOC, REDUCE, COPY, multi-device ops</td><td><code>transform_to_call</code> and <code>lower_sink_to_linear</code> (<a class="src" data-path="tinygrad/schedule/__init__.py" data-line="130">schedule/__init__.py:130</a>), <code>full_rewrite_to_sink</code> on entry (<a class="src" data-path="tinygrad/codegen/__init__.py" data-line="255">codegen:255</a>)</td></tr>
+    <tr><td><a class="src" data-path="tinygrad/uop/spec.py" data-line="253">spec_kernel_graph</a></td><td>the kernel graph after splitting</td><td><code>get_kernel_graph</code> (<a class="src" data-path="tinygrad/schedule/rangeify.py" data-line="362">rangeify.py:362</a>)</td></tr>
+    <tr><td><a class="src" data-path="tinygrad/uop/spec.py" data-line="204">spec_program</a></td><td>renderer-ready programs: no movement ops, no weak dtypes, no Invalid, IF/ENDIF, SPECIAL is int32</td><td>after lowering (<a class="src" data-path="tinygrad/codegen/__init__.py" data-line="370">codegen:370</a>)</td></tr>
+    <tr><td><a class="src" data-path="tinygrad/uop/spec.py" data-line="237">spec_full</a></td><td>union of all of them plus intermediate ops</td><td>every UOp at construction when <code>SPEC≥2</code> (<a class="src" data-path="tinygrad/uop/ops.py" data-line="196">UOpMetaClass.__call__</a>); <code>SPEC=3</code> also computes shapes</td></tr>
+  </table>
+  <pre><code class="language-python">def type_verify(ast:UOp|list[UOp], check_spec:PatternMatcher, enter_calls=False):
+  lst = list(ast.toposort(enter_calls=enter_calls)) if isinstance(ast, UOp) else ast
+  with Context(TRACK_MATCH_STATS=0):
+    for i,u in enumerate(lst):
+      ret: bool|None = check_spec.rewrite(u)
+      if ret is not True:
+        if DEBUG >= 3: print(render_uir(lst))
+        raise RuntimeError(f"UOp verification failed at {i} on {u.op} {u.dtype} {len(u.src)} {[(x.op, x.dtype, x.arg) for x in u.src]} {u.arg}")</code></pre>
+  <p>Note <code>ret is not True</code>: a UOp that <i>no</i> rule claims is invalid too. Here are some deliberately broken graphs:</p>
+  <div class="codecap"><b>examples/21_spec.py</b> — run with <code>DEV=CPU python3 examples/21_spec.py</code></div>
+  <pre><code class="language-python"># Chapter 21 — the UOp spec: what a valid graph looks like, and what an invalid one fails with
+# Run: DEV=CPU python3 examples/21_spec.py
+#
+# uop/spec.py defines the spec as PatternMatchers that return True for valid UOps (spec_tensor, spec_program,
+# spec_kernel_graph, spec_full). type_verify(uops, spec) runs the matcher on every UOp in toposort order and raises
+#   RuntimeError("UOp verification failed at {i} on {op} {dtype} {len(src)} {[(src.op, src.dtype, src.arg)...]} {arg}")
+# on the first one that does not return True. SPEC=1 (the default) runs it at a few checkpoints (schedule + codegen);
+# SPEC=2 additionally checks every UOp *as it is constructed* (UOpMetaClass.__call__ in uop/ops.py).
+import json, os, subprocess, sys
+from tinygrad import dtypes
+from tinygrad.uop.ops import UOp, Ops
+from tinygrad.uop.spec import type_verify, spec_tensor, spec_program, spec_full
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+a = UOp.const(1.0, dtypes.float)   # NOTE: a typed const is CAST(CONST(weak)), see UOp.const
+b = UOp.const(2.0, dtypes.float)
+i = UOp.const(3, dtypes.int)
+cases = [
+  ("valid: float ADD float", (a + b), spec_tensor),
+  ("ADD of float and int (operands must share the result dtype)", UOp(Ops.ADD, src=(a, i)), spec_tensor),
+  ("bitwise AND on floats", UOp(Ops.AND, src=(a, b)), spec_tensor),
+  ("CMPLT comparing a float with an int", UOp(Ops.CMPLT, src=(a, i)), spec_tensor),
+  ("WHERE with a float condition", UOp(Ops.WHERE, src=(a, a, b)), spec_tensor),
+  ("CAST whose arg is not a DType", UOp(Ops.CAST, src=(a,), arg="float"), spec_tensor),
+  ("SQRT of an int (surprise: dtype inference makes it float32, so it passes)", UOp(Ops.SQRT, src=(i,)), spec_tensor),
+  ("a movement op inside a *program* (spec_program forbids RESHAPE)", a.reshape((1,)), spec_program),
+]
+def safe_uir(u:UOp) -&gt; str:
+  try: return u.render_uir()
+  except Exception: return f"UOp(Ops.{u.op.name}, src=&lt;{len(u.src)} srcs&gt;, arg={u.arg!r})   (render_uir itself chokes on it)"
+results = []
+for title, u, spec in cases:
+  try:
+    type_verify(u, spec)
+    msg = "OK"
+  except Exception as e:
+    msg = f"{type(e).__name__}: {e}"
+  print(f"--- {title}\n    {msg}")
+  results.append({"title": title, "uir": safe_uir(u), "spec": {id(spec_tensor): "spec_tensor", id(spec_program): "spec_program"}[id(spec)], "error": msg})
+
+print("\n--- SPEC=2: the check runs at construction time, inside UOpMetaClass.__call__")
+code = ("from tinygrad import dtypes\nfrom tinygrad.uop.ops import UOp, Ops\n"
+        "UOp(Ops.ADD, src=(UOp.const(1.0, dtypes.float), UOp.const(3, dtypes.int)))\nprint('constructed fine, nobody checked')")
+for spec in ("1", "2"):
+  p = subprocess.run([sys.executable, "-c", code], env={**os.environ, "DEV": "CPU", "SPEC": spec}, capture_output=True, text=True)
+  out = (p.stdout + p.stderr).strip().splitlines()
+  last = next((l for l in out if l.startswith(("RuntimeError", "constructed"))), out[-1])
+  print(f"    SPEC={spec}: {last[:160]}")
+  results.append({"title": f"SPEC={spec}: construct ADD(float, int)", "uir": "UOp(Ops.ADD, src=(UOp.const(1.0, dtypes.float), UOp.const(3, dtypes.int)))", "spec": "spec_full (SPEC&gt;=2)" if spec == "2" else "(none at construction)", "error": last})
+json.dump(results, open(os.path.join(HERE, "..", "data", "ch21_spec.json"), "w"), indent=1)
+print("wrote data/ch21_spec.json")</code></pre>
+  <pre class="output"><code>--- valid: float ADD float
+    OK
+--- ADD of float and int (operands must share the result dtype)
+    RuntimeError: UOp verification failed at 4 on Ops.ADD dtypes.f32 2 [(Ops.CAST, dtypes.f32, dtypes.f32), (Ops.CAST, dtypes.i32, dtypes.i32)] None
+--- bitwise AND on floats
+    RuntimeError: UOp verification failed at 4 on Ops.AND dtypes.f32 2 [(Ops.CAST, dtypes.f32, dtypes.f32), (Ops.CAST, dtypes.f32, dtypes.f32)] None
+--- CMPLT comparing a float with an int
+    RuntimeError: UOp verification failed at 4 on Ops.CMPLT dtypes.bool 2 [(Ops.CAST, dtypes.f32, dtypes.f32), (Ops.CAST, dtypes.i32, dtypes.i32)] None
+--- WHERE with a float condition
+    RuntimeError: where cond must be bool, got dtypes.f32
+--- CAST whose arg is not a DType
+    AssertionError: CAST/BITCAST arg must be DType, got float
+--- SQRT of an int (surprise: dtype inference makes it float32, so it passes)
+    OK
+--- a movement op inside a *program* (spec_program forbids RESHAPE)
+    RuntimeError: UOp verification failed at 3 on Ops.RESHAPE dtypes.f32 2 [(Ops.CAST, dtypes.f32, dtypes.f32), (Ops.CONST, dtypes.weakint, 1)] None
+
+--- SPEC=2: the check runs at construction time, inside UOpMetaClass.__call__
+    SPEC=1: constructed fine, nobody checked
+    SPEC=2: RuntimeError: SPEC ISSUE False: UOp(Ops.ADD, arg=None, src=(
+wrote data/ch21_spec.json</code></pre>
+  <p>There are three lines of defense, and the output shows all three. (1) <b>dtype inference at construction</b>
+  (<code>dtype_from_uop</code>) already rejects a non-bool WHERE condition and a CAST whose arg is not a DType, before any spec runs. (2)
+  <b><code>type_verify</code></b> rejects graphs that build fine but break a rule: an ADD of f32 and i32, AND on floats, a RESHAPE inside a program. The
+  error names the position in toposort order and the sources. (3) <b><code>SPEC=2</code></b> moves check (2) to the moment of construction, so the traceback
+  points at the line that built the bad UOp instead of a later pass. The surprise case is worth remembering: <code>SQRT</code> of an int is <i>valid</i>, because
+  dtype inference makes transcendentals of ints produce the default float.</p>
+
+  <div class="demo" id="demo-spec">
+    <div class="demo-title">Spec-violation explorer</div>
+    <div class="demo-desc">Left: the real captured cases. Click one to see the graph and the real error. Right: build your own UOp and check it with a JavaScript mirror of
+    the handful of rules quoted above (dtype inference + <code>spec_shared</code>'s ALU/comparison/WHERE/bitwise rules + <code>spec_program</code>'s ban on
+    movement ops). It is a mirror for exploring, not the real spec; the real one has ~100 rules.</div>
+    <div class="ch21-spec">
+      <div><div class="cases"></div><div class="ch21-verdict real">Click a case.</div></div>
+      <div class="ch21-builder"></div>
+    </div>
+  </div>
+
+  <div class="quiz" data-answer="1">
+    <div class="q">A rewrite rule you wrote produces an ADD whose two sources have different dtypes. With default settings, when do you find out?</div>
+    <button class="opt">Immediately, when the bad UOp is constructed.</button>
+    <button class="opt">At the next <code>type_verify</code> checkpoint (for example when the kernel reaches spec_program after lowering), far from your rule. With <code>SPEC=2</code> it fails at construction instead.</button>
+    <button class="opt">Never; the C compiler will complain.</button>
+    <div class="explain"><code>SPEC=1</code> (the default) verifies whole graphs at a few checkpoints. <code>SPEC=2</code> runs <code>spec_full</code> inside
+    <code>UOpMetaClass.__call__</code> for every new UOp, which is slower but points at the culprit.</div>
+  </div>
+
+  <!-- ===================================================================================== -->
+  <h2 id="noopt-beam"><span class="sec">21.6</span>NOOPT and BEAM: switch the optimizer off, or make it search</h2>
+  <p>The kernel AST is the same either way. Only the optimization stage between the AST and lowering changes (<a href="14-optimizations.html">Chapter 14</a>).
+  <code>NOOPT=1</code> applies no OptOps, so the C is the plain loop nest the AST describes. This is the first thing to try when a kernel is wrong, because it tells you
+  whether the bug is in an optimization. The default runs <a class="src" data-path="tinygrad/codegen/opt/heuristic.py" data-line="8">hand_coded_optimizations</a>.
+  <code>BEAM=n</code> runs <a class="src" data-path="tinygrad/codegen/opt/search.py" data-line="105">beam_search</a>: it compiles and <i>times</i> candidate
+  OptOp sequences on the real device and keeps the best <code>n</code> at each level. Results are cached in the disk cache, so <code>IGNORE_BEAM_CACHE=1</code>
+  forces a fresh search.</p>
+  <div class="codecap"><b>examples/21_noopt_beam.py</b> — run with <code>DEV=CPU python3 examples/21_noopt_beam.py</code></div>
+  <pre><code class="language-python"># Chapter 21 — NOOPT and BEAM change the *same* kernel; process replay is "same input, compare generated code"
+# Run: DEV=CPU python3 examples/21_noopt_beam.py
+#
+# The kernel AST is identical in all three runs; only the optimizer stage differs:
+#   NOOPT=1  -&gt; no OptOps applied (the plain loops the AST describes)
+#   default  -&gt; the hand-coded heuristic (codegen/opt/heuristic.py)
+#   BEAM=2   -&gt; beam search over OptOps, timing real candidates (codegen/opt/search.py)
+# We print the applied opts and the C for each. Then the idea behind process replay: lower the same captured AST
+# twice and diff the source -- a refactor that changes nothing must give an empty diff.
+import difflib, os, re, subprocess, sys
+HERE = os.path.dirname(os.path.abspath(__file__))
+prog = """
+from tinygrad import Tensor
+a = Tensor.rand(64, 64).realize()
+b = (a @ a.T).realize()
+"""
+for title, extra in (("NOOPT=1", {"NOOPT": "1"}), ("default (hand-coded heuristic)", {}), ("BEAM=2", {"BEAM": "2", "IGNORE_BEAM_CACHE": "1"})):
+  env = {**os.environ, "DEV": "CPU", "DEBUG": "4", "NO_COLOR": "1", **extra}
+  p = subprocess.run([sys.executable, "-c", prog], env=env, capture_output=True, text=True)
+  out = p.stdout
+  # the matmul kernel is the one whose name starts with r_ (a reduce)
+  name = re.search(r"void (r_\w+)\(", out).group(1)
+  m = re.search(rf"^{name}\s+opts: (.*)$", out, re.M)
+  src = out[out.index(f"void {name}("):]
+  src = src[:src.index("\n}\n") + 2]
+  run = re.search(rf"^\*\*\* CPU\s+\d+ {name}\s.*tm\s+([\d.]+\w+)/", out, re.M)
+  print(f"===== {title}: kernel {name}  opts={m.group(1) if m else '()'}  time={run.group(1) if run else '?'}")
+  lines = src.splitlines()
+  print("\n".join(lines[:14]) + (f"\n  ... ({len(lines)} lines)" if len(lines) &gt; 14 else ""))
+  print()
+
+print("===== process replay, in miniature")
+from tinygrad import Tensor, Device
+from tinygrad.uop.ops import Ops
+from tinygrad.codegen import to_program
+from tinygrad.helpers import Context
+x = Tensor.rand(4, 4).realize()
+ast = next(c.src[0] for c in Tensor.schedule_linear((x * 2).sum(1)).src if c.src[0].op is Ops.SINK)
+ren = Device["CPU"].renderer
+def src_of(prg): return next(s.arg for s in prg.src if s.op is Ops.SOURCE)
+good = src_of(to_program(ast, ren))                        # "master"
+same = src_of(to_program(ast, ren))                        # "your branch", a pure refactor
+with Context(NOOPT=1): changed = src_of(to_program(ast, ren))   # "your branch", which (accidentally) changed codegen
+for nm, cmp in (("refactor", same), ("behavior change", changed)):
+  diff = [l for l in difflib.unified_diff(good.splitlines(), cmp.splitlines(), lineterm="") if not l.startswith(("---", "+++"))]
+  print(f"{nm}: {len(diff)} diff lines" + ("".join("\n  " + l for l in diff[:12]) if diff else "  -&gt; process replay passes"))</code></pre>
+  <pre class="output"><code>===== NOOPT=1: kernel r_64_64_64  opts=()  time=169.62us
+void r_64_64_64(const struct r_64_64_64_args* args) {
+  float* data0_4096 = args-&gt;arg0;
+  float* data1_4096 = args-&gt;arg1;
+  float buf0[1];
+  for (int Lidx1 = 0; Lidx1 &lt; 64; Lidx1++) {
+    int alu0 = (Lidx1&lt;&lt;6);
+    for (int Lidx2 = 0; Lidx2 &lt; 64; Lidx2++) {
+      *(buf0+0) = 0.0f;
+      for (int Lidx0 = 0; Lidx0 &lt; 64; Lidx0++) {
+        float val0 = (*(data1_4096+(alu0+Lidx0)));
+        float val1 = (*(data1_4096+((Lidx2&lt;&lt;6)+Lidx0)));
+        *(buf0+0) = ((*(buf0+0))+(val0*val1));
+      }
+      *(data0_4096+(alu0+Lidx2)) = (*(buf0+0));
+  ... (17 lines)
+
+===== default (hand-coded heuristic): kernel r_16_16_4_4_16_4  opts=(Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST)), Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST)), Opt(op=OptOps.SPLIT, axis=4, arg=(4, AxisType.UPCAST)))  time=40.98us
+void r_16_16_4_4_16_4(const struct r_16_16_4_4_16_4_args* args) {
+  float* data0_4096 = args-&gt;arg0;
+  float* data1_4096 = args-&gt;arg1;
+  float buf0[16];
+  for (int Lidx1 = 0; Lidx1 &lt; 16; Lidx1++) {
+    int alu0 = (Lidx1&lt;&lt;8);
+    for (int Lidx2 = 0; Lidx2 &lt; 16; Lidx2++) {
+      *(buf0+0) = 0.0f;
+      *(buf0+1) = 0.0f;
+      *(buf0+10) = 0.0f;
+      *(buf0+11) = 0.0f;
+      *(buf0+12) = 0.0f;
+      *(buf0+13) = 0.0f;
+      *(buf0+14) = 0.0f;
+  ... (60 lines)
+
+===== BEAM=2: kernel r_4_16_4_4_4_16_4  opts=(Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST)), Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST)), Opt(op=OptOps.SPLIT, axis=4, arg=(4, AxisType.UPCAST)), Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST)))  time=29.17us
+void r_4_16_4_4_4_16_4(const struct r_4_16_4_4_4_16_4_args* args) {
+  float* data0_4096 = args-&gt;arg0;
+  float* data1_4096 = args-&gt;arg1;
+  float buf0[64];
+  for (int Lidx1 = 0; Lidx1 &lt; 4; Lidx1++) {
+    int alu0 = (Lidx1&lt;&lt;10);
+    for (int Lidx2 = 0; Lidx2 &lt; 16; Lidx2++) {
+      *(buf0+0) = 0.0f;
+      *(buf0+1) = 0.0f;
+      *(buf0+10) = 0.0f;
+      *(buf0+11) = 0.0f;
+      *(buf0+12) = 0.0f;
+      *(buf0+13) = 0.0f;
+      *(buf0+14) = 0.0f;
+  ... (180 lines)
+
+===== process replay, in miniature
+refactor: 0 diff lines  -&gt; process replay passes
+behavior change: 19 diff lines
+  @@ -1,10 +1,15 @@
+  -typedef float float4 __attribute__((aligned(4),ext_vector_type(4)));
+  +
+   struct r_4_4_args { float* arg0; float* arg1; };
+   void r_4_4(const struct r_4_4_args* args) {
+     float* data0_4 = args-&gt;arg0;
+     float* data1_16 = args-&gt;arg1;
+  +  float buf0[1];
+     for (int Lidx1 = 0; Lidx1 &lt; 4; Lidx1++) {
+  -    float4 val0 = (*((float4*)((data1_16+(Lidx1&lt;&lt;2)))));
+  -    *(data0_4+Lidx1) = ((val0[0]+val0[1]+val0[2]+val0[3])*2.0f);
+  +    *(buf0+0) = 0.0f;</code></pre>
+  <p>The kernel name encodes the optimization: <code>r_64_64_64</code> (three plain loops) became <code>r_16_16_4_4_16_4</code> (both output axes split and upcast by 4, the
+  reduce unrolled by 4: a 4×4 register tile, see <code>float buf0[16]</code>). BEAM picked a different tiling, <code>r_4_16_4_4_4_16_4</code>, with a 64-element accumulator (<code>float buf0[64]</code>). Re-running can pick yet another
+  tiling: candidates within noise of each other swap places. <b>Read the times carefully:</b> each is a single run of a ~40 µs kernel on a shared CPU (169 µs NOOPT,
+  41 µs heuristic, 29 µs BEAM in this run). In earlier runs the BEAM kernel measured <i>slower</i> than the heuristic, which is noise. BEAM's choice was made on its own repeated timings. To compare kernels properly, use <code>DEBUG=2</code> over many runs, or
+  <code>python -m tinygrad.viz.cli -t</code> on a <code>VIZ=-1</code>/<code>PROFILE=1</code> run.</p>
+
+  <!-- ===================================================================================== -->
+  <h2 id="replay"><span class="sec">21.7</span>Process replay: refactors must not change generated code</h2>
+  <p>tinygrad gets refactored constantly, and most PRs say "no behavior change". Process replay checks that claim mechanically:</p>
+  <ol>
+    <li><b>Capture.</b> CI runs the test suite on your branch with <code>CAPTURE_PROCESS_REPLAY=1</code>. Every function decorated
+      <code>@rewrite_group(..., replay="process_replay")</code> pickles its inputs, the values of every ContextVar, the test location
+      (<code>get_process_replay_loc</code>, which finds the unittest frame) and its return value into the sqlite <code>CACHEDB</code>
+      (<a class="src" data-path="tinygrad/uop/ops.py" data-line="1651">ops.py:1651</a>). In this version that is
+      <a class="src" data-path="tinygrad/codegen/__init__.py" data-line="467">do_to_program</a>: AST + renderer → PROGRAM (with source).</li>
+    <li><b>Replay.</b> Check out <code>master</code>, run <a class="src" data-path="test/external/process_replay/process_replay.py" data-line="1">process_replay.py</a>.
+      For each captured row it restores the ContextVars, calls master's <code>to_program</code> on the <i>same AST</i>, and unified-diffs master's source
+      against your branch's.</li>
+    <li><b>Judge.</b> Diffs are printed. If the PR title contains <code>[pr]</code> (a refactor/speedup claim), any diff fails CI (<code>ASSERT_DIFF</code>).
+      Replay stops early when more than 20% of kernels change. <code>[skip_process_replay]</code> opts out.</li>
+  </ol>
+  <p>The CI step is <a class="src" data-path=".github/actions/process-replay/action.yml" data-line="1">.github/actions/process-replay</a>; the local recipe is
+  <a class="src" data-path="test/external/process_replay/local.sh" data-line="1">local.sh</a>. The idea fits in a few lines, which is the last part of
+  <code>21_noopt_beam.py</code>: lower the same AST twice. A pure refactor gives 0 diff lines. A change that alters codegen (simulated with <code>NOOPT</code>)
+  gives a diff that names exactly what changed:</p>
+  <pre class="output"><code>  float* data0_4096 = args-&gt;arg0;
+  float* data1_4096 = args-&gt;arg1;
+  float buf0[1];
+  for (int Lidx1 = 0; Lidx1 &lt; 64; Lidx1++) {
+    int alu0 = (Lidx1&lt;&lt;6);
+    for (int Lidx2 = 0; Lidx2 &lt; 64; Lidx2++) {
+      *(buf0+0) = 0.0f;
+      for (int Lidx0 = 0; Lidx0 &lt; 64; Lidx0++) {
+        float val0 = (*(data1_4096+(alu0+Lidx0)));
+        float val1 = (*(data1_4096+((Lidx2&lt;&lt;6)+Lidx0)));
+        *(buf0+0) = ((*(buf0+0))+(val0*val1));
+      }
+      *(data0_4096+(alu0+Lidx2)) = (*(buf0+0));
+  ... (17 lines)
+  float* data0_4096 = args-&gt;arg0;
+  float* data1_4096 = args-&gt;arg1;
+  float buf0[16];
+  for (int Lidx1 = 0; Lidx1 &lt; 16; Lidx1++) {
+    int alu0 = (Lidx1&lt;&lt;8);
+    for (int Lidx2 = 0; Lidx2 &lt; 16; Lidx2++) {
+      *(buf0+0) = 0.0f;
+      *(buf0+1) = 0.0f;
+      *(buf0+10) = 0.0f;
+      *(buf0+11) = 0.0f;
+      *(buf0+12) = 0.0f;
+      *(buf0+13) = 0.0f;
+      *(buf0+14) = 0.0f;
+  ... (60 lines)
+  float* data0_4096 = args-&gt;arg0;
+  float* data1_4096 = args-&gt;arg1;
+  float buf0[64];
+  for (int Lidx1 = 0; Lidx1 &lt; 4; Lidx1++) {
+    int alu0 = (Lidx1&lt;&lt;10);
+    for (int Lidx2 = 0; Lidx2 &lt; 16; Lidx2++) {
+      *(buf0+0) = 0.0f;
+      *(buf0+1) = 0.0f;
+      *(buf0+10) = 0.0f;
+      *(buf0+11) = 0.0f;
+      *(buf0+12) = 0.0f;
+      *(buf0+13) = 0.0f;
+      *(buf0+14) = 0.0f;
+  ... (180 lines)
+refactor: 0 diff lines  -&gt; process replay passes
+behavior change: 19 diff lines
+  @@ -1,10 +1,15 @@
+  -typedef float float4 __attribute__((aligned(4),ext_vector_type(4)));
+  +
+   struct r_4_4_args { float* arg0; float* arg1; };
+   void r_4_4(const struct r_4_4_args* args) {
+     float* data0_4 = args-&gt;arg0;
+     float* data1_16 = args-&gt;arg1;
+  +  float buf0[1];
+     for (int Lidx1 = 0; Lidx1 &lt; 4; Lidx1++) {
+  -    float4 val0 = (*((float4*)((data1_16+(Lidx1&lt;&lt;2)))));
+  -    *(data0_4+Lidx1) = ((val0[0]+val0[1]+val0[2]+val0[3])*2.0f);
+  +    *(buf0+0) = 0.0f;</code></pre>
+  <div class="callout aha"><span class="title">Why this is so effective</span>Because the compiler is pure graph rewriting from a pickleable UOp to a string, the whole
+  compiler is a deterministic function <code>AST → source</code>. Testing a refactor is then just "same inputs, same outputs" over every kernel the test suite ever
+  generates, with no tolerances and no hardware needed.</div>
+
+  <!-- ===================================================================================== -->
+  <h2 id="tests"><span class="sec">21.8</span>The test suite: where things live and how to run one test</h2>
+  <p><code>test/README</code> is three lines and they are the map: <b><code>test/null</code></b> holds tests that need no backend (pattern matcher, symbolic
+  math, scheduler, memory planner, UOp graphs, …; they run with <code>DEV=NULL</code> or anything), <b><code>test/runtime</code></b> holds shared tests that run on
+  each backend, and <b><code>test/device/&lt;dev&gt;</code></b> holds device-specific tests. Also: <code>test/external</code> (benchmarks, fuzzers, process replay;
+  not run by default), <code>test/models</code>, <code>test/speed</code>, <code>test/amd</code> (the RDNA assembler/emulator), <code>test/mockgpu</code>. The repo's
+  <code>AGENTS.md</code> recommends <code>python -m pytest test/null/test_dtype.py -x -q -n12</code>.</p>
+  <div class="codecap"><b>examples/21_repo_tools.py</b> — run with <code>DEV=CPU python3 examples/21_repo_tools.py</code></div>
+  <pre><code class="language-python"># Chapter 21 — the test suite and the line counter, run from the tinygrad checkout
+# Run: DEV=CPU python3 examples/21_repo_tools.py      (needs: pip install pytest tabulate)
+#
+# PYTHONDONTWRITEBYTECODE=1 and -p no:cacheprovider keep pytest from writing __pycache__/.pytest_cache into the repo.
+import os, subprocess, sys
+import tinygrad
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(tinygrad.__file__)))   # the editable checkout
+env = {**os.environ, "DEV": "CPU", "PYTHONDONTWRITEBYTECODE": "1", "NO_COLOR": "1"}
+def run(cmd:list[str], tail:int):
+  p = subprocess.run(cmd, cwd=REPO, env=env, capture_output=True, text=True)
+  print("$ python " + " ".join(c for c in cmd[1:] if c not in ("-p", "no:cacheprovider")))
+  lines = (p.stdout + p.stderr).strip().splitlines()
+  print("\n".join([l for l in lines if "ModuleNotFoundError" in l][:1] + lines[-tail:]) + "\n")
+py = sys.executable
+run([py, "-m", "pytest", "-p", "no:cacheprovider", "test/null/test_pattern_matcher.py", "-q"], 3)
+run([py, "-m", "pytest", "-p", "no:cacheprovider", "test/null/test_memory_planner.py", "-v", "-k", "pinned"], 6)
+# most test files import test/helpers.py, which needs numpy (pip install -e '.[testing_minimal]'); without it collection fails:
+run([py, "-m", "pytest", "-p", "no:cacheprovider", "test/null/test_schedule.py", "-q", "-x"], 3)
+run([py, "sz.py"], 18)</code></pre>
+  <pre class="output"><code>$ python -m pytest test/null/test_pattern_matcher.py -q
+.......s.........                                                        [100%]
+16 passed, 1 skipped in 0.14s
+
+$ python -m pytest test/null/test_memory_planner.py -v -k pinned
+
+test/null/test_memory_planner.py::TestMemoryPlanner::test_all_pinned PASSED [ 33%]
+test/null/test_memory_planner.py::TestMemoryPlanner::test_copy_bufs_pinned_mixed PASSED [ 66%]
+test/null/test_memory_planner.py::TestMemoryPlanner::test_simple_pinned PASSED [100%]
+
+======================= 3 passed, 13 deselected in 0.13s =======================
+
+$ python -m pytest test/null/test_schedule.py -q -x
+E   ModuleNotFoundError: No module named 'numpy'
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+1 error in 0.28s
+… (20 more lines)</code></pre>
+  <div class="callout warn">This orb's Python has no numpy, so test files that import <code>test/helpers.py</code> (which imports numpy) fail at collection, as the third command
+  shows. Install the test extras (<code>pip install -e '.[testing_minimal]'</code>: numpy, torch, pytest, hypothesis, z3) to run the full suite. Narrow with
+  <code>file::Class::test</code> or <code>-k expr</code>, and add <code>-n12</code> (pytest-xdist) for parallelism.</div>
+  <p>Focused tests are also the best documentation of edge cases. The scheduler's comments cite them by name, for example
+  <code># ... like TestAssign.test_assign_double_diamond_reduce</code> in <a class="src" data-path="tinygrad/schedule/indexing.py" data-line="33">indexing.py:33</a>.
+  When you wonder why a rule exists, grep the test it names.</p>
+
+  <!-- ===================================================================================== -->
+  <h2 id="sz"><span class="sec">21.9</span>The line-count philosophy: sz.py</h2>
+  <p>tinygrad treats lines of code as a budget. <a class="src" data-path="sz.py" data-line="1">sz.py</a> counts non-comment, non-docstring lines per file using
+  the Python tokenizer (autogen and viz assets excluded), groups them by directory, and reports <b>core lines</b>, which excludes <code>llm, nn, renderer, runtime,
+  viz</code>. CI enforces a hard cap: <code>MAX_LINE_COUNT=26500 python sz.py</code> (<code>.github/workflows/test.yml:237</code>). Today's numbers (the tail of the
+  output above):</p>
+  <pre class="output"><code>… (18 earlier lines omitted)
+$ python sz.py
+tinygrad/llm/__main__.py                         2            8.0
+
+tinygrad                       :   1669 in  6 files
+tinygrad/codegen               :   1788 in 14 files
+tinygrad/engine                :    429 in  3 files
+tinygrad/llm                   :   2053 in  7 files
+tinygrad/mixin                 :   1698 in  8 files
+tinygrad/nn                    :   1444 in  6 files
+tinygrad/renderer              :   3652 in 13 files
+tinygrad/runtime               :   7117 in 36 files
+tinygrad/schedule              :   1177 in  7 files
+tinygrad/uop                   :   2560 in 10 files
+tinygrad/viz                   :   2068 in  4 files
+
+        ops: 75
+      flags: 53
+ core lines: 9321
+total lines: 25655</code></pre>
+  <p>A <b>9,321-line core</b> (75 Ops, 53 flags) is what makes the playbook below possible. You can read the scheduler (<code>schedule/</code>, 1,177 lines) in an
+  afternoon. The budget also explains the style: dense one-liners, PatternMatchers instead of class hierarchies, and one IR (UOp) from Tensor to assembly so that
+  one set of tools (UIR printing, VIZ, spec, process replay) covers everything. With two arguments, <code>sz.py old new</code> prints a per-file line diff, which
+  reviewers read on every PR.</p>
+
+  <!-- ===================================================================================== -->
+  <h2 id="playbook"><span class="sec">21.10</span>The playbook: investigating any question about tinygrad yourself</h2>
+  <p>Each recipe below is a sequence of real commands and functions from this chapter and the previous ones. Pick a question:</p>
+  <div class="demo" id="demo-play">
+    <div class="demo-title">Investigation recipe picker</div>
+    <div class="demo-desc">Choose a question. The recipe lists what to run, in order, and what to look for in the output.</div>
+    <div class="ch21-play"><select class="q"></select></div>
+    <div class="ch21-recipe"></div>
+  </div>
+
+  <h3>Docs that are really programs</h3>
+  <p>Two files in <code>docs/</code> work as investigation templates. <a class="src" data-path="docs/abstractions3.py" data-line="1">docs/abstractions3.py</a> walks one
+  MNIST SGD step from front to back: Tensor graph, schedule, lowering, run. It is the same path <a href="20-nn-training.html">Chapter 20</a> traced, and a good script to run under
+  <code>DEBUG=2</code> or <code>VIZ=1</code>. <a class="src" data-path="docs/abstractions4.py" data-line="1">docs/abstractions4.py</a> writes the same kernel at
+  several abstraction levels: raw HIP source, a hand-built UOp kernel, a BEAM-searched Tensor version and RDNA3 assembly. It targets AMD (or the
+  <code>DEV=MOCKPCI+AMD</code> emulator), so it was not run in this orb. It is the reference for "how do I drop below Tensor when I need to".</p>
+  <h3>Hammer it again: one question, three tools</h3>
+  <p>"<b>Why did the specimen produce 2 kernels?</b>" Here are three independent answers from this chapter's real outputs:</p>
+  <ol>
+    <li><code>DEBUG=2</code>: two lines, <code>*** PYTHON 1 copy 32 B, CPU &lt;- PYTHON</code> and <code>*** CPU 2 r_2_4</code>. One is a copy. The data started in a Python list.</li>
+    <li><code>viz.cli -q 'kernel split'</code>: the kernel graph has an <code>alloc 8</code> on CPU filled by a store from <code>param 8 … device=PYTHON</code>,
+      and the compute reads the alloc. A device boundary always means a separate kernel.</li>
+    <li><code>VIZ=1</code> → group "Schedule 1 -&gt; 2 n1": the group name itself says one tensor in, two calls out.</li>
+  </ol>
+  <p>Changing <code>Tensor([[...]])</code> to <code>Tensor.ones(2,4)</code> would remove the copy (constants are created on the device). Each tool tells you that in its own way.</p>
+
+  <div class="quiz" data-answer="3">
+    <div class="q">A generated kernel has an odd index expression like <code>((r1*4+r2)//4)%2</code> that you suspect a rewrite produced. Fastest way to find the rule?</div>
+    <button class="opt"><code>DEBUG=4</code> and read the C</button>
+    <button class="opt"><code>NOOPT=1</code></button>
+    <button class="opt"><code>TRACK_MATCH_STATS=1</code></button>
+    <button class="opt"><code>VIZ=-1</code>, then <code>python -m tinygrad.viz.cli -s CPU &lt;kernel&gt;</code> with <code>DEBUG=5</code> to list the rewrites, then <code>-s CPU &lt;kernel&gt; '&lt;rewrite&gt;'</code> to print each match's UPat file:line and diff</button>
+    <div class="explain">Only the VIZ trace records which UPat produced which UOp. DEBUG shows results, match stats show counts, NOOPT only removes optimizations.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">What does process replay compare?</div>
+    <button class="opt">The generated kernel source from master vs your branch, for the exact same captured ASTs and ContextVars</button>
+    <button class="opt">Numerical outputs of the test suite on master vs your branch</button>
+    <button class="opt">Kernel run times before and after</button>
+    <div class="explain">It replays <code>do_to_program</code> inputs captured on your branch through master's compiler and diffs the source strings.</div>
+  </div>
+
+  <div class="summary-box"><h3>Chapter summary</h3><ul>
+    <li><code>DEBUG</code> (verified): 1 = devices, schedule summaries and cache hits; 2 = one line per kernel with timing; 3 = applied opts; 4 = generated source; 5 = kernel AST UIR;
+      7 = buffer alloc/free and disassembly; 8 = SQL to the disk cache. (6 adds nothing on CPU.)</li>
+    <li><code>VIZ=1</code> = web UI; <code>VIZ=-1</code> = just save <code>rewrites.pkl</code>/<code>profile.pkl</code>; <code>python -m tinygrad.viz.cli</code> (<code>-s</code>,
+      <code>-q</code>, <code>-t</code>, <code>--json</code>, plus DEBUG) reads them in a terminal. Every graph_rewrite and every match is recorded, because every pass is a PatternMatcher.</li>
+    <li><code>TRACK_MATCH_STATS=1</code> prints per-rule matches/attempts/time. <code>PROFILE</code> records the timeline that VIZ and <code>viz.cli -t</code> show.</li>
+    <li>The IR has a spec written as PatternMatchers. <code>type_verify</code> runs it at checkpoints (<code>SPEC=1</code>) and <code>SPEC=2</code> runs it on every UOp at construction.</li>
+    <li><code>NOOPT=1</code> isolates optimizer bugs; <code>BEAM=n</code> searches OptOps by timing. Process replay diffs generated source across commits. Tests live in
+      <code>test/null</code>, <code>test/runtime</code> and <code>test/device/*</code>. <code>sz.py</code> keeps the core at about 9.3k lines.</li>
+  </ul></div>
+</main>
+</div>
+<script>
+(async function () {
+  const G = Guide, el = G.el;
+  const [levels, trace, spec] = await Promise.all([G.loadJSON("../data/ch21_debug_levels.json"), G.loadJSON("../data/ch21_trace.json"), G.loadJSON("../data/ch21_spec.json")]);
+
+  // ---------------- DEBUG slider ----------------
+  {
+    const box = G.$("#demo-debug");
+    const KINDS = [
+      [/^compiling /, "tqdm", 1, "realize.py:253 — tqdm progress bar of lower_and_compile (stderr, DEBUG≥1). Shows each kernel name as it compiles.", "tinygrad/engine/realize.py", 253],
+      [/^opened device/, "device", 1, "device.py:43 — the first time Device[X] is touched. PYTHON is opened because the input came from a Python list.", "tinygrad/device.py", 43],
+      [/^loading /, "dlopen", 3, "runtime/support/c.py:118 — shared libraries loaded through tinygrad's ctypes helpers (libc, libgcc for the CPU runtime…).", "tinygrad/runtime/support/c.py", 118],
+      [/^scheduled /, "schedule", 1, "schedule/__init__.py:138 — kernels in the LINEAR, time spent scheduling, schedule-cache hit/miss + key, size of the UOp cache, and the user code line that triggered realize.", "tinygrad/schedule/__init__.py", 138],
+      [/^\*\*\* /, "kernel-run", 2, "realize.py:98 — one line per executed CALL: device, global kernel counter, name (copy or kernel), #buffer args, memory in use, time this kernel / cumulative, estimated GFLOPS and GB/s (mem|lds).", "tinygrad/engine/realize.py", 98],
+      [/^\S+ +opts: /, "opts", 3, "codegen/__init__.py:422 — the OptOps the optimizer applied to this kernel (here: an UPCAST split of 4 on the reduce axis).", "tinygrad/codegen/__init__.py", 422],
+      [/^%\d+ = /, "uir", 5, "codegen/__init__.py:254 — render_uir(ast) of the kernel AST entering full_rewrite_to_sink (name still 'test'). Same format as UOp.render_uir().", "tinygrad/codegen/__init__.py", 254],
+      [/^buffer: /, "alloc", 7, "device.py:167/194 — every Buffer allocate/deallocate with its size and device.", "tinygrad/device.py", 167],
+      [/^system: /, "system", 7, "helpers.py:522 — a subprocess (here objdump, for the DEBUG≥7 disassembly).", "tinygrad/helpers.py", 522],
+      [/^SELECT |^INSERT |^CREATE |^BEGIN|^COMMIT/, "sqlite", 8, "helpers.py:408 — DEBUG≥8 installs sqlite's trace callback: every query to the disk cache (here the compiled-object cache lookup).", "tinygrad/helpers.py", 408],
+      [/^\[/, "result", 0, "The program's own print(y.tolist()).", null, 0],
+    ];
+    const CODE = ["code/asm", 4, "codegen/__init__.py:454 (DEBUG≥4) prints the rendered source; at DEBUG≥7 codegen/__init__.py:456 also disassembles the compiled object (the objdump listing).", "tinygrad/codegen/__init__.py", 454];
+    const kindOf = (l) => { const k = KINDS.find(([r]) => r.test(l)); return k ? k.slice(1) : CODE; };
+    const lg = G.$(".ch21-legend", box);
+    [...KINDS.map((k) => k.slice(1)), CODE].forEach(([n, lvl]) => lg.append(el("span", { class: "k-" + n, style: "" }, `■ ${n} (≥${lvl})`)));
+    G.$$(".ch21-legend span", box).forEach((s) => { s.style.color = getComputedStyle(document.documentElement).getPropertyValue("--fg"); });
+    const term = G.$(".ch21-term", box), note = G.$(".ch21-note", box), lv = G.$(".lvl", box), lvv = G.$(".lvlv", box);
+    // legend colors: reuse term classes
+    G.$$(".ch21-legend span", box).forEach((s) => { const probe = el("div", { class: s.className }); term.append(probe); s.style.color = getComputedStyle(probe).color; probe.remove(); });
+    function show(d) {
+      const lines = levels[d].split("\n"), prev = new Set(d > 0 ? levels[d - 1].split("\n") : []);
+      const prevKinds = new Set(d > 0 ? levels[d - 1].split("\n").map((l) => kindOf(l)[0]) : []);
+      term.innerHTML = "";
+      let incode = false;
+      for (const l of lines) {
+        let k = kindOf(l);
+        const isNew = d > 0 && !prevKinds.has(k[0]);
+        const div = el("div", { class: "k-" + k[0] + (isNew ? " new" : ""), "data-g": isNew ? "+" : "" }, l || " ");
+        div.addEventListener("mouseenter", () => {
+          note.innerHTML = "";
+          note.append(el("h4", { style: "color:" + getComputedStyle(div).color }, `${k[0]} · appears at DEBUG≥${k[1]}`), el("div", {}, k[2]));
+          if (k[3]) { const a = el("a", { class: "src", href: G.src(k[3], k[4]), target: "_blank" }, `${k[3]}:${k[4]}`); note.append(el("div", { style: "margin-top:8px" }, a)); }
+        });
+        term.append(div);
+      }
+      lvv.innerHTML = ` <b>${lines.length}</b> lines · new kinds marked <b>+</b>`;
+    }
+    lv.addEventListener("input", () => show(+lv.value)); show(2);
+  }
+
+  // ---------------- rewrite trace browser ----------------
+  {
+    const box = G.$("#demo-trace");
+    const list = G.$(".ch21-steps", box), info = G.$(".ch21-match", box), fr = G.$(".fr", box), frl = G.$(".frl", box);
+    const toNode = (id) => {
+      const n = trace.nodes[id], parts = n.label.split("\n");
+      const op = parts[0];
+      const sub = parts.slice(1).filter((p) => !p.startsWith("dtypes.") && p !== "()").slice(0, 2).join(" ").slice(0, 34);
+      return { id, op, sub: sub || " ", note: n.label, label: op };
+    };
+    function frameGraph(f) {
+      const ids = new Set(f.nodes);
+      return { nodes: f.nodes.map(toNode), edges: f.nodes.flatMap((id) => trace.nodes[id].src.filter((s) => ids.has(s)).map((s, i) => [s, id, i])) };
+    }
+    let gctl = null, cur = null;
+    function showFrame(i) {
+      const f = cur.frames[i], prev = i > 0 ? new Set(cur.frames[i - 1].nodes) : null;
+      const g = frameGraph(f);
+      if (!gctl) gctl = G.uopGraph(G.$(".graph", box), g, { height: 560, compact: true, showDtype: false });
+      else gctl.setGraph(g);
+      const fresh = prev ? f.nodes.filter((n) => !prev.has(n)) : [];
+      gctl.highlight(f.change && f.change.length ? f.change : fresh, { dimOthers: false });
+      info.innerHTML = "";
+      if (!f.upat) info.append(el("span", {}, `frame 0: the input graph of '${cur.name}' (called from ${cur.loc}). ${cur.matches} match(es) follow.`));
+      else {
+        info.append(el("span", { class: "loc" }, `match ${i}/${cur.frames.length - 1} · rule at ${f.upat.loc}\n`), el("span", {}, f.upat.code + "\n"));
+        f.diff.forEach((d) => info.append(el("span", { class: d.startsWith("-") ? "del" : d.startsWith("+") ? "add" : "" }, d + "\n")));
+      }
+      frl.textContent = ` frame ${i} / ${cur.frames.length - 1}`;
+    }
+    function pick(step, row) {
+      if (!step.frames.length) { info.textContent = `'${step.name}' (${step.loc}) made no matches, so there is nothing to replay.`; return; }
+      G.$$(".st", list).forEach((r) => r.classList.remove("sel")); row.classList.add("sel");
+      list.scrollTop = row.offsetTop - list.offsetTop - 60;
+      cur = step; fr.max = step.frames.length - 1; fr.value = 0; showFrame(0);
+    }
+    let first = null;
+    trace.groups.forEach((gr) => {
+      const rows = el("div", {});
+      const head = el("div", { class: "grp", onclick: () => (rows.style.display = rows.style.display === "none" ? "" : "none") }, `▾ ${gr.name}`);
+      gr.steps.forEach((s) => {
+        const row = el("div", { class: "st" + (s.frames.length ? " has" : ""), style: `padding-left:${18 + s.depth * 12}px`, title: `${s.name} — ${s.loc}` }, s.name, s.matches ? el("b", {}, ` - ${s.matches}`) : null);
+        row.addEventListener("click", () => pick(s, row));
+        rows.append(row);
+        if (gr.name === "r_2_4" && s.name === "postopt symbolic") first = [s, row];
+      });
+      list.append(head, rows);
+    });
+    fr.addEventListener("input", () => showFrame(+fr.value));
+    G.$(".prev", box).addEventListener("click", () => { if (cur && +fr.value > 0) { fr.value = +fr.value - 1; showFrame(+fr.value); } });
+    G.$(".next", box).addEventListener("click", () => { if (cur && +fr.value < +fr.max) { fr.value = +fr.value + 1; showFrame(+fr.value); } });
+    if (first) { pick(...first); fr.value = 1; showFrame(1); }
+  }
+
+  // ---------------- spec explorer ----------------
+  {
+    const box = G.$("#demo-spec");
+    const cases = G.$(".cases", box), real = G.$(".real", box);
+    spec.forEach((c) => {
+      const ok = c.error === "OK" || c.error.startsWith("constructed");
+      const row = el("div", { class: "ch21-case " + (ok ? "ok" : "bad") }, c.title);
+      row.addEventListener("click", () => {
+        G.$$(".ch21-case", cases).forEach((r) => r.classList.remove("sel")); row.classList.add("sel");
+        real.className = "ch21-verdict real " + (ok ? "ok" : "bad");
+        real.textContent = `checked against: ${c.spec}\n\n${c.uir}\n\n→ ${c.error}`;
+      });
+      cases.append(row);
+    });
+    // JS mirror of a few rules
+    const b = G.$(".ch21-builder", box);
+    const DT = ["float32", "int32", "bool"];
+    const sel = (opts, v) => { const s = el("select", {}, opts.map((o) => el("option", { value: o }, o))); s.value = v; return s; };
+    const op = sel(["ADD", "MUL", "MAX", "AND", "CMPLT", "WHERE", "SQRT", "CAST→float32", "RESHAPE"], "ADD");
+    const s0 = sel(DT, "float32"), s1 = sel(DT, "int32"), s2 = sel(DT, "float32");
+    const where = sel(["spec_tensor (tensor graph / AST)", "spec_program (after lowering)"], "spec_tensor (tensor graph / AST)");
+    const out = el("div", { class: "ch21-verdict" });
+    b.append(el("h4", {}, "Build a UOp"),
+      el("div", { class: "row" }, "op ", op), el("div", { class: "row" }, "src[0] ", s0, " src[1] ", s1, " src[2] ", s2, el("small", { style: "color:var(--dim)" }, " (unused srcs ignored)")),
+      el("div", { class: "row" }, "verify with ", where), out);
+    const rank = { bool: 0, int32: 1, float32: 2 };
+    const promo = (...d) => d.reduce((a, c) => (rank[c] > rank[a] ? c : a));
+    function check() {
+      const o = op.value, prog = where.value.startsWith("spec_program");
+      const nsrc = { ADD: 2, MUL: 2, MAX: 2, AND: 2, CMPLT: 2, WHERE: 3, SQRT: 1, "CAST→float32": 1, RESHAPE: 1 }[o];
+      const srcs = [s0.value, s1.value, s2.value].slice(0, nsrc);
+      [s1, s2].forEach((s, i) => (s.disabled = i + 1 >= nsrc));
+      let dtype, err = null, rule = "";
+      // 1) dtype inference (dtype_from_uop)
+      if (o === "WHERE") { if (srcs[0] !== "bool") err = `RuntimeError: where cond must be bool, got dtypes.${srcs[0] === "float32" ? "f32" : "i32"}   (dtype_from_uop, at construction)`; dtype = promo(srcs[1], srcs[2]); }
+      else if (o === "CMPLT") dtype = "bool";
+      else if (o === "SQRT") dtype = srcs[0] === "float32" ? "float32" : "float32";
+      else if (o === "CAST→float32") dtype = "float32";
+      else if (o === "RESHAPE") dtype = srcs[0];
+      else dtype = promo(...srcs);
+      // 2) spec rules
+      if (!err) {
+        if (o === "RESHAPE") { if (prog) { err = "UOp verification failed … on Ops.RESHAPE"; rule = "spec_program: (UPat(GroupOp.Movement), lambda: False)"; } else rule = "spec_tensor: RESHAPE/EXPAND with a shape src → True"; }
+        else if (o === "AND" && srcs.some((d) => d === "float32")) { err = `UOp verification failed … on Ops.AND dtypes.${dtype}`; rule = "spec_shared: (UPat((AND, OR, XOR, SHL, SHR)), lambda x: False if any(is_float(s.dtype)…))"; }
+        else if (o === "CMPLT") { if (srcs[0] !== srcs[1]) { err = "UOp verification failed … on Ops.CMPLT dtypes.bool"; rule = "spec_shared: comparison srcs must have matching dtypes"; } else rule = "spec_shared: comparison → bool with matching srcs → True"; }
+        else if (o === "WHERE") { if (srcs[1] !== dtype || srcs[2] !== dtype) { err = `UOp verification failed … on Ops.WHERE`; rule = "spec_shared: WHERE value srcs must match the result dtype"; } else rule = "spec_shared: WHERE(bool, x, x) → True"; }
+        else if (o === "SQRT") rule = srcs[0] === "float32" ? "spec_tensor: transcendental with float dtype → True" : "dtype inference made SQRT(int) a float32 UOp; spec_tensor: is_float(u.dtype) → True (the 'surprise' case)";
+        else if (o === "CAST→float32") rule = "spec_shared: CAST with a DType arg → True";
+        else { if (srcs.some((d) => d !== dtype)) { err = `UOp verification failed … on Ops.${o} dtypes.${dtype === "float32" ? "f32" : dtype === "int32" ? "i32" : "bool"}`; rule = "spec_shared: (UPat(GroupOp.ALU), lambda x: all(matches_dtype(y, x.dtype) … for y in x.src))"; } else rule = "spec_shared: ALU whose srcs all match its dtype → True"; }
+      }
+      out.className = "ch21-verdict " + (err ? "bad" : "ok");
+      out.textContent = `UOp(Ops.${o.split("→")[0]}, dtype=${dtype}, src=(${srcs.join(", ")}))\n\n${err ? "✗ " + err : "✓ valid"}\n${rule}`;
+    }
+    [op, s0, s1, s2, where].forEach((s) => s.addEventListener("change", check)); check();
+  }
+
+  // ---------------- playbook ----------------
+  {
+    const box = G.$("#demo-play");
+    const R = [
+      ["Why did this produce N kernels?", [
+        "<code>DEBUG=2</code>: count the <code>***</code> lines; copies are named <code>copy … DST &lt;- SRC</code>. <code>DEBUG=1</code>'s <code>scheduled N kernels</code> gives the total per realize and the file:line.",
+        "In Python: <code>[c.src[0].op for c in Tensor.schedule_linear(t).src]</code>, or lower it (<code>engine.realize.lower_and_compile</code>) to get names, as in <code>20_train_step.py</code>.",
+        "<code>VIZ=-1</code> then <code>python -m tinygrad.viz.cli -q 'kernel split'</code> (or VIZ=1 → \"View Kernel Graph\") to see each kernel's graph and what it reads.",
+        "Look for the usual reasons (Chapter 11): a device boundary, a reduce feeding something that needs the whole result, a STORE whose source reads its destination, <code>.contiguous()</code>, or the buffer limit (<code>MAX_KERNEL_BUFFERS</code>)."]],
+      ["Which rewrite produced this weird index / UOp?", [
+        "<code>VIZ=-1 DEV=CPU python3 prog.py</code>",
+        "<code>DEBUG=5 python -m tinygrad.viz.cli -s CPU &lt;kernel_name&gt;</code>: the list of rewrites with match counts.",
+        "<code>python -m tinygrad.viz.cli -s CPU &lt;kernel_name&gt; '&lt;rewrite name&gt;'</code>: every match with the UPat's <code>file:line</code>, its source and the diff. Or click through the same thing in <code>VIZ=1</code>.",
+        "Open that file:line, read the rule, and grep for the test that covers it."]],
+      ["What C code does this op generate?", [
+        "<code>DEBUG=4 DEV=CPU python3 -c 'from tinygrad import Tensor; print(Tensor.rand(4,4).realize().exp().tolist())'</code>",
+        "Add <code>NOOPT=1</code> to see the plain loops without optimizations. Add <code>DEBUG=5</code> to see the AST it came from, and <code>DEBUG=7</code> for the disassembly.",
+        "Programmatically: take the SINK from <code>Tensor.schedule_linear(...)</code> and call <code>codegen.to_program(ast, Device['CPU'].renderer)</code>; the SOURCE is in <code>prg.src</code> (see the process-replay snippet)."]],
+      ["Is this kernel wrong because of an optimization?", [
+        "Run with <code>NOOPT=1</code>. If the result is now right, the bug is in an OptOp or a later pass that only fires with it.",
+        "<code>DEBUG=3</code> to list the applied opts; bisect them by applying a subset (Chapter 14).",
+        "<code>VALIDATE_WITH_CPU=1</code> reruns every kernel on CPU and compares outputs (<code>exec_validate</code> in engine/realize.py; needs numpy)."]],
+      ["Why is it slow?", [
+        "<code>DEBUG=2</code>: per-kernel time, GFLOPS and GB/s. Most time in many tiny kernels means Python/launch overhead, so use TinyJit (Chapter 18). One heavy kernel means it needs optimizing.",
+        "<code>VIZ=-1</code> (or <code>PROFILE=1</code>) then <code>python -m tinygrad.viz.cli -t 20</code> to aggregate by event (Python methods, compiler passes and kernels); <code>profile_marker()</code> + <code>--interval</code> zooms in on a region.",
+        "Try <code>BEAM=2</code> for kernel speed, and <code>TRACK_MATCH_STATS=1</code> if the <i>compiler</i> is slow (schedule/codegen time)."]],
+      ["Is my refactor really behavior-free?", [
+        "Run tests on your branch with <code>CAPTURE_PROCESS_REPLAY=1</code> (optionally <code>test/external/process_replay/reset.py</code> first).",
+        "<code>git checkout master</code>, keep your copy of <code>process_replay.py</code>, run it: it re-lowers every captured AST and prints source diffs.",
+        "Put <code>[pr]</code> in the PR title so CI asserts an empty diff. And run <code>python sz.py</code> to see the line delta."]],
+      ["Is my hand-built graph valid?", [
+        "<code>SPEC=2</code> to check every UOp as it is built (<code>SPEC=3</code> also checks shapes).",
+        "Or call <code>type_verify(sink, spec_tensor)</code> / <code>spec_program</code> yourself from <code>tinygrad.uop.spec</code>; <code>DEBUG=3</code> prints the whole failing program.",
+        "Print with <code>uop.render_uir()</code> (the <code>%n = op …</code> form) instead of <code>repr</code> for anything bigger than a few nodes."]],
+      ["Which pattern-matcher rules matter for my workload?", [
+        "<code>TRACK_MATCH_STATS=1 python3 prog.py</code>: per-rule matches / attempts and match-ms / total-ms, sorted by time.",
+        "<code>TRACK_MATCH_STATS=3</code> prints each match's time as it happens.",
+        "Remember that times are inclusive of nested rewrites (for example <code>lower_sink_to_linear</code> contains the whole scheduler)."]],
+    ];
+    const s = G.$(".q", box), r = G.$(".ch21-recipe", box);
+    R.forEach(([q], i) => s.append(el("option", { value: i }, q)));
+    function show() { const [q, steps] = R[+s.value]; r.innerHTML = `<b>${q}</b><ol>${steps.map((x) => `<li>${x}</li>`).join("")}</ol>`; }
+    s.addEventListener("change", show); show();
+  }
+})();
+</script>
+</body>
+</html>

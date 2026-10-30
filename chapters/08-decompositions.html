@@ -1,0 +1,908 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>8. From matmul &amp; conv to primitives — tinygrad internals</title>
+<link rel="stylesheet" href="../assets/vendor/hljs-dark.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/vendor/highlight.min.js"></script>
+<script src="../assets/vendor/dagre.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/chapters.js"></script>
+<script src="../assets/guide.js"></script>
+<style>
+.ch08-canvas { width: 100%; background: #0d0f12; border: 1px solid var(--line); border-radius: 8px; display: block; }
+.ch08-tbl { border-collapse: collapse; font-family: var(--mono); font-size: 12.5px; margin: 4px 8px 4px 0; display: inline-table; vertical-align: top; }
+.ch08-tbl td { border: 1px solid var(--line); width: 34px; height: 28px; text-align: center; padding: 0; transition: background .2s; }
+.ch08-tbl td.hl { background: rgba(244,211,69,.35); color: #fff; }
+.ch08-tbl caption { color: var(--dim); font-size: 12px; caption-side: top; text-align: left; padding-bottom: 2px; }
+.ch08-tbl.click td { cursor: pointer; }
+.ch08-grid { display: inline-grid; gap: 2px; font-family: var(--mono); font-size: 11px; vertical-align: top; }
+.ch08-cell { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 4px; background: var(--bg3); border: 1px solid var(--line); cursor: pointer; transition: all .15s; }
+.ch08-cell.pad { background: repeating-linear-gradient(45deg, #23272e, #23272e 4px, #1a1d22 4px, #1a1d22 8px); color: #5b6470; }
+.ch08-cell.win { background: rgba(244,211,69,.55); color: #000; border-color: var(--yellow); }
+.ch08-cell.win.pad { background: rgba(252,98,85,.45); color: #fff; }
+.ch08-cell.sel { outline: 2px solid var(--yellow); }
+.ch08-chips { display: flex; flex-wrap: wrap; gap: 5px; margin: 6px 0; }
+.ch08-chip { font-family: var(--mono); font-size: 11.5px; padding: 2px 8px; border-radius: 12px; border: 1px solid var(--teal); color: var(--teal); background: rgba(92,208,179,.08); white-space: nowrap; }
+.ch08-chip.grp { border-color: var(--gold); color: var(--gold); }
+.ch08-chip small { color: var(--dim); }
+.ch08-sl { display: grid; grid-template-columns: 90px 140px 34px; align-items: center; gap: 4px 8px; font-size: 13px; }
+.ch08-list { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
+.ch08-list button { font-family: var(--mono); font-size: 12.5px; padding: 3px 9px; }
+.ch08-bar { display: grid; grid-template-columns: 110px 1fr 60px; align-items: center; gap: 6px; font-family: var(--mono); font-size: 12px; margin: 2px 0; }
+.ch08-bar .b { height: 14px; border-radius: 3px; transition: width .5s; }
+.ch08-kv { font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
+.ch08-kv b { color: var(--yellow); font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="sidebar" id="sidebar"></nav>
+<main>
+  <h1><span class="chnum">CHAPTER 08</span>From matmul &amp; conv to primitives</h1>
+  <p class="lede"><code>Tensor</code> has well over a hundred methods. The tensor graph they build uses about two dozen kinds of UOp. This chapter opens
+  the box: how <code>sub</code>, <code>div</code>, <code>exp</code>, <code>sigmoid</code>, <code>softmax</code>, <code>layernorm</code>, <code>argmax</code>, <code>gather</code>, <code>cumsum</code>, random numbers, and
+  — the two big ones — <b>matmul</b> and <b>conv2d</b> are built out of movement ops (Chapter 7), a handful of ALU ops, and one <code>REDUCE</code>. Every
+  decomposition below is printed from the real graph, not paraphrased.</p>
+
+  <h2 id="intuition"><span class="sec">8.1</span>Intuition: a small brick box</h2>
+  <div class="callout analogy"><span class="title">Analogy: LEGO Technic</span>
+  You can build a crane, a car and a clock from the same small set of bricks. The set is chosen so that each brick is easy to make (render on every
+  backend), easy to reason about (one gradient rule each, Chapter 9) and easy to combine (fusion, Chapter 11). Fancy methods are just instructions
+  for assembling bricks — they live in Python mixins, run once when you call them, and leave nothing behind but a graph of bricks.</div>
+  <p>The "instructions" live in four mixin files that <code>Tensor</code> (and partly <code>UOp</code>) inherit:</p>
+  <table>
+    <tr><th>file</th><th>what it decomposes</th></tr>
+    <tr><td><a class="src" data-path="tinygrad/mixin/elementwise.py" data-line="15">mixin/elementwise.py</a></td><td>arithmetic, comparisons, activations, transcendental functions</td></tr>
+    <tr><td><a class="src" data-path="tinygrad/mixin/reduce.py" data-line="9">mixin/reduce.py</a></td><td><code>sum</code>, <code>prod</code>, <code>max</code>, <code>any</code>, <code>all</code> → <code>REDUCE</code></td></tr>
+    <tr><td><a class="src" data-path="tinygrad/mixin/op.py" data-line="1">mixin/op.py</a></td><td>indexing, matmul/dot/einsum, softmax, norms, losses, conv/pool, cumsum, sort, scatter/gather…</td></tr>
+    <tr><td><a class="src" data-path="tinygrad/mixin/rand.py" data-line="10">mixin/rand.py</a></td><td><code>rand</code>, <code>randn</code>, init schemes, dropout, attention</td></tr>
+  </table>
+  <p>Inputs → transformation → outputs for this whole chapter: <b>input</b> = a Python call like <code>x.softmax()</code>; <b>transformation</b> = ordinary
+  Python in the mixin, which calls other methods and finally <code>alu(op, …)</code>, <code>_mop(op, arg)</code> or <code>_rop(op, axis)</code>; <b>output</b> = a new lazy
+  <code>Tensor</code> whose <code>uop</code> is a DAG made only of primitive UOps. Nothing is computed.</p>
+
+  <h2 id="bricks"><span class="sec">8.2</span>The brick box: which Ops the tensor graph uses</h2>
+  <p>The <code>Ops</code> enum (<a class="src" data-path="tinygrad/uop/__init__.py" data-line="13"></a>) has 75 members, but many only exist late in codegen
+  (<code>RANGE</code>, <code>LOAD</code>, <code>STORE</code>, <code>WMMA</code>, <code>SPECIAL</code>…) or are introduced by later rewrites. The tensor-level vocabulary used by the mixins is:</p>
+  <table>
+    <tr><th>family</th><th>ops built by Tensor methods</th><th>present in the enum, but <em>not</em> emitted by the mixins for floats</th></tr>
+    <tr><td>movement</td><td>RESHAPE PERMUTE EXPAND PAD SHRINK (+ STACK as data)</td><td>—</td></tr>
+    <tr><td>unary</td><td>EXP2 LOG2 SIN SQRT RECIP TRUNC CAST BITCAST</td><td>NEG (<code>-x</code> is <code>x * -1</code>)</td></tr>
+    <tr><td>binary</td><td>ADD MUL MAX CMPLT CMPEQ POW, and for ints/bits: TRUNCDIV DIV MOD TRUNCMOD XOR OR AND SHL SHR THREEFRY</td><td>SUB, FDIV, CMPNE (used by codegen/renderers and symbolic)</td></tr>
+    <tr><td>ternary</td><td>WHERE</td><td>MULACC (fused later)</td></tr>
+    <tr><td>reduce</td><td>REDUCE with arg <code>(ADD|MUL|MAX, n_leading_axes)</code></td><td>ALLREDUCE (multi-device)</td></tr>
+    <tr><td>graph plumbing</td><td>CONST, BUFFER/ALLOC, COPY, STAGE (contiguous), DETACH, CONTIGUOUS_BACKWARD, AFTER/STORE (assign)</td><td></td></tr>
+  </table>
+  <div class="callout aha"><span class="title">Why so few?</span>
+  Every op in this box needs: a shape rule, a dtype rule, a gradient rule (<a href="09-autograd.html">Chapter 9</a>), a constant-folding rule, a symbolic range rule,
+  and a rendering in C, LLVM, PTX, Metal, WGSL… Each op removed from the box removes a column from that matrix. The price — longer graphs — is paid at
+  graph-build time in Python and then disappears: fusion puts all those elementwise bricks into one kernel, and constant folding cleans up
+  things like <code>MUL(1.0, -1.0)</code>.</div>
+
+  <h2 id="elementwise"><span class="sec">8.3</span>Elementwise identities</h2>
+  <div class="codecap"><b>examples/08_decompositions.py</b> — run with <code>DEV=CPU python3 examples/08_decompositions.py</code></div>
+  <pre><code class="language-python">x = Tensor([1., 2, 3]).realize()
+y = Tensor([4., 5, 6]).realize()
+NAMES = {x.uop.base: &quot;x&quot;, y.uop.base: &quot;y&quot;}
+
+def expr(u: UOp) -&gt; str:
+  if u.base in NAMES and u.op is not Ops.REDUCE and all(v.op in GroupOp.Movement | {Ops.BUFFER} for v in u.toposort() if v.op not in {Ops.CONST, Ops.STACK}):
+    return NAMES[u.base]                       # x / y (hide the RESHAPE that gives the buffer its shape)
+  if u.op is Ops.CONST: return str(u.arg).replace(&quot;ConstFloat(&quot;, &quot;&quot;).replace(&quot;)&quot;, &quot;&quot;) if &quot;ConstFloat&quot; in repr(u.arg) else repr(u.arg)
+  if u.op in GroupOp.Movement: return f&quot;{u.op.name.lower()}{u.marg}({expr(u.src[0])})&quot;
+  if u.op is Ops.CAST: return f&quot;cast&lt;{u.dtype.name}&gt;({expr(u.src[0])})&quot;
+  if u.op is Ops.REDUCE: return f&quot;REDUCE&lt;{u.arg[0].name},axes={u.arg[1]}&gt;({expr(u.src[0])})&quot;
+  return f&quot;{u.op.name}(&quot; + &quot;, &quot;.join(expr(s) for s in u.src) + &quot;)&quot;
+
+def ops_used(t: Tensor) -&gt; str:
+  used = sorted({u.op.name for u in t.uop.toposort()} - {&quot;CONST&quot;, &quot;STACK&quot;, &quot;BUFFER&quot;, &quot;RESHAPE&quot;})
+  return &quot;, &quot;.join(used)
+
+print(&quot;=== elementwise (tinygrad/mixin/elementwise.py)&quot;)
+for name, t in [(&quot;x - y&quot;, x - y), (&quot;-x&quot;, -x), (&quot;x / y&quot;, x / y), (&quot;x.exp()&quot;, x.exp()), (&quot;x.log()&quot;, x.log()),
+                (&quot;x.sigmoid()&quot;, x.sigmoid()), (&quot;x.relu()&quot;, x.relu()), (&quot;x.maximum(y)&quot;, x.maximum(y)),
+                (&quot;x.minimum(y)&quot;, x.minimum(y)), (&quot;x.cos()&quot;, x.cos()), (&quot;x.rsqrt()&quot;, x.rsqrt()), (&quot;x ** 3&quot;, x ** 3),
+                (&quot;x &gt;= y&quot;, x &gt;= y), (&quot;x != y&quot;, x != y), (&quot;x.clamp(0, 2)&quot;, x.clamp(0, 2))]:
+  print(f&quot;{name:14s} = {expr(t.uop)}&quot;)</code></pre>
+  <pre class="output"><code>=== elementwise (tinygrad/mixin/elementwise.py)
+x - y          = ADD(x, MUL(y, -1.0))
+-x             = MUL(x, -1.0)
+x / y          = MUL(x, RECIP(y))
+x.exp()        = EXP2(MUL(x, 1.4426950408889634))
+x.log()        = MUL(LOG2(x), 0.6931471805599453)
+x.sigmoid()    = RECIP(ADD(1.0, EXP2(MUL(x, -1.4426950408889634))))
+x.relu()       = WHERE(CMPLT(0.0, x), x, 0.0)
+x.maximum(y)   = MAX(x, y)
+x.minimum(y)   = MUL(MAX(MUL(x, -1.0), MUL(y, -1.0)), -1.0)
+x.cos()        = SIN(ADD(1.5707963267948966, MUL(x, -1.0)))
+x.rsqrt()      = RECIP(SQRT(x))
+x ** 3         = POW(x, 3.0)
+x &gt;= y         = CMPEQ(CMPLT(x, y), False)
+x != y         = CMPEQ(CMPEQ(x, y), False)
+x.clamp(0, 2)  = WHERE(CMPLT(2.0, WHERE(CMPLT(x, 0.0), 0.0, x)), 2.0, WHERE(CMPLT(x, 0.0), 0.0, x))</code></pre>
+  <p>Each line is a small theorem tinygrad relies on:</p>
+  \[ a-b = a + (-1)\cdot b \qquad \frac{a}{b} = a\cdot \operatorname{recip}(b) \qquad e^x = 2^{x\log_2 e} \qquad \ln x = \log_2 x \cdot \ln 2 \]
+  \[ \sigma(x) = \frac{1}{1 + 2^{-x\log_2 e}} \qquad \operatorname{relu}(x) = \begin{cases}x & 0 < x\\ 0 & \text{else}\end{cases} \qquad \min(a,b) = -\max(-a,-b) \qquad \cos x = \sin(\tfrac\pi2 - x) \]
+  <p>Source, line by line: <code>sub</code> is <code>a.alu(Ops.ADD, -b)</code> (<a class="src" data-path="tinygrad/mixin/elementwise.py" data-line="122"></a>) and <code>-b</code> is
+  <code>b * (-1)</code> (<a class="src" data-path="tinygrad/mixin/elementwise.py" data-line="81"></a>); <code>div</code> is <code>a.alu(Ops.MUL, b.reciprocal())</code>
+  (<a class="src" data-path="tinygrad/mixin/elementwise.py" data-line="254"></a>); <code>exp</code> (<a class="src" data-path="tinygrad/mixin/elementwise.py" data-line="521"></a>),
+  <code>log</code> (<a class="src" data-path="tinygrad/mixin/elementwise.py" data-line="838"></a>), <code>sigmoid</code> (<a class="src" data-path="tinygrad/mixin/elementwise.py" data-line="693"></a>),
+  <code>relu</code> (<a class="src" data-path="tinygrad/mixin/elementwise.py" data-line="681"></a>), <code>minimum</code> (<a class="src" data-path="tinygrad/mixin/elementwise.py" data-line="406"></a>).</p>
+  <div class="callout warn"><span class="title">relu is not <code>maximum(x, 0)</code> — on purpose</span>
+  The source comment: <em>"if you write this as self.maximum(0) the gradient is wrong, passing through half when self is 0"</em>. The MAX gradient rule splits ties
+  50/50 (Chapter 9), and <code>x == 0</code> is a tie. <code>WHERE(0 &lt; x, x, 0)</code> gives exactly 0 gradient at 0. Decompositions are chosen for their
+  <em>gradients</em> as much as for their values.</div>
+  <div class="callout note"><span class="title">Comparisons</span>
+  Only <code>CMPLT</code> and <code>CMPEQ</code> are emitted: <code>x &gt; y</code> is <code>y &lt; x</code>, <code>x &gt;= y</code> is <code>(x &lt; y) == False</code>, and <code>x != y</code> is
+  <code>(x == y) == False</code>. <code>POW</code> survives as a primitive at this level (it has its own gradient rule) and is decomposed later by
+  symbolic (<a class="src" data-path="tinygrad/uop/symbolic.py" data-line="463">symbolic.py:463</a>, <code>xpow</code>) — see <a href="15-lowering.html">Chapter 15</a>.</div>
+
+  <div class="quiz" data-answer="2">
+    <div class="q">How many distinct ALU op kinds does <code>(x - y) / y</code> produce in the tensor graph?</div>
+    <button class="opt">2: SUB and FDIV</button><button class="opt">3: ADD, NEG, MUL</button><button class="opt">3: ADD, MUL, RECIP</button><button class="opt">1: a fused kernel op</button>
+    <div class="explain"><code>x - y</code> = <code>ADD(x, MUL(y, -1))</code>, then <code>/ y</code> = <code>MUL(·, RECIP(y))</code>: kinds ADD, MUL, RECIP (MUL appears twice).</div>
+  </div>
+
+  <h2 id="reduce"><span class="sec">8.4</span>Reductions: one REDUCE that eats leading axes</h2>
+  <p>There is a single reduce op. <code>sum</code>, <code>prod</code>, <code>max</code> pick its arg (<code>Ops.ADD</code>, <code>Ops.MUL</code>, <code>Ops.MAX</code>) via
+  <code>_reduce</code> (<a class="src" data-path="tinygrad/mixin/reduce.py" data-line="13"></a>), and <code>UOp._rop</code> builds it:</p>
+  <div class="codecap"><b><a class="src" data-path="tinygrad/uop/ops.py" data-line="624">tinygrad/uop/ops.py:624 — UOp._rop</a></b></div>
+  <pre><code class="language-python">def _rop(self, op:Ops, axis:tuple[int, ...]):
+  # NOTE: we don&#x27;t allow reduce on 1s axis
+  axis = tuple(sorted(axis))
+  reduce_axis = tuple(x for x in axis if resolve(self.shape[x] != 1))
+  if not len(reduce_axis):
+    return self.reshape(tuple(s for i,s in enumerate(self.shape) if i not in axis))
+  # permute so reduced axes are at the front
+  perm = reduce_axis + tuple(i for i in range(len(self.shape)) if i not in reduce_axis)
+  ret = UOp(Ops.REDUCE, src=(self.permute(perm),), arg=(op, len(reduce_axis)))
+  return ret.reshape(tuple(s for i,s in enumerate(self.shape) if i not in axis)) if axis != reduce_axis else ret</code></pre>
+  <p>Look at the shape rule we saw in Chapter 7: <code>REDUCE</code>'s arg is <code>(op, n)</code> and its output shape is <code>ps[n:]</code> — it removes the
+  <b>first <code>n</code> axes</b>. So reducing axis 2 of a <code>(a,b,c)</code> tensor is <code>PERMUTE(2,0,1)</code> then <code>REDUCE(ADD, 1)</code>. This is the mirror image of
+  EXPAND, which adds leading axes. (Hold that thought: in Chapter 9 the gradient of one is the other.) Axes of size 1 are never reduced; they are
+  reshaped away.</p>
+  <pre class="output"><code>=== reductions (tinygrad/mixin/reduce.py, op.py)
+x.sum()        = REDUCE&lt;ADD,axes=1&gt;(x)
+x.max()        = REDUCE&lt;MAX,axes=1&gt;(x)
+x.min()        = MUL(REDUCE&lt;MAX,axes=1&gt;(MUL(x, -1.0)), -1.0)
+x.mean()       = MUL(REDUCE&lt;ADD,axes=1&gt;(x), RECIP(3.0))
+x.softmax()    = MUL(EXP2(MUL(ADD(x, MUL(DETACH(reshape(1,)(REDUCE&lt;MAX,axes=1&gt;(x))), -1.0)), 1.4426950408889634)), RECIP(reshape(1,)(REDUCE&lt;ADD,axes=1&gt;(EXP2(MUL(ADD(x, MUL(DETACH(reshape(1,)(REDUCE&lt;MAX,axes=1&gt;(x))), -1.0)), 1.4426950408889634))))))</code></pre>
+  <p><code>min</code> is <code>-max(-x)</code>; <code>mean</code> is <code>sum * recip(n)</code> (<a class="src" data-path="tinygrad/mixin/op.py" data-line="519"></a>). <b>softmax</b> subtracts the row max for
+  stability — and wraps it in <code>DETACH</code>, because the max shift does not change the result, so there is no reason to differentiate through it:</p>
+  <div class="codecap"><b><a class="src" data-path="tinygrad/mixin/op.py" data-line="680">tinygrad/mixin/op.py:680 — _softmax, softmax, log_softmax</a></b></div>
+  <pre><code class="language-python">def _softmax(self, axis, dtype:DTypeLike|None=None) -&gt; tuple[Self, Self, Self]:
+  m = self - self.max(axis=axis, keepdim=True).detach()
+  if dtype is not None: m = m.cast(dtype)
+  e = m.exp()
+  return m, e, e.sum(axis=axis, keepdim=True)
+  # softmax:     _, e, ss = self._softmax(axis, dtype); return e * ss.reciprocal()
+  # log_softmax: m, _, ss = self._softmax(axis, dtype); return m - ss.log()</code></pre>
+  <p><b>layernorm</b> is centring followed by <b>rmsnorm</b>: <code>(x - mean).rmsnorm()</code> and <code>rmsnorm = x * rsqrt(mean(x²) + eps)</code>
+  (<a class="src" data-path="tinygrad/mixin/op.py" data-line="1682"></a>, <a class="src" data-path="tinygrad/mixin/op.py" data-line="1699"></a>). Op inventories for these and more (same script):</p>
+  <pre class="output"><code>=== bigger methods: which primitive ops appear (movement + ALU + REDUCE)
+m.log_softmax()              28 UOps | ADD, DETACH, EXP2, LOG2, MUL, PERMUTE, REDUCE
+m.layernorm()                29 UOps | ADD, MUL, PERMUTE, RECIP, REDUCE, SQRT
+m.argmax(1)                  46 UOps | ADD, CAST, CMPEQ, EXPAND, MUL, PAD, PERMUTE, REDUCE, SHRINK
+m.cumsum(1)                  39 UOps | EXPAND, PAD, PERMUTE, REDUCE, SHRINK
+Tensor.arange(4)             32 UOps | ADD, CAST, EXPAND, PAD, PERMUTE, REDUCE, SHRINK
+idx.one_hot(3)               37 UOps | ADD, CAST, CMPEQ, EXPAND, PAD, PERMUTE, REDUCE, SHRINK, WHERE
+m.gather(1, idx[:, None])    50 UOps | ADD, CAST, CMPEQ, EXPAND, PAD, PERMUTE, REDUCE, SHRINK, WHERE
+m[:, idx]                    53 UOps | ADD, CAST, CMPEQ, CMPLT, EXPAND, PAD, PERMUTE, REDUCE, SHRINK, WHERE
+m @ m.T                      20 UOps | MUL, PERMUTE, REDUCE
+m.sparse_cat_xent(idx)       84 UOps | ADD, CAST, CMPEQ, DETACH, EXP2, EXPAND, LOG2, MUL, PAD, PERMUTE, RECIP, REDUCE, SHRINK</code></pre>
+
+  <h2 id="matmul"><span class="sec">8.5</span>matmul = broadcast multiply + sum over the shared axis</h2>
+  <p>\( C_{ij} = \sum_k A_{ik} B_{kj} \). Read it as a three-step recipe on a 3-D grid of size \(M\times N\times K\): put \(A_{ik}\) at every \((i, j, k)\) (copy
+  it along \(j\)), put \(B_{kj}\) at every \((i,j,k)\) (copy it along \(i\)), multiply cellwise, then sum along \(k\). That is exactly <code>dot</code>:</p>
+  <div class="codecap"><b><a class="src" data-path="tinygrad/mixin/op.py" data-line="390">tinygrad/mixin/op.py:390 — dot</a></b></div>
+  <pre><code class="language-python">x, dx, dw = self, self.ndim, w.ndim
+if not (dx &gt; 0 and dw &gt; 0): raise RuntimeError(f&quot;both tensors need to be at least 1D, got {dx}D and {dw}D&quot;)
+if x.shape[-1] != w.shape[axis_w:=-min(w.ndim,2)]: raise RuntimeError(f&quot;cannot dot {x.shape} and {w.shape}&quot;)
+x = x.reshape(*x.shape[0:-1], *[1]*min(dx-1, dw-1, 1), x.shape[-1])
+w = w.reshape(*w.shape[0:-2], *[1]*min(dx-1, dw-1, 1), *w.shape[axis_w:]).transpose(-1, axis_w)
+return (x*w).sum(-1, dtype=dtype).cast(least_upper_dtype(x.dtype, w.dtype) if dtype is None else dtype)</code></pre>
+  <p>For \(A: (M,K)\), \(B: (K,N)\): <code>x</code> becomes <code>(M, 1, K)</code>; <code>w</code> becomes <code>(1, K, N)</code> transposed to <code>(1, N, K)</code>; <code>x*w</code> is
+  <code>(M, N, K)</code>; <code>.sum(-1)</code> reduces \(K\). The real graph, walked from the top:</p>
+  <div class="codecap"><b>examples/08_matmul_conv.py</b> — run with <code>DEV=CPU python3 examples/08_matmul_conv.py</code></div>
+  <pre class="output"><code>=== matmul: A(2,3) @ B(3,4)   (tinygrad/mixin/op.py dot)
+result: REDUCE (Ops.ADD, 1) shape (2, 4)
+under it: PERMUTE (2, 0, 1) shape (3, 2, 4)
+under it: MUL shape (2, 4, 3)   &lt;- broadcast happens HERE, inside MUL&#x27;s _shape
+A side:
+  BUFFER                                                 (6,)
+  RESHAPE  (2, 3)                                     -&gt; (2, 3)
+  RESHAPE  (2, 1, 3)                                  -&gt; (2, 1, 3)
+B side:
+  BUFFER                                                 (12,)
+  RESHAPE  (3, 4)                                     -&gt; (3, 4)
+  RESHAPE  (1, 3, 4)                                  -&gt; (1, 3, 4)
+  PERMUTE  (0, 2, 1)                                  -&gt; (1, 4, 3)
+A @ B = [[1.0, 2.0, 3.0, 6.0], [4.0, 5.0, 6.0, 15.0]]</code></pre>
+  <div class="callout aha"><span class="title">There is no EXPAND in a matmul graph</span>
+  The "copy along \(j\)" and "copy along \(i\)" are not ops. The <code>MUL</code>'s two sources have shapes <code>(2,1,3)</code> and <code>(1,4,3)</code> and its
+  <code>_shape</code> is simply their broadcast, <code>(2,4,3)</code>. During rangeify (<a href="10-rangeify.html">Chapter 10</a>) each source gets index 0 on its size-1 axis.
+  And the summed axis \(K\) is moved to the front by a PERMUTE because REDUCE eats leading axes. Nothing here allocates an \(M\times N\times K\) buffer:
+  in the kernel this becomes a loop over \(k\) accumulating into a register.</div>
+
+  <div class="demo" id="demo-cube">
+    <div class="demo-title">The matmul broadcast cube</div>
+    <div class="demo-desc">\(A\) (2×3) @ \(B\) (3×4) with the same numbers as the example. Step through: reshape A to a slab, reshape+transpose B to a slab, broadcast both into the
+      \(M\times N\times K\) cube, multiply, PERMUTE \(K\) to the front, REDUCE it away. <b>Hover an output cell</b> of \(C\) to light up the row of \(A\), the column of \(B\)
+      and the line of the cube it sums over.</div>
+    <div id="cube-stepper"></div>
+    <canvas class="ch08-canvas" id="cube-canvas" height="430"></canvas>
+    <div id="cube-tables" style="margin-top:8px"></div>
+  </div>
+
+  <div class="quiz" data-answer="1">
+    <div class="q">For a batched matmul <code>(B, M, K) @ (B, K, N)</code>, which axis does the final REDUCE remove, and where is it before the REDUCE?</div>
+    <button class="opt">axis N, at the end</button><button class="opt">axis K, permuted to the front of the <code>(B, M, N, K)</code> product</button><button class="opt">axis B, at the front</button><button class="opt">there is no REDUCE; matmul is a WMMA op</button>
+    <div class="explain"><code>dot</code> builds the broadcast product with \(K\) last and calls <code>sum(-1)</code>; <code>_rop</code> permutes \(K\) to position 0 and emits <code>REDUCE(ADD, 1)</code>. WMMA (tensor cores) only appears much later as an optimization (Chapter 14).</div>
+  </div>
+
+  <h2 id="conv"><span class="sec">8.6</span>conv2d = <code>_pool</code> (sliding windows from movement ops) + matmul-style reduce</h2>
+  <p>A 2-D convolution multiplies every \(k_h\times k_w\) window of the input with the kernel and sums. The hard part is <em>making the windows</em>: an
+  im2col-like tensor of shape <code>(…, oh, ow, kh, kw)</code> where each output position owns its own window. tinygrad builds it with nothing but movement
+  ops in <code>_pool</code>:</p>
+  <div class="codecap"><b><a class="src" data-path="tinygrad/mixin/movement.py" data-line="614">tinygrad/mixin/movement.py:614 — _pool</a></b></div>
+  <pre><code class="language-python">def _pool(self, k_: tuple[sint, ...], stride: int | tuple[int, ...] = 1, dilation: int | tuple[int, ...] = 1) -&gt; Self:
+  assert len(self.shape) &gt;= len(k_), f&quot;can&#x27;t pool {self.shape} with {k_}&quot;
+  s_, d_ = make_tuple(stride, len(k_)), make_tuple(dilation, len(k_))
+  assert len(k_) == len(s_) == len(d_), f&quot;stride/dilation mismatch kernel:{k_} stride:{s_} dilation:{d_}&quot;
+  noop, i_ = [None] * (self.ndim - len(k_)), self.shape[-len(k_) :]
+  assert all(resolve(d * (k - 1) + 1 &lt;= i) for k, d, i in zip(k_, d_, i_)), &quot;kernel size cannot be greater than actual input size&quot;
+  o_ = [ceildiv(i - d * (k - 1), s) for i, d, k, s in zip(i_, d_, k_, s_)]
+  # input size scaling factor to make sure shrink for stride is possible
+  f_ = [smax(1, ceildiv(o * s - d, i)) for o, s, i, d in zip(o_, s_, i_, d_)]
+  # repeats such that we don&#x27;t need padding
+  x = self.repeat([1] * len(noop) + [ceildiv(k * (i * f + d), i) for k, i, d, f in zip(k_, i_, d_, f_)])
+  # handle dilation
+  x = x.shrink_to(noop + [k * (i * f + d) for k, i, d, f in zip(k_, i_, d_, f_)])
+  x = x.reshape(noop + flatten((k, (i * f + d)) for k, i, d, f in zip(k_, i_, d_, f_)))
+  # handle stride
+  x = x.shrink_to(noop + flatten((k, o * s) for k, o, s in zip(k_, o_, s_))).reshape(noop + flatten((k, o, s) for k, o, s in zip(k_, o_, s_)))
+  x = x.shrink_to(noop + flatten((k, o, 1) for k, o in zip(k_, o_))).reshape(noop + flatten((k, o) for k, o in zip(k_, o_)))
+  # permute to move reduce to the end
+  return x.permute(*range(len(noop)), *[len(noop) + i * 2 + 1 for i in range(len(i_))], *[len(noop) + i * 2 for i in range(len(i_))])</code></pre>
+  <h3>The skew trick, in 1-D</h3>
+  <p>Windows of size \(k=3\) over \([0,1,2,3,4,5]\) (\(i=6\), stride 1): repeat the input \(k\) times and flatten (length 24); cut to \(k(i+1)=21\); reshape to
+  \(k\) rows of <b>\(i+1 = 7\)</b>. Because each row is one longer than the data, row \(r\) starts one element later than row \(r-1\): row 0 is
+  \(0,1,2,3,4,5,0\), row 1 is \(1,2,3,4,5,0,1\), row 2 is \(2,3,4,5,0,1,2\). Keep the first \(o = 4\) columns and transpose — column \(c\) of the \(3\times 4\) grid
+  is the window starting at \(c\). Stride and dilation are the same trick with different row lengths (<code>i*f + d</code>) and an extra reshape+shrink to
+  take every \(s\)-th window.</p>
+  <pre class="output"><code>=== _pool alone: 1-D sliding windows of size 3 over arange(6)
+shape (4, 3) = [[0.0, 1.0, 2.0], [1.0, 2.0, 3.0], [2.0, 3.0, 4.0], [3.0, 4.0, 5.0]]
+BUFFER                                                 (6,)
+RESHAPE  (1, 6)                                     -&gt; (1, 6)
+RESHAPE  (6,)                                       -&gt; (6,)
+EXPAND   (4,)                                       -&gt; (4, 6)
+RESHAPE  (24,)                                      -&gt; (24,)
+SHRINK   ((0, 21),)                                 -&gt; (21,)
+RESHAPE  (3, 7)                                     -&gt; (3, 7)
+SHRINK   ((0, 3), (0, 4))                           -&gt; (3, 4)
+RESHAPE  (3, 4, 1)                                  -&gt; (3, 4, 1)
+RESHAPE  (3, 4)                                     -&gt; (3, 4)
+PERMUTE  (1, 0)                                     -&gt; (4, 3)</code></pre>
+  <p>Then <code>conv2d</code> (<a class="src" data-path="tinygrad/mixin/op.py" data-line="1585"></a>) pads the input (<code>_pad_constant</code>), pools it, reshapes/expands so the
+  output-channel axis exists, multiplies with the reshaped weight (another implicit broadcast) and sums over <code>cin, kh, kw</code>:</p>
+  <pre><code class="language-python">x = self._pad_constant(((0,0),)*(self.ndim-len(HW)) + flat_to_grouped(padding_), 0.0)._pool(HW, stride, dilation)
+rcout, oyx = cout//groups, x.shape[2:-len(HW)]
+x = x.reshape(bs, groups, cin, 1, *oyx, *HW).expand(bs, groups, cin, rcout, *oyx, *HW)\
+  .permute(0,1,3,*[4+i for i in range(len(oyx))],2,*[4+len(oyx)+i for i in range(len(HW))])
+# conv! broadcasted to (bs, groups, rcout, *oyx, cin, *HW)
+ret = (x * weight.reshape(1, groups, rcout, *[1] * len(oyx), cin, *HW))\
+  .sum([-1-i for i in range(1+len(oyx))], keepdim=True, dtype=dtype).reshape(bs, cout, *oyx)
+return ret if bias is None else ret.add(bias.reshape(1, -1, *[1] * len(HW)))</code></pre>
+  <p>The complete shape trace of a real <code>conv2d</code> (5×5 image, two 3×3 filters — identity and box-sum — padding 1):</p>
+  <pre class="output"><code>=== conv2d: x(1,1,5,5) * w(2,1,3,3), stride 1, padding 1   (op.py conv2d -&gt; movement.py _pool)
+input side (pad, then _pool&#x27;s repeat/shrink/reshape/permute, then conv2d&#x27;s reshape/expand/permute):
+  BUFFER                                                 (25,)
+  RESHAPE  (1, 1, 5, 5)                               -&gt; (1, 1, 5, 5)
+  PAD      ((0, 1), (0, 1), (1, 7), (1, 7))           -&gt; (1, 1, 7, 7)
+  RESHAPE  (1, 1, 1, 7, 1, 7)                         -&gt; (1, 1, 1, 7, 1, 7)
+  RESHAPE  (1, 1, 7, 7)                               -&gt; (1, 1, 7, 7)
+  EXPAND   (4, 4)                                     -&gt; (4, 4, 1, 1, 7, 7)
+  PERMUTE  (2, 3, 0, 4, 1, 5)                         -&gt; (1, 1, 4, 7, 4, 7)
+  RESHAPE  (1, 1, 28, 28)                             -&gt; (1, 1, 28, 28)
+  SHRINK   ((0, 1), (0, 1), (0, 24), (0, 24))         -&gt; (1, 1, 24, 24)
+  RESHAPE  (1, 1, 3, 8, 3, 8)                         -&gt; (1, 1, 3, 8, 3, 8)
+  SHRINK   ((0, 1), (0, 1), (0, 3), (0, 5), (0, 3), (0, 5)) -&gt; (1, 1, 3, 5, 3, 5)
+  RESHAPE  (1, 1, 3, 5, 1, 3, 5, 1)                   -&gt; (1, 1, 3, 5, 1, 3, 5, 1)
+  RESHAPE  (1, 1, 3, 5, 3, 5)                         -&gt; (1, 1, 3, 5, 3, 5)
+  PERMUTE  (0, 1, 3, 5, 2, 4)                         -&gt; (1, 1, 5, 5, 3, 3)
+  RESHAPE  (1, 1, 1, 1, 5, 5, 3, 3)                   -&gt; (1, 1, 1, 1, 5, 5, 3, 3)
+  RESHAPE  (1, 1, 1, 5, 5, 3, 3)                      -&gt; (1, 1, 1, 5, 5, 3, 3)
+  EXPAND   (2,)                                       -&gt; (2, 1, 1, 1, 5, 5, 3, 3)
+  PERMUTE  (1, 2, 3, 0, 4, 5, 6, 7)                   -&gt; (1, 1, 1, 2, 5, 5, 3, 3)
+  PERMUTE  (0, 1, 3, 4, 5, 2, 6, 7)                   -&gt; (1, 1, 2, 5, 5, 1, 3, 3)
+weight side:
+  BUFFER                                                 (18,)
+  RESHAPE  (2, 1, 3, 3)                               -&gt; (2, 1, 3, 3)
+  RESHAPE  (1, 1, 2, 1, 1, 1, 3, 3)                   -&gt; (1, 1, 2, 1, 1, 1, 3, 3)
+MUL shape: (1, 1, 2, 5, 5, 1, 3, 3)
+after the MUL: PERMUTE(6, 7, 0, 1, 2, 3, 4, 5) -&gt; (3, 3, 1, 1, 2, 5, 5, 1) | REDUCE&lt;ADD,2&gt; -&gt; (1, 1, 2, 5, 5, 1) | RESHAPE(1, 1, 2, 5, 5) -&gt; (1, 1, 2, 5, 5) | RESHAPE(1, 1, 2, 5, 5, 1, 1, 1) -&gt; (1, 1, 2, 5, 5, 1, 1, 1) | RESHAPE(1, 2, 5, 5) -&gt; (1, 2, 5, 5)
+out[0,0] (identity kernel) = [[0.0, 1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0, 9.0], [10.0, 11.0, 12.0, 13.0, 14.0], [15.0, 16.0, 17.0, 18.0, 19.0], [20.0, 21.0, 22.0, 23.0, 24.0]]
+out[0,1] (3x3 box sum)     = [[12.0, 21.0, 27.0, 33.0, 24.0], [33.0, 54.0, 63.0, 72.0, 51.0], [63.0, 99.0, 108.0, 117.0, 81.0], [93.0, 144.0, 153.0, 162.0, 111.0], [72.0, 111.0, 117.0, 123.0, 84.0]]</code></pre>
+
+  <div class="demo" id="demo-pool">
+    <div class="demo-title">Pooling-window builder (_pool, live)</div>
+    <div class="demo-desc">Set the input size, kernel, stride, dilation and padding. The ops below are generated by a JS mirror of <code>_pool</code> (+ <code>_pad_constant</code> for padding) that
+      reproduces tinygrad's op sequence exactly (checked against the captured conv trace above). <b>Click an output position</b>: its window is found by pushing
+      the index of every <code>(oy, ox, ky, kx)</code> cell back through all those ops — the same index-function composition as Chapter 7. Red = window cell that lands in padding.</div>
+    <div class="row">
+      <div class="col" style="flex:0 1 300px">
+        <div class="ch08-sl">
+          <label>input H=W</label><input type="range" min="3" max="8" value="5" id="pl-i"><span id="pl-iv"></span>
+          <label>kernel k</label><input type="range" min="1" max="4" value="3" id="pl-k"><span id="pl-kv"></span>
+          <label>stride</label><input type="range" min="1" max="3" value="1" id="pl-s"><span id="pl-sv"></span>
+          <label>dilation</label><input type="range" min="1" max="3" value="1" id="pl-d"><span id="pl-dv"></span>
+          <label>padding</label><input type="range" min="0" max="2" value="1" id="pl-p"><span id="pl-pv"></span>
+        </div>
+        <div class="ch08-kv" id="pl-info" style="margin-top:8px"></div>
+      </div>
+      <div class="col">
+        <div class="row">
+          <div><div class="ch08-kv">input (padded)</div><div id="pl-in"></div></div>
+          <div><div class="ch08-kv">output positions (click)</div><div id="pl-out"></div></div>
+        </div>
+      </div>
+    </div>
+    <div class="ch08-kv" style="margin-top:8px">primitive ops emitted (shape after each):</div>
+    <div class="ch08-chips" id="pl-ops"></div>
+  </div>
+
+  <h2 id="indexing"><span class="sec">8.7</span>Index-y things: arange, one_hot, gather, argmax, cumsum</h2>
+  <p>There is no "iota", "gather" or "scan" primitive. Everything that smells like indexing is built from comparisons against an <code>arange</code>, and
+  <code>arange</code> itself is a <b>cumulative sum built with <code>_pool</code></b>:</p>
+  <div class="tabs">
+    <div class="tabpane" data-title="arange">
+      <div class="codecap"><b><a class="src" data-path="tinygrad/mixin/op.py" data-line="218">op.py:218 — arange</a>, <a class="src" data-path="tinygrad/mixin/op.py" data-line="775">op.py:775 — _cumalu</a></b></div>
+      <pre><code class="language-python">return (cls.full((output_len,), step, dtype=acc_dtype, buffer=False)._cumalu(0, Ops.ADD) + (start - step)).cast(dtype)
+
+def _cumalu(self, axis:int, op:Ops) -&gt; Self:
+  assert self.shape[axis] != 0 and op in GroupOp.Reduce
+  pads = (None,)*(self.ndim-1) + ((self.shape[axis]-1, 0),)
+  pooled = self.transpose(axis,-1)._pad_constant(pads, identity_element(op, self.commit_dtype()))._pool((self.shape[axis],))
+  return getattr(pooled, {Ops.ADD: &quot;sum&quot;, Ops.MAX: &quot;max&quot;, Ops.MUL: &quot;prod&quot;}[op])(-1).transpose(axis, -1)</code></pre>
+      <p><code>arange(n)</code> = cumsum of <code>n</code> copies of <code>step</code>, plus <code>start - step</code>. And cumsum is: pad <code>n-1</code> identity elements on the left, take sliding windows
+      of size <code>n</code> with <code>_pool</code>, reduce each window. A window of size \(n\) ending at position \(j\) contains exactly the elements \(0..j\).
+      After rangeify and symbolic, the sum of a constant over a range folds into a closed form, so the kernel does not really loop.</p>
+    </div>
+    <div class="tabpane" data-title="one_hot / gather">
+      <div class="codecap"><b><a class="src" data-path="tinygrad/mixin/op.py" data-line="1028">op.py:1028 — _one_hot_along_dim, one_hot, gather</a></b></div>
+      <pre><code class="language-python">def _one_hot_along_dim(self, num_classes:sint, dim:int=-1) -&gt; Self:
+  if not dtypes.is_int(self.dtype): raise RuntimeError(f&quot;_one_hot_along_dim expects int index tensor, getting {self.dtype}&quot;)
+  offset = self.ndim - self._resolve_dim(dim) - 1
+  return self.eq(type(self).arange(num_classes).reshape((num_classes,) + (1,) * offset))
+  # one_hot: return self[..., None]._one_hot_along_dim(num_classes).where(1, 0)
+  # gather (op.py:1063):
+x = self.shrink_to(tuple(i if d != dim else None for d,i in enumerate(index.shape))).unsqueeze(-1).transpose(-1, dim)
+return (index.unsqueeze(-1)._one_hot_along_dim(self.shape[dim]).where(x, 0)).sum(-1, dtype=self.dtype)</code></pre>
+      <p><code>one_hot</code> is <code>idx == arange(C)</code>. <code>gather</code> is "multiply by a one-hot and sum": it compares the index against an arange along a new axis and
+      sums the selected values — a tiny matmul with a 0/1 matrix. Tensor indexing <code>x[idx]</code> uses the same one-hot masks (or a linearized index for
+      consecutive tensor indices), which is why out-of-range tensor indices give 0 instead of an error.</p>
+    </div>
+    <div class="tabpane" data-title="argmax">
+      <div class="codecap"><b><a class="src" data-path="tinygrad/mixin/op.py" data-line="886">op.py:886 — argmax</a></b></div>
+      <pre><code class="language-python">if axis is None: return self.flatten().argmax(0)
+axis = self._resolve_dim(axis)
+m = self.eq(self.max(axis=axis, keepdim=True))
+idx = m * type(self).arange(self.shape[axis], 0, -1).reshape(self.shape[axis], *[1]*(self.ndim-axis-1))
+return (self.shape[axis] - idx.max(axis=axis, keepdim=keepdim)).cast(dtypes.int32)</code></pre>
+      <p>Mark the positions equal to the max, multiply by a <em>descending</em> arange \(n, n-1, \dots, 1\), take the max, and subtract from \(n\): the first
+      maximal position wins ties.</p>
+    </div>
+    <div class="tabpane" data-title="cumsum">
+      <div class="codecap"><b><a class="src" data-path="tinygrad/mixin/op.py" data-line="781">op.py:781 — _split_cumalu</a></b></div>
+      <pre><code class="language-python">def _split_cumalu(self, axis:int, op:Ops) -&gt; Self:
+  axis = self._resolve_dim(axis)
+  if self.ndim == 0 or 0 in self.shape: return self.cast(self.sum().dtype) if op is Ops.ADD else self
+  # TODO: someday the optimizer will find this on its own
+  # for now this is a two stage cumsum
+  SPLIT = 256
+  value = identity_element(op, self.commit_dtype())
+  if not isinstance(s:=self.shape[axis], int) or s &lt;= SPLIT*2: return self._cumalu(axis, op)
+  chunks = self.transpose(axis,-1)._pad_constant((None,)*(self.ndim-1)+((round_up(s,SPLIT)-s,0),), value).unflatten(-1,(-1,SPLIT))._cumalu(-1, op)
+  base = chunks[..., -1]._cumalu(-1, op)._pad_constant((None,)*(chunks.ndim-2) + ((1, -1),), value)
+  return chunks.alu(op, base.unsqueeze(-1)).flatten(start_dim=-2)[..., -s:].transpose(axis,-1)</code></pre>
+      <p>For long axes (&gt; 512) cumsum is done in two stages of 256-chunks, to avoid an \(O(n^2)\) window sum.</p>
+    </div>
+  </div>
+  <pre class="output"><code>=== check: the decompositions compute the right numbers
+x.sigmoid() = [0.7311, 0.8808, 0.9526]
+m.softmax() = [[0.09, 0.2447, 0.6652], [0.09, 0.2447, 0.6652]]
+m.argmax(1) = [2, 2]   m.cumsum(1) = [[1.0, 3.0, 6.0], [4.0, 9.0, 15.0]]
+arange(4)   = [0, 1, 2, 3]   one_hot = [[0, 0, 1], [1, 0, 0]]
+gather      = [[3.0], [4.0]]   m[:, idx] = [[3.0, 1.0], [6.0, 4.0]]</code></pre>
+
+  <h2 id="rand"><span class="sec">8.8</span>Random numbers: THREEFRY on a counter</h2>
+  <p><code>Tensor.rand</code> is a pure function of a per-device <b>seed</b> and <b>counter</b> (<code>Tensor._next_counter</code>, <a class="src" data-path="tinygrad/tensor.py" data-line="436"></a>):
+  the counter is a 1-element <code>uint64</code> tensor that is incremented with an <code>assign</code> each time you draw numbers. The bits come from the
+  <code>THREEFRY</code> op — the Threefry-2x32 block cipher (counter-based PRNG, as in JAX) — applied to <code>arange</code> counters:</p>
+  <div class="codecap"><b><a class="src" data-path="tinygrad/mixin/rand.py" data-line="12">tinygrad/mixin/rand.py:12 — _threefry_random_bits, _bits_to_rand</a></b></div>
+  <pre><code class="language-python">def _threefry_random_bits(key, counts0, counts1):
+  x = (counts1.cast(dtypes.uint64) &lt;&lt; 32) | counts0.cast(dtypes.uint64)
+  x = x.threefry((key[1].cast(dtypes.uint64) &lt;&lt; 32) | key[0].cast(dtypes.uint64))
+  return x.cast(dtypes.uint32).cat((x &gt;&gt; 32).cast(dtypes.uint32))
+
+def _bits_to_rand(bits, shape:tuple[int, ...], dtype:DType):
+  _, nmant = dtypes.finfo(dtype)
+  uint_dtype = {1: dtypes.uint8, 2: dtypes.uint16, 4: dtypes.uint32, 8: dtypes.uint64}[dtype.itemsize]
+  uint_bits = bits.bitcast(uint_dtype)
+  float_one_bits = bitcast(1.0, dtype, uint_dtype)
+  return uint_bits.rshift(dtype.bitsize - nmant).bitwise_or(float_one_bits).bitcast(dtype)[:prod(shape)].sub(1).reshape(shape)
+</code></pre>
+  <p><code>_bits_to_rand</code> is a classic trick: put random bits in the mantissa of a float whose exponent says "1.x", which gives a uniform number in
+  \([1,2)\); subtract 1. <code>randn</code> uses Box–Muller (hence <code>SIN</code> and <code>LOG2</code>), so a model input built with <code>Tensor.randn</code> drags
+  <code>THREEFRY, SHL, SHR, OR, BITCAST, SIN</code> into the graph — which is why the op counting script realizes its inputs first. Because the generator is
+  counter-based, the random graph is just more lazy UOps that fuse into whatever consumes them (dropout masks are generated inside the kernel that uses them).</p>
+
+  <h2 id="explorer"><span class="sec">8.9</span>Decompose this: the real graphs</h2>
+  <div class="demo" id="demo-decomp">
+    <div class="demo-title">"Decompose this" explorer</div>
+    <div class="demo-desc">Real UOp graphs captured from this checkout by <code>examples/08_capture_data.py</code> (shape-argument STACK/CONST nodes are folded into the node label). Click a method;
+      hover nodes for details. Inputs: <code>x=[1,2,3]</code>, <code>y=[4,5,6]</code>, <code>m=[[1,2,3],[4,5,6]]</code>, <code>w</code> 3×2, <code>idx=[2,0]</code>, a 4×4 <code>img</code>, a 2×2 kernel <code>k</code>.</div>
+    <div class="ch08-list" id="dc-list"></div>
+    <div class="ch08-kv" id="dc-info"></div>
+    <div id="dc-graph"></div>
+  </div>
+
+  <h2 id="count"><span class="sec">8.10</span>How many bricks does a real model use?</h2>
+  <p>Two small but real models from <code>tinygrad.nn</code> — a conv net (Conv2d, BatchNorm, relu, max_pool2d, Linear) and a transformer block (LayerNorm,
+  Linear, causal <code>scaled_dot_product_attention</code>, gelu) — each with a cross-entropy loss. We count the UOps in the lazy graph of the loss,
+  and of the loss plus the gradients of every parameter:</p>
+  <div class="codecap"><b>examples/08_model_opcount.py</b> — run with <code>DEV=CPU python3 examples/08_model_opcount.py</code></div>
+  <pre><code class="language-python">def report(name, model, x, y):
+  x = x.realize()   # realize the random input so its THREEFRY/SIN (Box-Muller) graph is not counted as &quot;model&quot;
+  for p in get_parameters(model): p.realize()
+  with Context(TRAINING=1):
+    loss = model(x).sparse_categorical_crossentropy(y) if y.ndim == 1 else model(x).flatten(0, 1).sparse_categorical_crossentropy(y.flatten())
+  params = [p for p in get_parameters(model) if p.is_floating_point()]   # BatchNorm also holds an int counter
+  fwd = Counter(u.op for u in loss.uop.toposort())
+  grads = loss.gradient(*params)
+  both = Counter(u.op for u in UOp.sink(loss.uop, *[g.uop for g in grads]).toposort())
+  CAPTURE[name] = {&quot;forward&quot;: {o.name: n for o, n in fwd.items()}, &quot;forward+backward&quot;: {o.name: n for o, n in both.items()}}
+  for label, c in [(&quot;forward&quot;, fwd), (&quot;forward+backward&quot;, both)]:
+    compute = {o: n for o, n in c.items() if o not in PLUMBING}
+    alu = sorted((o.name for o in compute if o not in MOVEMENT and o is not Ops.REDUCE))
+    mv = sorted((o.name for o in compute if o in MOVEMENT))
+    print(f&quot;{name:16s} {label:17s} {sum(c.values()):5d} UOps | {len(compute):2d} distinct compute ops: &quot;
+          f&quot;{len(mv)} movement {mv} + REDUCE + {len(alu)} ALU {alu}&quot;)
+  return both
+
+c1 = report(&quot;ConvNet&quot;, ConvNet(), Tensor.randn(2, 1, 8, 8), Tensor([3, 7]))
+c2 = report(&quot;TransformerBlock&quot;, Block(), Tensor.randn(2, 4, 8), Tensor([[1, 2, 3, 4], [5, 6, 7, 0]]))</code></pre>
+  <pre class="output"><code>ConvNet          forward             226 UOps | 16 distinct compute ops: 5 movement [&#x27;EXPAND&#x27;, &#x27;PAD&#x27;, &#x27;PERMUTE&#x27;, &#x27;RESHAPE&#x27;, &#x27;SHRINK&#x27;] + REDUCE + 10 ALU [&#x27;ADD&#x27;, &#x27;CAST&#x27;, &#x27;CMPEQ&#x27;, &#x27;CMPLT&#x27;, &#x27;EXP2&#x27;, &#x27;LOG2&#x27;, &#x27;MUL&#x27;, &#x27;RECIP&#x27;, &#x27;SQRT&#x27;, &#x27;WHERE&#x27;]
+ConvNet          forward+backward    363 UOps | 16 distinct compute ops: 5 movement [&#x27;EXPAND&#x27;, &#x27;PAD&#x27;, &#x27;PERMUTE&#x27;, &#x27;RESHAPE&#x27;, &#x27;SHRINK&#x27;] + REDUCE + 10 ALU [&#x27;ADD&#x27;, &#x27;CAST&#x27;, &#x27;CMPEQ&#x27;, &#x27;CMPLT&#x27;, &#x27;EXP2&#x27;, &#x27;LOG2&#x27;, &#x27;MUL&#x27;, &#x27;RECIP&#x27;, &#x27;SQRT&#x27;, &#x27;WHERE&#x27;]
+TransformerBlock forward             301 UOps | 17 distinct compute ops: 5 movement [&#x27;EXPAND&#x27;, &#x27;PAD&#x27;, &#x27;PERMUTE&#x27;, &#x27;RESHAPE&#x27;, &#x27;SHRINK&#x27;] + REDUCE + 11 ALU [&#x27;ADD&#x27;, &#x27;CAST&#x27;, &#x27;CMPEQ&#x27;, &#x27;CMPLT&#x27;, &#x27;EXP2&#x27;, &#x27;LOG2&#x27;, &#x27;MUL&#x27;, &#x27;POW&#x27;, &#x27;RECIP&#x27;, &#x27;SQRT&#x27;, &#x27;WHERE&#x27;]
+TransformerBlock forward+backward    514 UOps | 17 distinct compute ops: 5 movement [&#x27;EXPAND&#x27;, &#x27;PAD&#x27;, &#x27;PERMUTE&#x27;, &#x27;RESHAPE&#x27;, &#x27;SHRINK&#x27;] + REDUCE + 11 ALU [&#x27;ADD&#x27;, &#x27;CAST&#x27;, &#x27;CMPEQ&#x27;, &#x27;CMPLT&#x27;, &#x27;EXP2&#x27;, &#x27;LOG2&#x27;, &#x27;MUL&#x27;, &#x27;POW&#x27;, &#x27;RECIP&#x27;, &#x27;SQRT&#x27;, &#x27;WHERE&#x27;]
+
+all ops used by either model (fwd+bwd), most common first:
+MUL:159, RESHAPE:152, PERMUTE:113, STACK:112, CONST:71, REDUCE:68, ADD:51, EXPAND:37, BUFFER:22, CAST:20, RECIP:16, SHRINK:14, PAD:9, WHERE:7, CMPEQ:5, DETACH:4, EXP2:4, SQRT:3, CMPLT:2, LOG2:2, COPY:2, SINK:2, POW:2
+
+Ops enum has 75 members in total; the two models use 23 of them.</code></pre>
+  <p><b>Sixteen or seventeen kinds of compute op</b> for a complete conv net or transformer block, forward <em>and</em> backward: the 5 movement ops, REDUCE,
+  and 10–11 ALU ops. Note that the backward pass adds hundreds of UOps but <b>not a single new kind</b> — gradients of bricks are made of bricks.</p>
+  <div class="demo" id="demo-count">
+    <div class="demo-title">Op histogram</div>
+    <div class="demo-desc">Captured counts (<code>data/ch08_opcount.json</code>). Toggle model and forward vs forward+backward; colours are the op families used throughout the guide.</div>
+    <div class="controls" id="ct-ctl"></div>
+    <div id="ct-bars"></div>
+  </div>
+
+  <h2 id="again"><span class="sec">8.11</span>Hammer it again: trade-offs and what breaks</h2>
+  <ul>
+    <li><b>Graph size vs vocabulary size.</b> <code>tanh</code> is 13 UOps (via sigmoid), <code>Tensor.rand(4)</code> is ~90. That is fine: graph building is a few
+      microseconds per UOp, hash-consing deduplicates shared subtrees (softmax's two <code>exp</code> branches are one node), and the schedule cache
+      (<a href="12-schedule.html">Chapter 12</a>) means it is done once per shape under a JIT.</li>
+    <li><b>Performance is recovered later.</b> <code>x * recip(y)</code> becomes a division again if the backend prefers; <code>EXP2</code>/<code>LOG2</code>/<code>SIN</code> are either native or
+      decomposed into polynomials (<a href="15-lowering.html">Chapter 15</a>); <code>MUL</code>+<code>ADD</code> become <code>MULACC</code>; matmul-shaped reduces become tensor-core <code>WMMA</code>
+      (<a href="14-optimizations.html">Chapter 14</a>).</li>
+    <li><b>Numerics.</b> \(e^x = 2^{x\log_2 e}\) costs one extra rounding of the product; <code>sigmoid</code> as <code>1/(1+2^{…})</code> saturates gracefully to 0/1. The
+      softmax <code>DETACH</code>ed max shift keeps <code>exp</code> from overflowing.</li>
+    <li><b>Integer arithmetic is different.</b> <code>//</code> and <code>%</code> on ints use <code>DIV</code>/<code>MOD</code> (floor semantics) and <code>TRUNCDIV</code>/<code>TRUNCMOD</code>
+      for C semantics; <code>x / y</code> on ints casts to float first. <code>minimum</code> on ints uses an XOR trick instead of negation (no negative of unsigned).</li>
+    <li><b>conv memory?</b> The pooled tensor is conceptually \(k_h k_w\) times larger than the input, but it is a <em>view</em>: no buffer of that size exists unless
+      the scheduler decides to materialize it.</li>
+  </ul>
+  <div class="quiz" data-answer="3">
+    <div class="q">Which primitive op kinds does <code>Tensor.arange(4)</code> contain?</div>
+    <button class="opt">a dedicated ARANGE/IOTA op</button><button class="opt">only CONST</button><button class="opt">RANGE and STORE</button><button class="opt">CONST, CAST, movement ops (PAD/EXPAND/RESHAPE/SHRINK/PERMUTE), REDUCE and ADD — a cumsum built with <code>_pool</code></button>
+    <div class="explain">From the output: <code>Tensor.arange(4)</code> uses <code>ADD, CAST, EXPAND, PAD, PERMUTE, REDUCE, SHRINK</code>. RANGE only appears after rangeify; there is no iota op at the tensor level.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q"><code>x.gather(1, idx)</code> with <code>x</code> of shape (N, C): which "shape" of computation is it, as decomposed?</div>
+    <button class="opt">compare idx to an arange (one-hot), WHERE-select, then a SUM over C — like a matmul with a 0/1 matrix</button><button class="opt">a LOAD with a computed pointer</button><button class="opt">a sort</button>
+    <div class="explain">See <code>gather</code>: <code>index.unsqueeze(-1)._one_hot_along_dim(C).where(x, 0).sum(-1)</code>. Later, rangeify + symbolic can often turn this pattern back into a direct indexed load (the "arange folding" rules), but at the tensor level it is a masked reduce.</div>
+  </div>
+
+  <div class="summary-box"><h3>Chapter summary</h3><ul>
+    <li>Tensor methods are Python recipes in <code>mixin/{elementwise,reduce,op,rand}.py</code>; their output is a DAG of ~two dozen primitive UOp kinds.</li>
+    <li>Elementwise: <code>sub = ADD(a, MUL(b,-1))</code>, <code>div = MUL(a, RECIP(b))</code>, <code>exp = EXP2(x·log₂e)</code>, <code>log = LOG2·ln2</code>, <code>sigmoid = RECIP(1+EXP2(−x·log₂e))</code>, <code>relu = WHERE(0&lt;x, x, 0)</code>, <code>min = −max(−a,−b)</code>.</li>
+    <li>One <code>REDUCE(op, n)</code> that removes the <em>leading</em> n axes (after a PERMUTE). softmax/log_softmax/layernorm are compositions with a DETACHed max shift and rmsnorm.</li>
+    <li><b>matmul</b> = reshape A to <code>(M,1,K)</code>, B to <code>(1,N,K)</code>, implicitly broadcast MUL to <code>(M,N,K)</code>, PERMUTE K first, REDUCE. No EXPAND, no M×N×K buffer.</li>
+    <li><b>conv2d</b> = pad + <code>_pool</code> (repeat → flatten → reshape into rows one longer = sliding windows) + broadcast MUL + REDUCE over (cin, kh, kw).</li>
+    <li>arange is a pooled cumsum; one_hot/gather/argmax/tensor-indexing are comparisons with arange + WHERE + REDUCE; rand is THREEFRY on counters.</li>
+    <li>Real models use ~16–17 kinds of compute op; backward adds no new kinds. Next: <a href="09-autograd.html">Chapter 9</a> — gradients as more of the same bricks.</li>
+  </ul></div>
+</main>
+</div>
+<script>
+// ---- a faithful JS mirror of the five movement ops as index functions (tinygrad/schedule/indexing.py apply_movement_op)
+// args use tinygrad's decoded marg convention: RESHAPE(newshape) PERMUTE(order) EXPAND(new leading dims)
+// PAD((offset,newsize) per axis) SHRINK((offset,size) per axis)
+const MV = {};
+MV.prod = (a) => a.reduce((x, y) => x * y, 1);
+MV.outShape = function (op, s, arg) {
+  switch (op) {
+    case "RESHAPE": if (MV.prod(arg) !== MV.prod(s)) throw new Error(`bad reshape: (${s}) -> (${arg})`); return arg.slice();
+    case "PERMUTE": if (arg.slice().sort((a, b) => a - b).join() !== s.map((_, i) => i).join()) throw new Error(`invalid permutation (${arg}) of len ${s.length}`); return arg.map((i) => s[i]);
+    case "EXPAND": return [...arg, ...s];
+    case "PAD": if (arg.length !== s.length || !arg.every(([o, n], i) => o >= 0 && o + s[i] <= n)) throw new Error(`invalid pad ${JSON.stringify(arg)} for (${s})`); return arg.map((a) => a[1]);
+    case "SHRINK": if (arg.length !== s.length || !arg.every(([o, n], i) => o >= 0 && n >= 0 && o + n <= s[i])) throw new Error(`invalid shrink ${JSON.stringify(arg)} for (${s})`); return arg.map((a) => a[1]);
+  }
+  throw new Error("unknown op " + op);
+};
+// numeric index function: output multi-index -> input multi-index, or null if it lands in padding
+MV.mapIdx = function (op, inS, arg, idx) {
+  switch (op) {
+    case "RESHAPE": { let flat = 0; for (let i = 0; i < idx.length; i++) flat = flat * arg[i] + idx[i]; const out = []; for (let i = inS.length - 1; i >= 0; i--) { out.unshift(flat % inS[i]); flat = Math.floor(flat / inS[i]); } return out; }
+    case "PERMUTE": { const out = new Array(idx.length); arg.forEach((p, i) => (out[p] = idx[i])); return out; }
+    case "EXPAND": return idx.slice(arg.length);
+    case "PAD": { const out = idx.map((r, i) => r - arg[i][0]); return out.every((v, i) => v >= 0 && v < inS[i]) ? out : null; }
+    case "SHRINK": return idx.map((r, i) => r + arg[i][0]);
+  }
+};
+// a view = base shape + list of primitive ops; build all intermediate shapes
+MV.build = function (baseShape, ops) {
+  const shapes = [baseShape.slice()];
+  for (const o of ops) shapes.push(MV.outShape(o.op, shapes[shapes.length - 1], o.arg));
+  return shapes;
+};
+// which flat base cell does output multi-index idx (of the view after k ops) read? -1 = padding
+MV.source = function (baseShape, ops, shapes, k, idx) {
+  let cur = idx;
+  for (let j = k - 1; j >= 0; j--) { cur = MV.mapIdx(ops[j].op, shapes[j], ops[j].arg, cur); if (!cur) return -1; }
+  let flat = 0; for (let i = 0; i < cur.length; i++) flat = flat * baseShape[i] + cur[i];
+  return flat;
+};
+MV.allIdx = function (shape) {
+  const out = []; const n = MV.prod(shape);
+  for (let f = 0; f < n; f++) { const idx = []; let r = f; for (let i = shape.length - 1; i >= 0; i--) { idx.unshift(r % shape[i]); r = Math.floor(r / shape[i]); } out.push(idx); }
+  return out;
+};
+
+// ---- high-level Tensor methods, mirroring tinygrad/mixin/movement.py: each returns the primitive ops it emits
+MV.hl = {
+  reshape: (s, ns) => (ns.join() === s.join() ? [] : [{ op: "RESHAPE", arg: ns }]),
+  permute: (s, order) => (order.join() === s.map((_, i) => i).join() ? [] : [{ op: "PERMUTE", arg: order }]),
+  transpose: (s, d0 = 1, d1 = 0) => { const o = s.map((_, i) => i); [o[d0], o[d1]] = [o[d1], o[d0]]; return MV.hl.permute(s, o); },
+  shrink: (s, arg) => { const a = arg.map((x, i) => (x ? [x[0], x[1] - x[0]] : [0, s[i]])); return a.every((x, i) => x[0] === 0 && x[1] === s[i]) ? [] : [{ op: "SHRINK", arg: a }]; },
+  pad: (s, arg) => { const a = arg.map((x, i) => (x ? [x[0], s[i] + x[0] + x[1]] : [0, s[i]])); return a.every((x, i) => x[0] === 0 && x[1] === s[i]) ? [] : [{ op: "PAD", arg: a }]; },
+  // _broadcast_to: squeeze the 1s being expanded, EXPAND on the left, permute back
+  expand: (s, ns) => {
+    const nleft = ns.length - s.length;
+    const shape = [...new Array(nleft).fill(1), ...s];
+    if (!shape.every((x, i) => x === ns[i] || x === 1)) throw new Error(`cannot broadcast (${s}) to (${ns})`);
+    if (s.join() === ns.join()) return [];
+    const baxes = [...Array(nleft).keys(), ...s.map((x, i) => (x === 1 && ns[nleft + i] !== 1 ? nleft + i : -1)).filter((x) => x >= 0)];
+    const expandAt = baxes.filter((i) => i >= nleft).map((i) => i - nleft);
+    const kept = s.map((_, i) => i).filter((i) => !expandAt.includes(i));
+    const ops = MV.hl.reshape(s, kept.map((i) => s[i]));
+    ops.push({ op: "EXPAND", arg: [...ns.slice(0, nleft), ...expandAt.map((i) => ns[nleft + i])] });
+    const perm = [...Array(nleft).keys(), ...s.map((_, i) => nleft + (expandAt.includes(i) ? expandAt.indexOf(i) : expandAt.length + kept.indexOf(i)))];
+    const after = MV.outShape("EXPAND", kept.map((i) => s[i]), ops[ops.length - 1].arg);
+    return ops.concat(MV.hl.permute(after, perm));
+  },
+};
+// apply a high-level method to the current shape: returns {ops, shape}
+MV.apply = function (shape, name, ...args) {
+  const ops = MV.hl[name](shape, ...args);
+  let s = shape; for (const o of ops) s = MV.outShape(o.op, s, o.arg);
+  return { ops, shape: s };
+};
+// chain helpers that need intermediate shapes
+MV.seq = function (shape, steps) { // steps: [[name, ...args] | fn(shape)->[name,...args]]
+  let ops = [], s = shape;
+  for (let st of steps) { if (typeof st === "function") st = st(s); const r = MV.apply(s, ...st); ops = ops.concat(r.ops); s = r.shape; }
+  return { ops, shape: s };
+};
+MV.hl.repeat = (s, reps) => {
+  const base = [...new Array(reps.length - s.length).fill(1), ...s];
+  const unsq = [], exp = [], fin = [];
+  reps.forEach((r, i) => { if (r === 1) { unsq.push(base[i]); exp.push(base[i]); } else { unsq.push(1, base[i]); exp.push(r, base[i]); } fin.push(r * base[i]); });
+  return MV.seq(s, [["reshape", unsq], ["expand", exp], ["reshape", fin]]).ops;
+};
+MV.hl.roll = (s, shift, dim) => {
+  const reps = s.map((_, i) => (i === dim ? 2 : 1));
+  const n = s[dim], delta = n - (((shift % n) + n) % n);
+  return MV.seq(s, [["repeat", reps], (cur) => ["shrink", cur.map((x, i) => (i === dim ? [delta, delta + n] : null))]]).ops;
+};
+// flip: tinygrad builds it from PAD/RESHAPE/PERMUTE/SHRINK by placing values on an anti-diagonal (movement.py flip)
+MV.hl.flip = (s, axis) => {
+  const n = s[axis]; if (n <= 1) return [];
+  const steps = [];
+  const nd = s.length;
+  let x = s; const tr = (cur, a, b) => ["transpose", a, b];
+  const ops = []; let cur = s;
+  const push = (r) => { ops.push(...r.ops); cur = r.shape; };
+  push(MV.apply(cur, "transpose", 0, axis));
+  const tail = cur.slice(1), m = n;
+  const tailPad = tail.map((t) => [0, t]);
+  const raw = (op, arg) => { ops.push({ op, arg }); cur = MV.outShape(op, cur, arg); };
+  raw("PAD", [[0, m], ...tailPad]); push(MV.apply(cur, "reshape", [m, 1, ...tail]));
+  raw("PAD", [[0, m], [0, m - 1], ...tailPad]); push(MV.apply(cur, "reshape", [m * (m - 1), ...tail]));
+  raw("PAD", [[m - 1, m * m], ...tailPad]); push(MV.apply(cur, "reshape", [m, m, ...tail])); push(MV.apply(cur, "transpose", 0, 1)); push(MV.apply(cur, "reshape", [m * m, ...tail]));
+  raw("SHRINK", [[m - 1, m * (m - 1)], ...tailPad]); push(MV.apply(cur, "reshape", [m, m - 1, ...tail]));
+  push(MV.apply(cur, "shrink", [null, [0, 1], ...tail.map(() => null)])); push(MV.apply(cur, "reshape", [m, ...tail]));
+  push(MV.apply(cur, "shrink", [[m - n, m], ...tail.map((t) => [0, t])])); push(MV.apply(cur, "transpose", 0, axis));
+  return ops;
+};
+
+
+// faithful JS mirror of MovementMixin._pool (tinygrad/mixin/movement.py:614): returns the primitive ops it emits
+MV.ceildiv = (a, b) => Math.ceil(a / b);
+MV.hl.shrink_to = (s, ns) => MV.hl.shrink(s, ns.map((n) => (n === null ? null : [0, n])));
+MV.hl._pool = (s, k_, st = 1, dl = 1) => {
+  const nk = k_.length, s_ = Array.isArray(st) ? st : k_.map(() => st), d_ = Array.isArray(dl) ? dl : k_.map(() => dl);
+  const noop = new Array(s.length - nk).fill(null), i_ = s.slice(s.length - nk);
+  if (!k_.every((k, a) => d_[a] * (k - 1) + 1 <= i_[a])) throw new Error("kernel size cannot be greater than actual input size");
+  const o_ = i_.map((i, a) => MV.ceildiv(i - d_[a] * (k_[a] - 1), s_[a]));
+  const f_ = o_.map((o, a) => Math.max(1, MV.ceildiv(o * s_[a] - d_[a], i_[a])));
+  const fl = (arr) => arr.flat();
+  const nn = noop.map(() => 1);
+  const steps = [
+    ["repeat", [...nn, ...k_.map((k, a) => MV.ceildiv(k * (i_[a] * f_[a] + d_[a]), i_[a]))]],
+    (cur) => ["shrink_to", [...noop, ...k_.map((k, a) => k * (i_[a] * f_[a] + d_[a]))]],
+    (cur) => ["reshape", [...cur.slice(0, noop.length), ...fl(k_.map((k, a) => [k, i_[a] * f_[a] + d_[a]]))]],
+    (cur) => ["shrink_to", [...noop, ...fl(k_.map((k, a) => [k, o_[a] * s_[a]]))]],
+    (cur) => ["reshape", [...cur.slice(0, noop.length), ...fl(k_.map((k, a) => [k, o_[a], s_[a]]))]],
+    (cur) => ["shrink_to", [...noop, ...fl(k_.map((k, a) => [k, o_[a], 1]))]],
+    (cur) => ["reshape", [...cur.slice(0, noop.length), ...fl(k_.map((k, a) => [k, o_[a]]))]],
+    (cur) => ["permute", [...noop.map((_, a) => a), ...i_.map((_, a) => noop.length + a * 2 + 1), ...i_.map((_, a) => noop.length + a * 2)]],
+  ];
+  return MV.seq(s, steps).ops;
+};
+
+(function () {
+  const G = Guide, el = G.el;
+  const fmt = (a) => "(" + a.map((x) => (Array.isArray(x) ? "(" + x.join(", ") + ")" : x)).join(", ") + (a.length === 1 && !Array.isArray(a[0]) ? ",)" : ")");
+
+  // =================== matmul cube ===================
+  (function cube() {
+    const A = [[1, 2, 3], [4, 5, 6]], B = [[1, 0, 0, 1], [0, 1, 0, 1], [0, 0, 1, 1]];
+    const M = 2, K = 3, N = 4;
+    const C = A.map((r, i) => B[0].map((_, j) => r.reduce((s, a, k) => s + a * B[k][j], 0)));
+    const cv = G.$("#cube-canvas"), ctx = cv.getContext("2d");
+    let W = 0, H = 430, dpr = window.devicePixelRatio || 1;
+    function resize() { W = cv.clientWidth; cv.width = W * dpr; cv.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0); }
+    resize();
+    // isometric-ish projection: j -> right, i -> down, k -> up-right (depth)
+    const cw = 50, ch = 42, dkx = 66, dky = 50;
+    const proj = (i, j, k) => ({ x: 300 + j * cw + k * dkx, y: 250 + i * ch - k * dky });
+    const COL = { A: "#58C4DD", B: "#83C167", P: "#F4D345", C: "#FC6255" };
+    // cells: key -> {i,j,k,val,kind,alpha}
+    // steps: 0 start, 1 reshape, 2 A broadcast along N, 3 B broadcast along M, 4 multiply, 5 permute, 6 reduce
+    function cellsFor(step) {
+      const cs = [];
+      const add = (key, kind, i, j, k, val, alpha = 1) => cs.push({ key, kind, i, j, k, val, alpha });
+      for (let i = 0; i < M; i++) for (let k = 0; k < K; k++) for (let c = 0; c < N; c++) {
+        if (step === 0) add(`A${i}${k}${c}`, "A", i, -2.2, k, A[i][k], c === 0 ? 1 : 0);
+        else if (step === 1) add(`A${i}${k}${c}`, "A", i, -1.4, k, A[i][k], c === 0 ? 1 : 0);
+        else if (step === 2) add(`A${i}${k}${c}`, "A", i, c, k, A[i][k], 0.9);
+        else if (step === 3) add(`A${i}${k}${c}`, "A", i, c, k, A[i][k], 0.0);
+        else add(`A${i}${k}${c}`, "A", i, c, k, A[i][k], 0);
+      }
+      for (let k = 0; k < K; k++) for (let j = 0; j < N; j++) for (let c = 0; c < M; c++) {
+        if (step === 0) add(`B${k}${j}${c}`, "B", -2.6, j, k, B[k][j], c === 0 ? 1 : 0);
+        else if (step === 1 || step === 2) add(`B${k}${j}${c}`, "B", -1.7, j, k, B[k][j], c === 0 ? (step === 2 ? 0.5 : 1) : 0);
+        else if (step === 3) add(`B${k}${j}${c}`, "B", c, j, k, B[k][j], 0.9);
+        else add(`B${k}${j}${c}`, "B", c, j, k, B[k][j], 0);
+      }
+      for (let i = 0; i < M; i++) for (let j = 0; j < N; j++) for (let k = 0; k < K; k++) {
+        const v = A[i][k] * B[k][j];
+        if (step === 4 || step === 5) add(`P${i}${j}${k}`, "P", i, j, k, v, 1);
+        else if (step === 6) add(`P${i}${j}${k}`, "P", i, j, 0, v, 0);
+        else add(`P${i}${j}${k}`, "P", i, j, k, v, 0);
+      }
+      for (let i = 0; i < M; i++) for (let j = 0; j < N; j++) add(`C${i}${j}`, "C", i, j, 0, C[i][j], step === 6 ? 1 : 0);
+      return cs;
+    }
+    let cur = cellsFor(0), hoverIJ = null, stepIdx = 0;
+    const AX = [
+      ["A (2,3) and B (3,4): two flat buffers viewed as matrices", "", ""],
+      ["A.reshape(2,1,3)   B.reshape(1,3,4).transpose(-1,-2) → (1,4,3)", "M=2", "N=4"],
+      ["A is (2,1,3): MUL reads the same A[i,k] for every j  (broadcast along N)", "M", "N"],
+      ["B is (1,4,3): MUL reads the same B[k,j] for every i  (broadcast along M)", "M", "N"],
+      ["MUL → shape (2,4,3): every cell is A[i,k]·B[k,j]  — no copy, no EXPAND op", "M", "N"],
+      ["PERMUTE(2,0,1): shape (3,2,4) — K is now axis 0 (only the axis order changes)", "M", "N"],
+      ["REDUCE(ADD, 1): sum away the leading axis K → C (2,4)", "M", "N"],
+    ];
+    function cube3(x, y, color, alpha, val, hl) {
+      ctx.globalAlpha = alpha;
+      const w = cw - 8, h = ch - 8, dx = 12, dy = 9;
+      ctx.fillStyle = color + (hl ? "" : "cc");
+      ctx.strokeStyle = hl ? "#fff" : "#0d0f12"; ctx.lineWidth = hl ? 2 : 1;
+      // top
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + dx, y - dy); ctx.lineTo(x + w + dx, y - dy); ctx.lineTo(x + w, y); ctx.closePath(); ctx.fillStyle = color + "88"; ctx.fill(); ctx.stroke();
+      // side
+      ctx.beginPath(); ctx.moveTo(x + w, y); ctx.lineTo(x + w + dx, y - dy); ctx.lineTo(x + w + dx, y + h - dy); ctx.lineTo(x + w, y + h); ctx.closePath(); ctx.fillStyle = color + "66"; ctx.fill(); ctx.stroke();
+      // front
+      ctx.fillStyle = color + (hl ? "ff" : "dd"); ctx.fillRect(x, y, w, h); ctx.strokeRect(x, y, w, h);
+      ctx.fillStyle = "#0d0f12"; ctx.font = "bold 14px monospace"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText(String(val), x + w / 2, y + h / 2 + 1);
+      ctx.globalAlpha = 1;
+    }
+    function draw(cells) {
+      ctx.clearRect(0, 0, W, H);
+      // axis labels
+      ctx.fillStyle = "#9aa3ad"; ctx.font = "13px monospace"; ctx.textAlign = "left";
+      ctx.fillText(AX[stepIdx][0], 14, 22);
+      // painter's order: far k first, then rows top->bottom, cols left->right
+      const sorted = cells.filter((c) => c.alpha > 0.02).sort((a, b) => b.k - a.k || a.i - b.i || a.j - b.j);
+      for (const c of sorted) {
+        const p = proj(c.i, c.j, c.k);
+        let hl = false;
+        if (hoverIJ) {
+          const [hi, hj] = hoverIJ;
+          if (c.kind === "A") hl = Math.round(c.i) === hi && (stepIdx <= 1 ? true : Math.round(c.j) === hj);
+          if (c.kind === "B") hl = Math.round(c.j) === hj && (stepIdx <= 2 ? true : Math.round(c.i) === hi);
+          if (c.kind === "P" || c.kind === "C") hl = c.i === hi && c.j === hj;
+        }
+        cube3(p.x, p.y, COL[c.kind], hoverIJ && !hl ? c.alpha * 0.35 : c.alpha, c.val, hl);
+      }
+      const o = proj(0, 0, 0);
+      if (stepIdx >= 1) {
+        ctx.strokeStyle = "#5b6470"; ctx.lineWidth = 1.2;
+        const ax = (a, b, lbl) => { ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.fillStyle = "#9aa3ad"; ctx.fillText(lbl, b.x + 4, b.y + 4); };
+        const base = { x: o.x - 10, y: o.y + M * ch + 6 };
+        ax(base, { x: base.x + N * cw, y: base.y }, stepIdx === 5 ? "N (axis 2)" : "N (axis 1)");
+        ax(base, { x: base.x, y: base.y - M * ch - 4 }, "");
+        ctx.fillText(stepIdx === 5 ? "M (axis 1)" : "M (axis 0)", base.x - 78, base.y - M * ch / 2);
+        if (stepIdx < 6) { const b2 = { x: base.x + N * cw + 4, y: base.y }; ax(b2, { x: b2.x + K * dkx, y: b2.y - K * dky }, stepIdx === 5 ? "K (axis 0) ← reduced next" : "K (axis 2)"); }
+      }
+      if (stepIdx === 0) { ctx.fillStyle = "#58C4DD"; ctx.fillText("A", proj(0, -2.2, 0).x - 20, proj(0, -2.2, 0).y + 20); ctx.fillStyle = "#83C167"; ctx.fillText("B", proj(-2.6, 0, 0).x - 20, proj(-2.6, 0, 0).y + 20); }
+    }
+    function animateTo(step) {
+      const target = cellsFor(step), from = new Map(cur.map((c) => [c.key, c]));
+      stepIdx = step;
+      const start = performance.now(), ms = 900;
+      const tick = (t) => {
+        const kk = G.ease(Math.min(1, (t - start) / ms));
+        const mix = target.map((c) => { const f = from.get(c.key) || c; return { ...c, i: f.i + (c.i - f.i) * kk, j: f.j + (c.j - f.j) * kk, k: f.k + (c.k - f.k) * kk, alpha: f.alpha + (c.alpha - f.alpha) * kk }; });
+        draw(mix);
+        if (kk < 1) requestAnimationFrame(tick); else { cur = target; draw(cur); }
+      };
+      requestAnimationFrame(tick);
+    }
+    // tables
+    const tw = G.$("#cube-tables");
+    const mk = (cap, mat, cls, onHover) => {
+      const t = el("table", { class: "ch08-tbl " + (cls || "") }, el("caption", {}, cap));
+      const tds = mat.map((r, i) => { const tr = el("tr"); const row = r.map((v, j) => { const td = el("td", {}, v); if (onHover) { td.addEventListener("mouseenter", () => onHover(i, j)); td.addEventListener("mouseleave", () => onHover(null)); } tr.append(td); return td; }); t.append(tr); return row; });
+      tw.append(t); return tds;
+    };
+    const tA = mk("A (2×3)", A), tB = mk("B (3×4)", B);
+    const tC = mk("C = A @ B  (hover me)", C, "click", (i, j) => {
+      hoverIJ = i === null ? null : [i, j];
+      tA.flat().forEach((td) => td.classList.remove("hl")); tB.flat().forEach((td) => td.classList.remove("hl")); tC.flat().forEach((td) => td.classList.remove("hl"));
+      if (hoverIJ) { tA[i].forEach((td) => td.classList.add("hl")); tB.forEach((r) => r[j].classList.add("hl")); tC[i][j].classList.add("hl"); }
+      draw(cur);
+    });
+    tw.append(el("div", { class: "ch08-kv", id: "cube-sum" }, "C[i,j] = Σ_k A[i,k]·B[k,j]  — e.g. C[1,3] = 4·1 + 5·1 + 6·1 = 15"));
+    const steps = AX.map((a, i) => ({ caption: [
+      "<b>Start.</b> Two flat buffers, viewed as A (2×3) and B (3×4) by a RESHAPE each.",
+      "<b>Reshape.</b> <code>x.reshape(2,1,3)</code> puts A in the M–K plane; <code>w.reshape(1,3,4).transpose(-1,-2)</code> puts B in the N–K plane: shape (1,4,3).",
+      "<b>Broadcast A (inside MUL).</b> A's size-1 axis stretches along N: A[i,k] is read for every j. In the kernel: A's index simply ignores j.",
+      "<b>Broadcast B (inside MUL).</b> B's size-1 axis stretches along M: B[k,j] is read for every i. In the kernel: B's index ignores i.",
+      "<b>Multiply.</b> The MUL's shape is (2,4,3): one product A[i,k]·B[k,j] per cell. Hover C below to see one K-line of the cube.",
+      "<b>PERMUTE(2,0,1).</b> <code>_rop</code> moves the reduced axis K to the front: shape (3,2,4). Nothing moves in memory — only the labels.",
+      "<b>REDUCE(ADD, 1).</b> The leading axis is summed away: each K-line collapses into one cell of C (2,4). In the kernel: a loop over k accumulating in a register.",
+    ][i] }));
+    G.stepper(G.$("#cube-stepper"), steps, (i) => animateTo(i), { autoplayMs: 2200 });
+    window.addEventListener("resize", () => { resize(); draw(cur); });
+  })();
+
+  // =================== pool window builder ===================
+  (function pool() {
+    const ids = ["i", "k", "s", "d", "p"];
+    let sel = [0, 0];
+    function update() {
+      const [I, k, s, d, p] = ids.map((x) => +G.$("#pl-" + x).value);
+      ids.forEach((x) => (G.$(`#pl-${x}v`).textContent = G.$("#pl-" + x).value));
+      const info = G.$("#pl-info"), opsBox = G.$("#pl-ops");
+      const Ip = I + 2 * p;
+      const base = [I, I];
+      const ops = [];
+      if (p) ops.push({ op: "PAD", arg: [[p, Ip], [p, Ip]] });
+      let pooled;
+      try { pooled = MV.hl._pool([Ip, Ip], [k, k], s, d); }
+      catch (e) { info.innerHTML = `<b style="color:var(--red)">${e.message}</b>`; G.$("#pl-in").innerHTML = G.$("#pl-out").innerHTML = ""; opsBox.innerHTML = ""; return; }
+      ops.push(...pooled);
+      const shapes = MV.build(base, ops), fin = shapes[shapes.length - 1];
+      const [oh, ow] = fin;
+      if (sel[0] >= oh || sel[1] >= ow) sel = [0, 0];
+      info.innerHTML = `o = ceil((i − d·(k−1)) / s) = <b>${oh}</b><br>pooled view shape <b>${fmt(fin)}</b> = (oh, ow, kh, kw)<br><b>${ops.length}</b> primitive movement ops, 0 copies`;
+      opsBox.innerHTML = "";
+      opsBox.append(el("span", { class: "ch08-chip grp" }, `input ${fmt(base)}`));
+      ops.forEach((o, n) => opsBox.append(el("span", { class: "ch08-chip" }, `${o.op}${fmt(o.arg)} `, el("small", {}, "→" + fmt(shapes[n + 1])))));
+      // which padded-input cells does output (oy,ox) read?
+      const win = new Map();
+      for (let ky = 0; ky < k; ky++) for (let kx = 0; kx < k; kx++) {
+        // walk the index back through the pool ops only (to the padded input), then through PAD to the real input
+        const idx = [sel[0], sel[1], ky, kx];
+        let cur = idx;
+        for (let j = ops.length - 1; j >= (p ? 1 : 0); j--) cur = MV.mapIdx(ops[j].op, shapes[j], ops[j].arg, cur);
+        const key = cur[0] * Ip + cur[1];
+        win.set(key, true);
+      }
+      // padded input grid
+      const inWrap = G.$("#pl-in"); inWrap.innerHTML = "";
+      const g = el("div", { class: "ch08-grid", style: `grid-template-columns: repeat(${Ip}, 28px)` });
+      for (let r = 0; r < Ip; r++) for (let c = 0; c < Ip; c++) {
+        const isPad = r < p || c < p || r >= p + I || c >= p + I;
+        const e = el("div", { class: "ch08-cell" + (isPad ? " pad" : "") + (win.has(r * Ip + c) ? " win" : "") }, isPad ? "0" : (r - p) * I + (c - p));
+        g.append(e);
+      }
+      inWrap.append(g);
+      const outWrap = G.$("#pl-out"); outWrap.innerHTML = "";
+      const go = el("div", { class: "ch08-grid", style: `grid-template-columns: repeat(${ow}, 28px)` });
+      for (let r = 0; r < oh; r++) for (let c = 0; c < ow; c++) {
+        const e = el("div", { class: "ch08-cell" + (r === sel[0] && c === sel[1] ? " sel win" : ""), onclick: () => { sel = [r, c]; update(); } }, `${r},${c}`);
+        e.style.fontSize = "9px"; go.append(e);
+      }
+      outWrap.append(go);
+    }
+    ids.forEach((x) => G.$("#pl-" + x).addEventListener("input", update));
+    update();
+  })();
+
+  // =================== decompose explorer ===================
+  G.loadJSON("../data/ch08_decomp.json").then((D) => {
+    const list = G.$("#dc-list"); let g = null;
+    const btns = D.map((d, i) => { const b = el("button", { onclick: () => show(i) }, d.expr); list.append(b); return b; });
+    function show(i) {
+      const d = D[i];
+      btns.forEach((b, j) => b.classList.toggle("active", i === j));
+      const ops = Object.entries(d.ops).sort((a, b) => b[1] - a[1]).map(([o, n]) => `${o}×${n}`).join("  ");
+      const val = typeof d.value === "string" ? d.value : JSON.stringify(d.value, (k, v) => (typeof v === "number" && !Number.isInteger(v) ? +v.toFixed(4) : v)).slice(0, 200);
+      G.$("#dc-info").innerHTML = `<b>${G.escape(d.expr)}</b>  (${G.escape(d.where)}) → shape ${d.shape}, ${d.graph.nodes.length} nodes<br>ops: ${ops}<br>value: ${G.escape(val)}`;
+      if (!g) g = G.uopGraph(G.$("#dc-graph"), d.graph, { height: 620, compact: true, showDtype: true });
+      else g.setGraph(d.graph, { animate: false });
+    }
+    show(9);
+  });
+
+  // =================== op histogram ===================
+  G.loadJSON("../data/ch08_opcount.json").then((D) => {
+    let model = Object.keys(D)[0], mode = "forward";
+    const ctl = G.$("#ct-ctl");
+    const mb = Object.keys(D).map((m) => el("button", { onclick: () => { model = m; draw(); } }, m));
+    const fb = ["forward", "forward+backward"].map((m) => el("button", { onclick: () => { mode = m; draw(); } }, m));
+    ctl.append(...mb, el("span", { style: "width:16px" }), ...fb);
+    const bars = G.$("#ct-bars");
+    function draw() {
+      mb.forEach((b) => b.classList.toggle("active", b.textContent === model)); fb.forEach((b) => b.classList.toggle("active", b.textContent === mode));
+      const c = D[model][mode];
+      const all = Object.keys(Object.assign({}, D[model]["forward"], D[model]["forward+backward"]));
+      const max = Math.max(...Object.values(D[model]["forward+backward"]));
+      all.sort((a, b) => (c[b] || 0) - (c[a] || 0) || (D[model]["forward+backward"][b] || 0) - (D[model]["forward+backward"][a] || 0));
+      bars.innerHTML = "";
+      for (const op of all) {
+        const n = c[op] || 0;
+        bars.append(el("div", { class: "ch08-bar" }, el("span", { style: `color:${G.opColor(op)}` }, op), el("div", {}, el("div", { class: "b", style: `width:${(n / max) * 100}%;background:${G.opColor(op)}` })), el("span", {}, n)));
+      }
+      const tot = Object.values(c).reduce((a, b) => a + b, 0);
+      bars.append(el("div", { class: "ch08-kv", style: "margin-top:6px" }, `total ${tot} UOps in ${Object.keys(c).length} kinds (incl. plumbing: CONST, STACK, BUFFER, …)`));
+    }
+    draw();
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,1122 @@
+{
+ "rules": [
+  {
+   "op": "ADD",
+   "title": "ADD",
+   "desc": "both inputs get the upstream gradient unchanged",
+   "tex": "\\frac{\\partial (a+b)}{\\partial a} = 1",
+   "src": [
+    {
+     "line": 74,
+     "code": "  (UPat(Ops.ADD), lambda ctx: (ctx, ctx)),"
+    }
+   ],
+   "inputs": [
+    [
+     1.0,
+     2,
+     3
+    ],
+    [
+     4.0,
+     5,
+     6
+    ]
+   ],
+   "output": [
+    5.0,
+    7.0,
+    9.0
+   ],
+   "upstream": [
+    1.0,
+    1.0,
+    1.0
+   ],
+   "grads": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ],
+    [
+     1.0,
+     1.0,
+     1.0
+    ]
+   ],
+   "finite_diff": [
+    [
+     0.999,
+     0.999,
+     0.999
+    ],
+    [
+     0.999,
+     0.999,
+     0.999
+    ]
+   ]
+  },
+  {
+   "op": "MUL",
+   "title": "MUL",
+   "desc": "each input gets upstream \u00d7 the OTHER input",
+   "tex": "\\frac{\\partial (ab)}{\\partial a} = b",
+   "src": [
+    {
+     "line": 79,
+     "code": "  (UPat(Ops.MUL, name=\"ret\"), lambda ctx, ret: (ret.src[1]*ctx, ret.src[0]*ctx)),"
+    }
+   ],
+   "inputs": [
+    [
+     1.0,
+     2,
+     3
+    ],
+    [
+     4.0,
+     5,
+     6
+    ]
+   ],
+   "output": [
+    4.0,
+    10.0,
+    18.0
+   ],
+   "upstream": [
+    1.0,
+    1.0,
+    1.0
+   ],
+   "grads": [
+    [
+     4.0,
+     5.0,
+     6.0
+    ],
+    [
+     1.0,
+     2.0,
+     3.0
+    ]
+   ],
+   "finite_diff": [
+    [
+     3.999,
+     4.999,
+     6.001
+    ],
+    [
+     0.999,
+     1.999,
+     2.999
+    ]
+   ]
+  },
+  {
+   "op": "MAX",
+   "title": "MAX",
+   "desc": "the larger input gets the gradient; ties split it 50/50",
+   "tex": "\\partial \\max(a,b) = [a>b] + \\tfrac12[a=b]",
+   "src": [
+    {
+     "line": 77,
+     "code": "  (UPat(Ops.MAX, src=(UPat.var(\"x\"), UPat.var(\"y\"))), lambda ctx, x, y:\n    ((x>y).where(ctx, (x.eq(y)).where(ctx * 0.5, 0)), (x<y).where(ctx, (x.eq(y)).where(ctx * 0.5, 0)))),"
+    }
+   ],
+   "inputs": [
+    [
+     1.0,
+     5,
+     3
+    ],
+    [
+     4.0,
+     2,
+     3
+    ]
+   ],
+   "output": [
+    4.0,
+    5.0,
+    3.0
+   ],
+   "upstream": [
+    1.0,
+    1.0,
+    1.0
+   ],
+   "grads": [
+    [
+     0.0,
+     1.0,
+     0.5
+    ],
+    [
+     1.0,
+     0.0,
+     0.5
+    ]
+   ],
+   "finite_diff": [
+    [
+     0.0,
+     0.999,
+     0.5
+    ],
+    [
+     0.999,
+     0.0,
+     0.5
+    ]
+   ]
+  },
+  {
+   "op": "WHERE",
+   "title": "WHERE",
+   "desc": "the condition gets nothing; each branch gets the gradient where it was selected",
+   "tex": "\\text{where}(c,a,b)",
+   "src": [
+    {
+     "line": 80,
+     "code": "  (UPat(Ops.WHERE, name=\"ret\"), lambda ctx, ret: (None, ret.src[0].where(ctx, ctx.const_like(0)), ret.src[0].where(ctx.const_like(0), ctx))),"
+    }
+   ],
+   "inputs": [
+    [
+     1.0,
+     3,
+     4
+    ],
+    [
+     10.0,
+     20,
+     30
+    ]
+   ],
+   "output": [
+    10.0,
+    3.0,
+    4.0
+   ],
+   "upstream": [
+    1.0,
+    1.0,
+    1.0
+   ],
+   "grads": [
+    [
+     0.0,
+     1.0,
+     1.0
+    ],
+    [
+     1.0,
+     0.0,
+     0.0
+    ]
+   ],
+   "finite_diff": [
+    [
+     0.0,
+     0.999,
+     0.999
+    ],
+    [
+     0.999,
+     0.0,
+     0.0
+    ]
+   ]
+  },
+  {
+   "op": "RECIP",
+   "title": "RECIP",
+   "desc": "-upstream \u00b7 ret\u00b2  (ret = 1/x, so -1/x\u00b2)",
+   "tex": "\\frac{d}{dx}\\frac1x = -\\frac{1}{x^2}",
+   "src": [
+    {
+     "line": 67,
+     "code": "  (UPat(Ops.RECIP, name=\"ret\"), lambda ctx, ret: (-ctx * ret * ret,)),"
+    }
+   ],
+   "inputs": [
+    [
+     0.5,
+     1.0,
+     2.0
+    ]
+   ],
+   "output": [
+    2.0,
+    1.0,
+    0.5
+   ],
+   "upstream": [
+    1.0,
+    1.0,
+    1.0
+   ],
+   "grads": [
+    [
+     -4.0,
+     -1.0,
+     -0.25
+    ]
+   ],
+   "finite_diff": [
+    [
+     -4.0,
+     -1.0,
+     -0.25
+    ]
+   ]
+  },
+  {
+   "op": "EXP2",
+   "title": "EXP2",
+   "desc": "ret \u00b7 ln2 \u00b7 upstream",
+   "tex": "\\frac{d}{dx}2^x = 2^x\\ln 2",
+   "src": [
+    {
+     "line": 70,
+     "code": "  (UPat(Ops.EXP2, name=\"ret\"), lambda ctx, ret: (ret * ctx * math.log(2),)),"
+    }
+   ],
+   "inputs": [
+    [
+     0.0,
+     1.0,
+     2.0
+    ]
+   ],
+   "output": [
+    1.0,
+    2.0,
+    4.0
+   ],
+   "upstream": [
+    1.0,
+    1.0,
+    1.0
+   ],
+   "grads": [
+    [
+     0.6931,
+     1.3863,
+     2.7726
+    ]
+   ],
+   "finite_diff": [
+    [
+     0.693,
+     1.386,
+     2.773
+    ]
+   ]
+  },
+  {
+   "op": "LOG2",
+   "title": "LOG2",
+   "desc": "upstream / (x \u00b7 ln2)",
+   "tex": "\\frac{d}{dx}\\log_2 x = \\frac{1}{x\\ln 2}",
+   "src": [
+    {
+     "line": 69,
+     "code": "  (UPat(Ops.LOG2, name=\"ret\"), lambda ctx, ret: (ctx / (ret.src[0] * math.log(2)),)),"
+    }
+   ],
+   "inputs": [
+    [
+     0.5,
+     1.0,
+     4.0
+    ]
+   ],
+   "output": [
+    -1.0,
+    0.0,
+    2.0
+   ],
+   "upstream": [
+    1.0,
+    1.0,
+    1.0
+   ],
+   "grads": [
+    [
+     2.8854,
+     1.4427,
+     0.3607
+    ]
+   ],
+   "finite_diff": [
+    [
+     2.885,
+     1.443,
+     0.361
+    ]
+   ]
+  },
+  {
+   "op": "SQRT",
+   "title": "SQRT",
+   "desc": "upstream / (2 \u00b7 ret)",
+   "tex": "\\frac{d}{dx}\\sqrt x = \\frac{1}{2\\sqrt x}",
+   "src": [
+    {
+     "line": 71,
+     "code": "  (UPat(Ops.SQRT, name=\"ret\"), lambda ctx, ret: (ctx / (ret*2),)),"
+    }
+   ],
+   "inputs": [
+    [
+     1.0,
+     4.0,
+     9.0
+    ]
+   ],
+   "output": [
+    1.0,
+    2.0,
+    3.0
+   ],
+   "upstream": [
+    1.0,
+    1.0,
+    1.0
+   ],
+   "grads": [
+    [
+     0.5,
+     0.25,
+     0.1667
+    ]
+   ],
+   "finite_diff": [
+    [
+     0.5,
+     0.25,
+     0.167
+    ]
+   ]
+  },
+  {
+   "op": "SIN",
+   "title": "SIN",
+   "desc": "sin(\u03c0/2 \u2212 x) \u00b7 upstream  (= cos x, written with SIN so no COS op is needed)",
+   "tex": "\\frac{d}{dx}\\sin x = \\cos x = \\sin(\\tfrac\\pi2 - x)",
+   "src": [
+    {
+     "line": 68,
+     "code": "  (UPat(Ops.SIN, name=\"ret\"), lambda ctx, ret: ((math.pi/2 - ret.src[0]).sin() * ctx,)),"
+    }
+   ],
+   "inputs": [
+    [
+     0.0,
+     1.0,
+     3.0
+    ]
+   ],
+   "output": [
+    0.0,
+    0.8415,
+    0.1411
+   ],
+   "upstream": [
+    1.0,
+    1.0,
+    1.0
+   ],
+   "grads": [
+    [
+     1.0,
+     0.5403,
+     -0.99
+    ]
+   ],
+   "finite_diff": [
+    [
+     1.0,
+     0.54,
+     -0.99
+    ]
+   ]
+  },
+  {
+   "op": "POW",
+   "title": "POW",
+   "desc": "e\u00b7b^(e\u22121) for the base, ret\u00b7ln b for the exponent, with special cases at 0",
+   "tex": "\\partial_b b^e = e b^{e-1},\\ \\partial_e b^e = b^e \\ln b",
+   "src": [
+    {
+     "line": 75,
+     "code": "  (UPat(Ops.POW, name=\"ret\", src=(UPat.var(\"b\"), UPat.var(\"e\"))), lambda ctx, ret, b, e:\n    (ctx * e.eq(0).where(e, e*b.pow(e-1)), ctx * b.eq(0).where((e<0).where(ret.const_like(-math.inf), 0), ret*b.log2()*math.log(2.0)))),"
+    }
+   ],
+   "inputs": [
+    [
+     1.0,
+     2,
+     3
+    ],
+    [
+     2.0,
+     2,
+     0.5
+    ]
+   ],
+   "output": [
+    1.0,
+    4.0,
+    1.7321
+   ],
+   "upstream": [
+    1.0,
+    1.0,
+    1.0
+   ],
+   "grads": [
+    [
+     2.0,
+     4.0,
+     0.2887
+    ],
+    [
+     0.0,
+     2.7726,
+     1.9029
+    ]
+   ],
+   "finite_diff": [
+    [
+     2.0,
+     4.0,
+     0.289
+    ],
+    [
+     0.0,
+     2.773,
+     1.903
+    ]
+   ]
+  },
+  {
+   "op": "CAST",
+   "title": "CAST",
+   "desc": "cast the gradient back to the input dtype",
+   "tex": "",
+   "src": [
+    {
+     "line": 66,
+     "code": "  (UPat(Ops.CAST, name=\"ret\"), lambda ctx, ret: (ctx.cast(ret.src[0].dtype),)),"
+    }
+   ],
+   "inputs": [
+    [
+     1.5,
+     2.5,
+     3.5
+    ]
+   ],
+   "output": [
+    1.5,
+    2.5,
+    3.5
+   ],
+   "upstream": [
+    1.0,
+    1.0,
+    1.0
+   ],
+   "grads": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ]
+   ],
+   "finite_diff": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ]
+   ]
+  },
+  {
+   "op": "TRUNC",
+   "title": "TRUNC",
+   "desc": "zero: trunc is piecewise constant",
+   "tex": "",
+   "src": [
+    {
+     "line": 72,
+     "code": "  (UPat(Ops.TRUNC), lambda ctx: (ctx.const_like(0),)),"
+    }
+   ],
+   "inputs": [
+    [
+     1.5,
+     2.5,
+     -3.5
+    ]
+   ],
+   "output": [
+    1.0,
+    2.0,
+    -3.0
+   ],
+   "upstream": [
+    1.0,
+    1.0,
+    1.0
+   ],
+   "grads": [
+    [
+     0.0,
+     0.0,
+     0.0
+    ]
+   ],
+   "finite_diff": [
+    [
+     0.0,
+     0.0,
+     0.0
+    ]
+   ]
+  },
+  {
+   "op": "CMPLT",
+   "title": "CMPLT",
+   "desc": "no gradient (None) to either side: comparisons are boolean",
+   "tex": "",
+   "src": [
+    {
+     "line": 73,
+     "code": "  (UPat((Ops.CMPLT, Ops.CMPEQ)), lambda: (None, None)),"
+    }
+   ],
+   "inputs": [
+    [
+     1.0,
+     5,
+     3
+    ],
+    [
+     4.0,
+     2,
+     6
+    ]
+   ],
+   "output": [
+    1.0,
+    0.0,
+    3.0
+   ],
+   "upstream": [
+    1.0,
+    1.0,
+    1.0
+   ],
+   "grads": [
+    [
+     1.0,
+     0.0,
+     1.0
+    ],
+    [
+     0.0,
+     0.0,
+     0.0
+    ]
+   ],
+   "finite_diff": [
+    [
+     1.0,
+     0.0,
+     1.0
+    ],
+    [
+     0.0,
+     0.0,
+     0.0
+    ]
+   ]
+  },
+  {
+   "op": "REDUCE",
+   "title": "REDUCE",
+   "desc": "ADD: broadcast upstream back to the input shape (reduce \u2194 expand). MAX: mask of the argmax positions / tie count. MUL: product of the others",
+   "tex": "\\frac{\\partial}{\\partial x_i}\\sum_j x_j = 1",
+   "src": [
+    {
+     "line": 81,
+     "code": "  (UPat(Ops.REDUCE, name=\"ret\"), lambda ctx, ret: reduce_gradient(ctx, ret, ret.arg[0])),"
+    }
+   ],
+   "inputs": [
+    [
+     1.0,
+     2,
+     3
+    ]
+   ],
+   "output": [
+    6.0
+   ],
+   "upstream": [
+    1.0
+   ],
+   "grads": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ]
+   ],
+   "finite_diff": [
+    [
+     1.0,
+     1.0,
+     1.0
+    ]
+   ]
+  },
+  {
+   "op": "REDUCE",
+   "title": "REDUCE (MAX)",
+   "desc": "MAX case: the gradient goes to the argmax positions, split evenly between ties",
+   "tex": "",
+   "src": [
+    {
+     "line": 81,
+     "code": "  (UPat(Ops.REDUCE, name=\"ret\"), lambda ctx, ret: reduce_gradient(ctx, ret, ret.arg[0])),"
+    }
+   ],
+   "inputs": [
+    [
+     1.0,
+     3,
+     3
+    ]
+   ],
+   "output": [
+    3.0
+   ],
+   "upstream": [
+    1.0
+   ],
+   "grads": [
+    [
+     0.0,
+     0.5,
+     0.5
+    ]
+   ],
+   "finite_diff": [
+    [
+     0.0,
+     0.5,
+     0.5
+    ]
+   ]
+  },
+  {
+   "op": "RESHAPE",
+   "title": "RESHAPE",
+   "desc": "reshape the gradient back to the input shape",
+   "tex": "",
+   "src": [
+    {
+     "line": 84,
+     "code": "  (UPat(Ops.RESHAPE, name=\"ret\"), lambda ctx, ret: (ctx.reshape(ret.src[0].shape), None)),"
+    }
+   ],
+   "inputs": [
+    [
+     1.0,
+     2,
+     3,
+     4
+    ]
+   ],
+   "output": [
+    [
+     1.0,
+     2.0
+    ],
+    [
+     3.0,
+     4.0
+    ]
+   ],
+   "upstream": [
+    [
+     1.0,
+     2.0
+    ],
+    [
+     3.0,
+     4.0
+    ]
+   ],
+   "grads": [
+    [
+     1.0,
+     2.0,
+     3.0,
+     4.0
+    ]
+   ],
+   "finite_diff": [
+    [
+     0.999,
+     1.999,
+     3.0,
+     4.0
+    ]
+   ]
+  },
+  {
+   "op": "PERMUTE",
+   "title": "PERMUTE",
+   "desc": "permute back with the inverse permutation argsort(arg)",
+   "tex": "",
+   "src": [
+    {
+     "line": 88,
+     "code": "  (UPat(Ops.PERMUTE, name=\"ret\"), lambda ctx, ret: (ctx.permute(argsort(ret.marg)), None)),"
+    }
+   ],
+   "inputs": [
+    [
+     1.0,
+     2,
+     3,
+     4
+    ]
+   ],
+   "output": [
+    1.0,
+    3.0,
+    2.0,
+    4.0
+   ],
+   "upstream": [
+    1.0,
+    2.0,
+    3.0,
+    4.0
+   ],
+   "grads": [
+    [
+     1.0,
+     3.0,
+     2.0,
+     4.0
+    ]
+   ],
+   "finite_diff": [
+    [
+     0.999,
+     3.0,
+     1.999,
+     4.0
+    ]
+   ]
+  },
+  {
+   "op": "EXPAND",
+   "title": "EXPAND",
+   "desc": "pass the gradient through; compute_gradient then SUMS over the broadcast axes",
+   "tex": "",
+   "src": [
+    {
+     "line": 85,
+     "code": "  (UPat(Ops.EXPAND), lambda ctx: (ctx, None)),"
+    }
+   ],
+   "inputs": [
+    [
+     1.0,
+     2,
+     3
+    ]
+   ],
+   "output": [
+    1.0,
+    2.0,
+    3.0,
+    1.0,
+    2.0,
+    3.0
+   ],
+   "upstream": [
+    1.0,
+    2.0,
+    3.0,
+    4.0,
+    5.0,
+    6.0
+   ],
+   "grads": [
+    [
+     5.0,
+     7.0,
+     9.0
+    ]
+   ],
+   "finite_diff": [
+    [
+     4.997,
+     6.998,
+     8.999
+    ]
+   ]
+  },
+  {
+   "op": "PAD",
+   "title": "PAD",
+   "desc": "shrink the gradient back to the un-padded window",
+   "tex": "",
+   "src": [
+    {
+     "line": 86,
+     "code": "  (UPat(Ops.PAD, name=\"ret\"), lambda ctx, ret: (ctx.shrink(tuple([(p[0], s+p[0]) for s,p in zip(ret.src[0].shape, ret.marg)])), None, None)),"
+    }
+   ],
+   "inputs": [
+    [
+     1.0,
+     2,
+     3
+    ]
+   ],
+   "output": [
+    0.0,
+    1.0,
+    2.0,
+    3.0,
+    0.0,
+    0.0
+   ],
+   "upstream": [
+    1.0,
+    2.0,
+    3.0,
+    4.0,
+    5.0,
+    6.0
+   ],
+   "grads": [
+    [
+     2.0,
+     3.0,
+     4.0
+    ]
+   ],
+   "finite_diff": [
+    [
+     1.999,
+     3.0,
+     4.0
+    ]
+   ]
+  },
+  {
+   "op": "SHRINK",
+   "title": "SHRINK",
+   "desc": "pad the gradient with zeros back to the input shape",
+   "tex": "",
+   "src": [
+    {
+     "line": 87,
+     "code": "  (UPat(Ops.SHRINK, name=\"ret\"), lambda ctx, ret: (ctx._mop(Ops.PAD, tuple((p[0], s) for s,p in zip(ret.src[0].shape, ret.marg))), None, None)),"
+    }
+   ],
+   "inputs": [
+    [
+     1.0,
+     2,
+     3,
+     4
+    ]
+   ],
+   "output": [
+    2.0,
+    3.0
+   ],
+   "upstream": [
+    1.0,
+    2.0
+   ],
+   "grads": [
+    [
+     0.0,
+     1.0,
+     2.0,
+     0.0
+    ]
+   ],
+   "finite_diff": [
+    [
+     0.0,
+     1.0,
+     2.0,
+     0.0
+    ]
+   ]
+  },
+  {
+   "op": "STACK",
+   "title": "STACK",
+   "desc": "each stacked source gets its slice ctx[i] of the gradient",
+   "tex": "",
+   "src": [
+    {
+     "line": 89,
+     "code": "  (UPat(Ops.STACK, name=\"ret\"), lambda ctx, ret: tuple(ctx[i] for i in range(len(ret.src)))),"
+    }
+   ]
+  },
+  {
+   "op": "CONTIGUOUS_BACKWARD",
+   "title": "CONTIGUOUS_BACKWARD",
+   "desc": "identity in forward; makes the GRADIENT contiguous (a STAGE) in backward",
+   "tex": "",
+   "src": [
+    {
+     "line": 82,
+     "code": "  (UPat(Ops.CONTIGUOUS_BACKWARD), lambda ctx: (ctx.contiguous(),)),"
+    }
+   ]
+  },
+  {
+   "op": "STAGE",
+   "title": "STAGE",
+   "desc": "contiguous() is a no-op for gradients: pass through",
+   "tex": "",
+   "src": [
+    {
+     "line": 83,
+     "code": "  (UPat(Ops.STAGE), lambda ctx: (ctx,)),"
+    }
+   ]
+  },
+  {
+   "op": "COPY",
+   "title": "COPY",
+   "desc": "copy the gradient back to the source device",
+   "tex": "",
+   "src": [
+    {
+     "line": 90,
+     "code": "  (UPat(Ops.COPY, name=\"ret\"), lambda ctx, ret: (ctx.copy_to_device(ret.src[0].device),) + (None,) * (len(ret.src)-1)),"
+    }
+   ]
+  },
+  {
+   "op": "UNSHARD",
+   "title": "UNSHARD",
+   "desc": "re-shard the gradient on the same axis (multi-device, Chapter 19)",
+   "tex": "",
+   "src": [
+    {
+     "line": 91,
+     "code": "  (UPat(Ops.UNSHARD, name=\"ret\"), lambda ctx, ret: ctx.shard(ret.device, ret.axis).src),"
+    }
+   ]
+  },
+  {
+   "op": "SINK",
+   "title": "SINK",
+   "desc": "a SINK of several outputs hands each its own gradient",
+   "tex": "",
+   "src": [
+    {
+     "line": 92,
+     "code": "  (UPat(Ops.SINK), lambda ctx: ctx.src),"
+    }
+   ]
+  },
+  {
+   "op": "STORE",
+   "title": "STORE",
+   "desc": "assign: the stored value gets the gradient",
+   "tex": "",
+   "src": [
+    {
+     "line": 96,
+     "code": "  (UPat(Ops.AFTER, src=(UPat(name=\"dest\"), UPat(Ops.STORE, src=(UPat(name=\"t\"), UPat())))),"
+    },
+    {
+     "line": 99,
+     "code": "  (UPat(Ops.AFTER, src=(UPat(name=\"dest\"), UPat(Ops.STORE, src=(UPat(name=\"dest\"), UPat())))), lambda ctx,dest: (None, ctx)),"
+    },
+    {
+     "line": 100,
+     "code": "  (UPat(Ops.AFTER, src=(UPat(name=\"dest\"), UPat(Ops.STORE, src=(UPat(name=\"view\"), UPat())))),"
+    },
+    {
+     "line": 102,
+     "code": "  (UPat(Ops.STORE, src=(UPat(), UPat())), lambda ctx: (None, ctx)),"
+    }
+   ]
+  },
+  {
+   "op": "AFTER",
+   "title": "AFTER",
+   "desc": "ordering / assign plumbing: route the gradient to the value or the call",
+   "tex": "",
+   "src": [
+    {
+     "line": 93,
+     "code": "  (UPat(Ops.AFTER, src=(UPat.var(\"d\"), UPat(Ops.CALL, name=\"k\"))), lambda ctx, d, k:\n    (ctx, UOp.sink(*([ctx if i == k.src.index(d)-1 else UOp(Ops.NOOP) for i in range(len(k.src)-1)])))),"
+    },
+    {
+     "line": 96,
+     "code": "  (UPat(Ops.AFTER, src=(UPat(name=\"dest\"), UPat(Ops.STORE, src=(UPat(name=\"t\"), UPat())))),"
+    },
+    {
+     "line": 99,
+     "code": "  (UPat(Ops.AFTER, src=(UPat(name=\"dest\"), UPat(Ops.STORE, src=(UPat(name=\"dest\"), UPat())))), lambda ctx,dest: (None, ctx)),"
+    },
+    {
+     "line": 100,
+     "code": "  (UPat(Ops.AFTER, src=(UPat(name=\"dest\"), UPat(Ops.STORE, src=(UPat(name=\"view\"), UPat())))),"
+    }
+   ]
+  },
+  {
+   "op": "BITCAST",
+   "title": "BITCAST",
+   "desc": "no gradient through a bitcast",
+   "tex": "",
+   "src": [
+    {
+     "line": 104,
+     "code": "  (UPat(Ops.BITCAST), lambda: (None,)),"
+    }
+   ]
+  },
+  {
+   "op": "reduce_gradient",
+   "title": "reduce_gradient()",
+   "desc": "the REDUCE rule's helper: ADD / MAX / MUL cases",
+   "tex": "",
+   "src": [
+    {
+     "line": 8,
+     "code": "def reduce_gradient(ctx:UOp, ret:UOp, op:Ops):\n  if op == Ops.ADD: return (ctx._broadcast_to(ret.src[0].shape),)\n  if op == Ops.MAX:\n    # count the ties in the acc dtype, the count can overflow the gradient dtype\n    mask = ret.src[0].eq(ret).cast(sum_acc_dtype(ctx.dtype))\n    return ((mask/mask._rop(Ops.ADD, tuple(range(ret.arg[1])))).cast(ctx.dtype) * ctx,)\n  if op == Ops.MUL:\n    # d(prod x)/dx_j = prod_{i!=j} x_i: ret/x_j whenever x_j != 0 (any zero makes ret 0), else the product of the others\n    safe_x, axes = (is_zero:=(x:=ret.src[0]).eq(0)).where(1, x), tuple(range(ret.arg[1]))\n    zero_count = is_zero.cast(sum_acc_dtype(is_zero.dtype))._rop(Ops.ADD, axes)\n    return (ctx * is_zero.where(zero_count.eq(1).where(safe_x._rop(Ops.MUL, axes), 0), ret/safe_x),)"
+    }
+   ]
+  }
+ ],
+ "file": "tinygrad/mixin/gradient.py"
+}

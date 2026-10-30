@@ -1,0 +1,564 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>9. Autograd as graph rewriting — tinygrad internals</title>
+<link rel="stylesheet" href="../assets/vendor/hljs-dark.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/vendor/highlight.min.js"></script>
+<script src="../assets/vendor/dagre.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/chapters.js"></script>
+<script src="../assets/guide.js"></script>
+<style>
+.ch09-tbl { border-collapse: collapse; font-family: var(--mono); font-size: 12px; width: 100%; }
+.ch09-tbl td, .ch09-tbl th { border: 1px solid var(--line); padding: 3px 6px; }
+.ch09-tbl tr.cur td { background: rgba(244,211,69,.12); }
+.ch09-tbl tr.src td { background: rgba(88,196,221,.10); }
+.ch09-tbl td.g { color: var(--red); }
+.ch09-tbl td.v { color: var(--blue); }
+.ch09-rulebox { background: #0d0f12; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font-family: var(--mono); font-size: 12.5px; margin-top: 8px; }
+.ch09-rulebox .r { color: var(--yellow); }
+.ch09-rulebox .c { color: var(--dim); }
+.ch09-ops { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+.ch09-ops button { font-family: var(--mono); font-size: 12px; padding: 3px 8px; }
+.ch09-ex td, .ch09-ex th { font-family: var(--mono); font-size: 12px; }
+.ch09-krow { display: grid; grid-template-columns: 220px 1fr 40px; gap: 8px; align-items: center; margin: 6px 0; font-size: 13px; }
+.ch09-ks { display: flex; flex-wrap: wrap; gap: 3px; }
+.ch09-k { font-family: var(--mono); font-size: 10.5px; padding: 3px 5px; border-radius: 4px; color: #0d0f12; font-weight: 600; opacity: 0; transform: translateY(6px); transition: opacity .35s, transform .35s; cursor: default; }
+.ch09-k.on { opacity: 1; transform: none; }
+.ch09-k.f { background: var(--blue); } .ch09-k.b { background: var(--red); } .ch09-k.r { background: var(--purple); color: #fff; } .ch09-k.u { background: var(--green); }
+.ch09-legend span { display: inline-flex; align-items: center; gap: 4px; margin-right: 12px; font-size: 12px; color: var(--dim); }
+.ch09-legend i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="sidebar" id="sidebar"></nav>
+<main>
+  <h1><span class="chnum">CHAPTER 09</span>Autograd as graph rewriting</h1>
+  <p class="lede">In tinygrad, <code>backward()</code> does not compute anything. It walks the lazy UOp graph of your loss in reverse, applies one small
+  rewrite rule per op, and returns <em>more lazy UOps</em>. The gradient graph is made of the same bricks as the forward graph (Chapter 8), it is
+  scheduled together with the forward graph, and it fuses with it into the same kernels. This chapter shows the whole engine — about 130 lines in
+  <a class="src" data-path="tinygrad/mixin/gradient.py" data-line="1">tinygrad/mixin/gradient.py</a> — rule by rule, on real graphs with real numbers.</p>
+
+  <h2 id="intuition"><span class="sec">9.1</span>Intuition: walk the graph backwards, multiplying local slopes</h2>
+  <div class="callout analogy"><span class="title">Analogy: a river delta, in reverse</span>
+  The forward graph is a set of streams merging into one river (the scalar loss). Pour one bucket of "sensitivity" into the river mouth
+  (\(\partial L/\partial L = 1\)) and walk upstream. At every junction the flow is split according to a local rule (an ADD sends the full flow up both
+  branches; a MUL sends each branch the flow times the <em>other</em> branch's value; a reshape just reshapes the water). Where two streams came
+  <em>from</em> the same spring, their flows add up. What arrives at each spring is \(\partial L/\partial\,\text{spring}\).</div>
+  <p>That is reverse-mode automatic differentiation: the chain rule \( \frac{\partial L}{\partial x} = \sum_{u \in \text{consumers}(x)} \frac{\partial L}{\partial u}\frac{\partial u}{\partial x} \)
+  evaluated from the output back to the inputs. The two things that make tinygrad's version special:</p>
+  <ul>
+    <li><b>The local rules are a <code>PatternMatcher</code></b> (<code>pm_gradient</code>, Chapter 5) — one <code>UPat</code> per op, each returning the gradients of the op's sources
+      as UOp expressions.</li>
+    <li><b>The result is a graph, not numbers.</b> \(\partial L/\partial u\) is a UOp built from the forward UOps; nothing runs until you realize it.</li>
+  </ul>
+
+  <h2 id="api"><span class="sec">9.2</span>The API: <code>Tensor.gradient</code> and <code>Tensor.backward</code></h2>
+  <div class="tabs">
+    <div class="tabpane" data-title="Tensor.gradient (op.py)">
+      <div class="codecap"><b><a class="src" data-path="tinygrad/mixin/op.py" data-line="473">tinygrad/mixin/op.py:473 — gradient</a></b></div>
+      <pre><code class="language-python">assert gradient is not None or self.shape == tuple(), &quot;when no gradient is provided, backward must be called on a scalar tensor&quot;
+if not (self.is_floating_point() and all(t.is_floating_point() for t in targets)): raise RuntimeError(&quot;only float Tensors have gradient&quot;)
+if any(t.dtype in dtypes.weaks for t in targets): raise RuntimeError(&quot;cannot take gradient wrt a weak Tensor&quot;)
+from tinygrad.mixin.gradient import compute_gradient
+if gradient is None: gradient = self.const_like(1.0)
+target_uops = [t._uop for t in targets]
+grads = compute_gradient(self._uop, gradient._uop, set(target_uops))
+return [self._wrap_uop(grads[x] if x in grads else x.const_like(0)) for x in target_uops]</code></pre>
+    </div>
+    <div class="tabpane" data-title="Tensor.backward (tensor.py)">
+      <div class="codecap"><b><a class="src" data-path="tinygrad/tensor.py" data-line="447">tinygrad/tensor.py:447 — backward</a></b></div>
+      <pre><code class="language-python">all_uops = self.uop.toposort()
+# backward fills .grad for every in-scope float tensor with a device
+tensors_need_grad: list[Tensor] = [t for tref in all_tensors if (t:=tref()) is not None and \
+                                   t.uop in all_uops and t.is_floating_point() and t.device is not None]
+# clear contexts
+for t,g in zip(tensors_need_grad, self.gradient(*tensors_need_grad, gradient=gradient)):
+  assert g.shape == t.shape, f&quot;grad shape must match tensor shape, {g.shape!r} != {t.shape!r}&quot;
+  if g.device is None: g = g.clone(device=t.device)
+  if t.grad is None: t.grad = g
+  else: t.grad.assign(t.grad + g.to(t.grad.device))
+return self</code></pre>
+    </div>
+  </div>
+  <p>Inputs → transformation → outputs:</p>
+  <div class="kv">
+    <div>input</div><div>the loss UOp (<code>self._uop</code>), a root gradient (default: <code>const_like(1.0)</code>, so the loss must be a scalar), and a set of target UOps</div>
+    <div>transformation</div><div><code>compute_gradient(root, root_grad, targets)</code>: reverse walk + <code>pm_gradient</code></div>
+    <div>output</div><div>one lazy Tensor per target; targets not reachable from the loss get <code>const_like(0)</code></div>
+  </div>
+  <div class="callout warn"><span class="title">No <code>requires_grad</code> in this version</span>
+  <code>Tensor(..., requires_grad=True)</code> raises <code>TypeError</code> here — the flag is gone. <code>backward()</code> finds its targets itself: every live
+  <code>Tensor</code> (tracked through the weak-ref set <code>all_tensors</code>) that is floating point, has a device, and whose UOp appears in the loss graph.
+  That includes intermediate tensors you still hold a Python reference to. Gradients accumulate: if <code>t.grad</code> already exists it is updated with
+  <code>assign(t.grad + g)</code>.</div>
+  <div class="codecap"><b>examples/09_autograd.py</b> — run with <code>DEV=CPU python3 examples/09_autograd.py</code></div>
+  <pre><code class="language-python">print(&quot;=== 1. d/dx sum(x*x): one rule per op, summed where x fans out&quot;)
+x = Tensor([1., 2., 3.]).realize(); NAMES[x.uop.base] = &quot;x&quot;
+y = (x * x).sum()
+g, = y.gradient(x)                       # Tensor.gradient -&gt; compute_gradient (tinygrad/mixin/gradient.py)
+print(&quot;forward :&quot;, expr(y.uop))
+print(&quot;gradient:&quot;, expr(g.uop))
+print(&quot;hash-consing: both MUL-rule outputs are the SAME UOp -&gt;&quot;, g.uop.src[0] is g.uop.src[1])
+print(&quot;value   :&quot;, g.tolist())
+
+print(&quot;\n=== 2. .backward() fills .grad on every float tensor in the graph (there is no requires_grad flag)&quot;)
+x2 = Tensor([1., 2., 3.]).realize()
+(x2 * x2).sum().backward()
+print(&quot;x2.grad is a lazy Tensor whose uop is&quot;, x2.grad.uop.op.name, &quot;-&gt; realized value&quot;, x2.grad.tolist())</code></pre>
+  <pre class="output"><code>=== 1. d/dx sum(x*x): one rule per op, summed where x fans out
+forward : REDUCE&lt;ADD,1&gt;(MUL(x, x))
+gradient: ADD(MUL(x, expand(3,)(cast&lt;f32&gt;(1.0))), MUL(x, expand(3,)(cast&lt;f32&gt;(1.0))))
+hash-consing: both MUL-rule outputs are the SAME UOp -&gt; True
+value   : [2.0, 4.0, 6.0]
+
+=== 2. .backward() fills .grad on every float tensor in the graph (there is no requires_grad flag)
+x2.grad is a lazy Tensor whose uop is ADD -&gt; realized value [2.0, 4.0, 6.0]</code></pre>
+
+  <h2 id="engine"><span class="sec">9.3</span>The engine: <code>compute_gradient</code></h2>
+  <div class="codecap"><b><a class="src" data-path="tinygrad/mixin/gradient.py" data-line="107">tinygrad/mixin/gradient.py:107 — _deepwalk and compute_gradient</a></b></div>
+  <pre><code class="language-python">def _deepwalk(root:UOp, targets:set[UOp]) -&gt; tuple[list[UOp], dict[UOp, bool]]:
+  # compute the target path (top down)
+  in_target_path: dict[UOp, bool] = {}
+  root.topovisit(lambda u: any(in_target_path[x] or x in targets for x in u.src), in_target_path)
+  # don&#x27;t flow through DETACH or anything not in target path
+  return [node for node in in_target_path if node.op is not Ops.DETACH and in_target_path[node]], in_target_path
+
+def compute_gradient(root:UOp, root_grad:UOp, targets:set[UOp]) -&gt; dict[UOp, UOp]:
+  walk, in_target_path = _deepwalk(root, targets)
+  grads: dict[UOp, UOp] = {root: root_grad}
+  for t0 in reversed(walk):
+    if t0 not in grads or grads[t0].op is Ops.NOOP: continue
+    # CALL: pass needed param set so backward only computes required gradients
+    if t0.op is Ops.CALL:
+      needed = {i for i, arg in enumerate(t0.src[1:]) if arg in targets or in_target_path.get(arg, False)}
+      lgrads:tuple[UOp|None, ...]|None = call_gradient(grads[t0], t0, needed)
+    else:
+      lgrads = cast(tuple[UOp|None, ...]|None, pm_gradient.rewrite(t0, ctx=grads[t0]))
+    if lgrads is None: raise RuntimeError(f&quot;failed to compute gradient for {t0.op}\n\nin {str(t0)[0:1000]}...&quot;)
+    assert len(lgrads) == len(t0.src), f&quot;got {len(lgrads)} gradient, expected {len(t0.src)}&quot;
+    for k,v in zip(t0.src, lgrads):
+      if v is None: continue
+      # a shaped edge&#x27;s gradient is summed to its source&#x27;s shape
+      if k._shape is not None and v._shape is not None and k._shape != v._shape:
+        v = v.cast(sum_acc_dtype(v.dtype))._rop(Ops.ADD, broadcast_axes(k.shape, v.shape)).reshape(k.shape).cast(v.dtype)
+      if k in grads and grads[k].op is not Ops.NOOP:
+        if v.op is Ops.SINK and grads[k].op is Ops.SINK:
+          grads[k] = UOp.sink(*[p + n if (p.op is not Ops.NOOP and n.op is not Ops.NOOP) else
+                                 n if p.op is Ops.NOOP else p for p, n in zip(grads[k].src, v.src)])
+        else: grads[k] = grads[k] + v
+      else: grads[k] = v
+  return grads</code></pre>
+  <p>Step by step:</p>
+  <ol>
+    <li><b><code>_deepwalk</code></b> marks every node that lies on a path from the root down to some target (<code>topovisit</code> computes, bottom-up, "does any of my
+      sources lead to a target?"). Nodes off the path — constants, other parameters you did not ask about — are never visited. <b><code>DETACH</code> nodes are
+      dropped from the walk</b>, which is all it takes to stop gradient flow.</li>
+    <li>The walk is a <b>toposort</b> (sources before consumers); iterating it <b><code>reversed</code></b> visits every consumer before its sources — exactly what
+      reverse mode needs: by the time we reach <code>x</code>, all of <code>x</code>'s consumers have contributed to <code>grads[x]</code>.</li>
+    <li>For each node with a gradient, <b><code>pm_gradient.rewrite(t0, ctx=grads[t0])</code></b> returns a tuple with one entry per source (or <code>None</code> for "no
+      gradient", e.g. the condition of a WHERE or the shape-argument sources of a movement op).</li>
+    <li><b>Broadcast summing:</b> if an entry's shape differs from its source's shape — because elementwise ops broadcast implicitly (Chapter 7) — it is summed over
+      <code>broadcast_axes</code> and reshaped. This one line is the gradient of every implicit broadcast <em>and</em> of EXPAND.</li>
+    <li><b>Accumulation:</b> a source reached through several consumers gets <code>grads[k] + v</code>: the "sum over consumers" of the chain rule.</li>
+  </ol>
+  <div class="quiz" data-answer="1">
+    <div class="q">Why does iterating <code>reversed(walk)</code> guarantee that <code>grads[x]</code> is complete before <code>x</code>'s own rule runs?</div>
+    <button class="opt">because <code>walk</code> is sorted by node id</button><button class="opt">because <code>walk</code> is a toposort (every node after all its sources), so in reverse every consumer of <code>x</code> is processed before <code>x</code></button><button class="opt">because gradients are computed eagerly</button><button class="opt">it is not guaranteed; tinygrad iterates to a fixed point</button>
+    <div class="explain">Toposort order means sources come first. Reversed, consumers come first. Each consumer adds its contribution to <code>grads[x]</code>, so when the loop reaches <code>x</code> the sum over all consumers is done.</div>
+  </div>
+
+  <h2 id="rules"><span class="sec">9.4</span><code>pm_gradient</code>: one rule per op</h2>
+  <p>The whole table (<code>ctx</code> is the incoming gradient \(\partial L/\partial\,\text{ret}\), <code>ret</code> the forward node):</p>
+  <div class="codecap"><b><a class="src" data-path="tinygrad/mixin/gradient.py" data-line="64">tinygrad/mixin/gradient.py:64 — pm_gradient</a></b></div>
+  <pre><code class="language-python">pm_gradient = PatternMatcher([
+  (UPat(Ops.CAST, name=&quot;ret&quot;), lambda ctx, ret: (ctx.cast(ret.src[0].dtype),)),
+  (UPat(Ops.RECIP, name=&quot;ret&quot;), lambda ctx, ret: (-ctx * ret * ret,)),
+  (UPat(Ops.SIN, name=&quot;ret&quot;), lambda ctx, ret: ((math.pi/2 - ret.src[0]).sin() * ctx,)),
+  (UPat(Ops.LOG2, name=&quot;ret&quot;), lambda ctx, ret: (ctx / (ret.src[0] * math.log(2)),)),
+  (UPat(Ops.EXP2, name=&quot;ret&quot;), lambda ctx, ret: (ret * ctx * math.log(2),)),
+  (UPat(Ops.SQRT, name=&quot;ret&quot;), lambda ctx, ret: (ctx / (ret*2),)),
+  (UPat(Ops.TRUNC), lambda ctx: (ctx.const_like(0),)),
+  (UPat((Ops.CMPLT, Ops.CMPEQ)), lambda: (None, None)),
+  (UPat(Ops.ADD), lambda ctx: (ctx, ctx)),
+  (UPat(Ops.POW, name=&quot;ret&quot;, src=(UPat.var(&quot;b&quot;), UPat.var(&quot;e&quot;))), lambda ctx, ret, b, e:
+    (ctx * e.eq(0).where(e, e*b.pow(e-1)), ctx * b.eq(0).where((e&lt;0).where(ret.const_like(-math.inf), 0), ret*b.log2()*math.log(2.0)))),
+  (UPat(Ops.MAX, src=(UPat.var(&quot;x&quot;), UPat.var(&quot;y&quot;))), lambda ctx, x, y:
+    ((x&gt;y).where(ctx, (x.eq(y)).where(ctx * 0.5, 0)), (x&lt;y).where(ctx, (x.eq(y)).where(ctx * 0.5, 0)))),
+  (UPat(Ops.MUL, name=&quot;ret&quot;), lambda ctx, ret: (ret.src[1]*ctx, ret.src[0]*ctx)),
+  (UPat(Ops.WHERE, name=&quot;ret&quot;), lambda ctx, ret: (None, ret.src[0].where(ctx, ctx.const_like(0)), ret.src[0].where(ctx.const_like(0), ctx))),
+  (UPat(Ops.REDUCE, name=&quot;ret&quot;), lambda ctx, ret: reduce_gradient(ctx, ret, ret.arg[0])),
+  (UPat(Ops.CONTIGUOUS_BACKWARD), lambda ctx: (ctx.contiguous(),)),
+  (UPat(Ops.STAGE), lambda ctx: (ctx,)),
+  (UPat(Ops.RESHAPE, name=&quot;ret&quot;), lambda ctx, ret: (ctx.reshape(ret.src[0].shape), None)),
+  (UPat(Ops.EXPAND), lambda ctx: (ctx, None)),
+  (UPat(Ops.PAD, name=&quot;ret&quot;), lambda ctx, ret: (ctx.shrink(tuple([(p[0], s+p[0]) for s,p in zip(ret.src[0].shape, ret.marg)])), None, None)),
+  (UPat(Ops.SHRINK, name=&quot;ret&quot;), lambda ctx, ret: (ctx._mop(Ops.PAD, tuple((p[0], s) for s,p in zip(ret.src[0].shape, ret.marg))), None, None)),
+  (UPat(Ops.PERMUTE, name=&quot;ret&quot;), lambda ctx, ret: (ctx.permute(argsort(ret.marg)), None)),
+  (UPat(Ops.STACK, name=&quot;ret&quot;), lambda ctx, ret: tuple(ctx[i] for i in range(len(ret.src)))),
+  (UPat(Ops.COPY, name=&quot;ret&quot;), lambda ctx, ret: (ctx.copy_to_device(ret.src[0].device),) + (None,) * (len(ret.src)-1)),
+  (UPat(Ops.UNSHARD, name=&quot;ret&quot;), lambda ctx, ret: ctx.shard(ret.device, ret.axis).src),
+  (UPat(Ops.SINK), lambda ctx: ctx.src),</code></pre>
+  <p>Notice what is <em>not</em> there: no rule for SUB, NEG, FDIV, EXP, LOG, sigmoid, tanh, softmax, matmul or conv. Chapter 8 already decomposed them into
+  ADD/MUL/RECIP/EXP2/LOG2/… — so their gradients are <em>derived automatically</em> by chaining these rules. That is the payoff of a small brick box.
+  Each rule is itself written with Tensor-style methods (<code>ctx.cast</code>, <code>.where</code>, <code>.sin()</code>, <code>/</code>), so a rule's output is built from the same primitives.</p>
+  <div class="demo" id="demo-rules">
+    <div class="demo-title">Gradient-rule explorer</div>
+    <div class="demo-desc">Click an op. You get the rule's source (with a link to its line), the math, and a <b>worked example captured from tinygrad</b>: the op applied to small inputs,
+      the gradient tinygrad returns for each input (upstream gradient shown), and an independent central finite-difference check
+      \(\frac{f(x+\epsilon)-f(x-\epsilon)}{2\epsilon}\) of \(\sum \text{upstream}\cdot f\).</div>
+    <div class="ch09-ops" id="rl-ops"></div>
+    <div id="rl-body"></div>
+  </div>
+
+  <h2 id="square"><span class="sec">9.5</span>Watching it run: reverse mode on real graphs</h2>
+  <p>Back to <code>sum(x*x)</code>. Its forward graph is <code>REDUCE(ADD)(MUL(x, x))</code>. The walk visits REDUCE, then MUL:</p>
+  <ul>
+    <li><b>REDUCE (ADD)</b> rule: <code>ctx._broadcast_to(src.shape)</code> — the scalar 1 becomes <code>EXPAND(3,)</code> of a constant 1.</li>
+    <li><b>MUL</b> rule: <code>(src1 * ctx, src0 * ctx)</code> = <code>(x * 1⃗, x * 1⃗)</code>. Both entries are for the <em>same</em> source <code>x</code> — and thanks to hash-consing both
+      are literally the same UOp. <code>compute_gradient</code> accumulates: <code>grads[x] = x·1⃗ + x·1⃗</code>. That is the printed gradient <code>ADD(MUL(x, expand…), MUL(x, expand…))</code>, and \(2x = [2,4,6]\).</li>
+  </ul>
+  <div class="demo" id="demo-walk">
+    <div class="demo-title">Reverse-mode step-through (real captured graphs)</div>
+    <div class="demo-desc">Recorded by <code>examples/09_capture_data.py</code>, which re-runs the exact loop of <code>compute_gradient</code> (same <code>_deepwalk</code>, same <code>pm_gradient.rewrite</code>) and
+      realizes every value. <span class="hl-blue">Blue</span> = forward value, <span class="hl-red">red</span> = gradient \(\partial L/\partial\,\text{node}\). The yellow node is the one whose rule fires;
+      its sources light up as they receive contributions. Results are cross-checked against <code>loss.gradient(...)</code>.</div>
+    <div class="controls" id="wk-presets"></div>
+    <div id="wk-stepper"></div>
+    <div class="row">
+      <div class="col" style="flex:1 1 380px"><div id="wk-graph"></div></div>
+      <div class="col" style="flex:1 1 340px">
+        <table class="ch09-tbl" id="wk-table"></table>
+        <div class="ch09-rulebox" id="wk-rule"></div>
+      </div>
+    </div>
+  </div>
+  <p>Things to notice while stepping:</p>
+  <ul>
+    <li><b>neuron</b>: <code>relu</code> is <code>WHERE(0 &lt; h, h, 0)</code>. The WHERE rule gives <code>None</code> to the condition, so the <code>CMPLT</code> node never receives a gradient and is <em>skipped</em>.
+      The constant <code>0.0</code> branch does receive a (useless) gradient — <code>compute_gradient</code> records it but never walks the CONST, and since nobody asks for it, it is never computed.
+      The bias <code>b</code> has shape <code>(1,)</code> while the ADD has shape <code>(3,)</code>: the gradient is <b>summed over the broadcast axis</b> (<code>broadcast_summed</code>).</li>
+    <li><b>matmul</b>: the walk passes REDUCE → REDUCE → PERMUTE → MUL → (PERMUTE, RESHAPE) → RESHAPE; each movement op inverts itself. See §9.7.</li>
+    <li><b>sigmoid</b>: no sigmoid rule exists. The walk goes through RECIP, ADD, EXP2 and MUL — and the numbers come out as \(\sigma(z)(1-\sigma(z))\): 0.235 and 0.1966 for \(z = 0.5, -1\).</li>
+  </ul>
+
+  <h2 id="movement"><span class="sec">9.6</span>Movement ops: the gradient is the inverse movement</h2>
+  <p>A movement op is a pure re-indexing, so its Jacobian is a 0/1 matrix and the gradient just routes values back through the inverse re-indexing:</p>
+  <table>
+    <tr><th>forward</th><th>gradient rule</th><th>why</th></tr>
+    <tr><td>RESHAPE to s'</td><td><code>ctx.reshape(src.shape)</code></td><td>bijection on flat positions</td></tr>
+    <tr><td>PERMUTE(p)</td><td><code>ctx.permute(argsort(p))</code></td><td>inverse permutation</td></tr>
+    <tr><td>PAD(off, size)</td><td><code>ctx.shrink(...)</code> back to the window</td><td>padded cells did not come from the input — their gradient is dropped</td></tr>
+    <tr><td>SHRINK(off, size)</td><td><code>ctx</code> PADded back with zeros</td><td>cut-off input cells did not affect the output — gradient 0</td></tr>
+    <tr><td>EXPAND(new dims)</td><td><code>(ctx, None)</code>, then <b>summed</b> over the new axes</td><td>one input value was read many times → its gradient is the sum</td></tr>
+  </table>
+  <pre class="output"><code>=== 4. movement-op gradients are the inverse movement op
+reshape(2,3)               upstream [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]                         -&gt; dv = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+reshape(2,3).T             upstream [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]                       -&gt; dv = [1.0, 3.0, 5.0, 2.0, 4.0, 6.0]
+pad((1,1))                 upstream [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]                   -&gt; dv = [2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
+shrink((1,4))              upstream [1.0, 2.0, 3.0]                                            -&gt; dv = [0.0, 1.0, 2.0, 3.0, 0.0, 0.0]
+reshape(1,6).expand(3,6)   upstream [[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [7.0, 8.0, 9.0, 10.0, 11.0, 12.0], [13.0, 14.0, 15.0, 16.0, 17.0, 18.0]] -&gt; dv = [21.0, 24.0, 27.0, 30.0, 33.0, 36.0]
+flip(0)                    upstream [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]                             -&gt; dv = [6.0, 5.0, 4.0, 3.0, 2.0, 1.0]</code></pre>
+  <p>Read the rows: <code>pad((1,1))</code> drops the first and last upstream values; <code>shrink</code> puts zeros where nothing was read; <code>expand(3,6)</code> sums the three rows
+  (1+7+13 = 21); and <code>flip</code> — 12 primitive ops in the forward graph — produces the reversed upstream gradient, because each of its PADs, SHRINKs, RESHAPEs and
+  PERMUTEs is inverted in turn.</p>
+  <div class="callout aha"><span class="title">The reduce ↔ expand duality</span>
+  In this IR <b>EXPAND adds leading axes</b> and <b>REDUCE removes leading axes</b> (Chapter 7 and 8). Their gradients are each other:
+  \[ \text{REDUCE}_{\text{ADD}}:\ \frac{\partial L}{\partial x} = \text{EXPAND}\Big(\frac{\partial L}{\partial \text{ret}}\Big) \qquad
+     \text{EXPAND}:\ \frac{\partial L}{\partial x} = \text{REDUCE}_{\text{ADD}}\Big(\frac{\partial L}{\partial \text{ret}}\Big) \]
+  The REDUCE rule calls <code>reduce_gradient</code> → <code>ctx._broadcast_to(src.shape)</code>; the EXPAND rule returns <code>ctx</code> unchanged and the generic shape check in
+  <code>compute_gradient</code> calls <code>_rop(Ops.ADD, broadcast_axes(...))</code>. Summation and copying are adjoint linear maps — the gradient of "read once, use many
+  times" is "add up all the uses".</div>
+
+  <h2 id="max"><span class="sec">9.7</span>MAX, WHERE, and the matmul transpose that nobody wrote</h2>
+  <div class="codecap"><b><a class="src" data-path="tinygrad/mixin/gradient.py" data-line="8">tinygrad/mixin/gradient.py:8 — reduce_gradient</a></b></div>
+  <pre><code class="language-python">def reduce_gradient(ctx:UOp, ret:UOp, op:Ops):
+  if op == Ops.ADD: return (ctx._broadcast_to(ret.src[0].shape),)
+  if op == Ops.MAX:
+    # count the ties in the acc dtype, the count can overflow the gradient dtype
+    mask = ret.src[0].eq(ret).cast(sum_acc_dtype(ctx.dtype))
+    return ((mask/mask._rop(Ops.ADD, tuple(range(ret.arg[1])))).cast(ctx.dtype) * ctx,)
+  if op == Ops.MUL:
+    # d(prod x)/dx_j = prod_{i!=j} x_i: ret/x_j whenever x_j != 0 (any zero makes ret 0), else the product of the others
+    safe_x, axes = (is_zero:=(x:=ret.src[0]).eq(0)).where(1, x), tuple(range(ret.arg[1]))
+    zero_count = is_zero.cast(sum_acc_dtype(is_zero.dtype))._rop(Ops.ADD, axes)
+    return (ctx * is_zero.where(zero_count.eq(1).where(safe_x._rop(Ops.MUL, axes), 0), ret/safe_x),)</code></pre>
+  <ul>
+    <li><b>Elementwise MAX</b> sends the gradient to the larger input and <b>splits ties 50/50</b> (<code>x.eq(y).where(ctx * 0.5, 0)</code>) — the reason <code>relu</code> is not written with <code>maximum</code> (Chapter 8).</li>
+    <li><b>REDUCE MAX</b> builds a mask of the positions equal to the max, divides by the number of ties (counted in the accumulation dtype so it cannot overflow), and
+      multiplies by <code>ctx</code>: \( \partial \max / \partial x_i = [x_i = m] / \#\{j: x_j = m\} \).</li>
+    <li><b>REDUCE MUL</b> handles zeros carefully: \(\partial \prod x / \partial x_j = \prod_{i\ne j} x_i\), computed as <code>ret/x_j</code> when \(x_j \ne 0\) and as the product of the others when exactly one zero exists.</li>
+    <li><b>WHERE</b>: <code>(None, c.where(ctx, 0), c.where(0, ctx))</code> — each branch gets the gradient only where it was selected; the condition gets none.</li>
+  </ul>
+  <p>Now matmul. Nobody wrote "the gradient of A@B with respect to A is G @ Bᵀ" — it falls out of MUL + REDUCE + movement rules:</p>
+  <pre class="output"><code>=== 3. matmul: dL/dA = G @ B.T and dL/dB = A.T @ G fall out of the MUL + REDUCE + movement rules
+forward : REDUCE&lt;ADD,2&gt;(REDUCE&lt;ADD,1&gt;(permute(2, 0, 1)(MUL(A, B))))
+dL/dA   : reshape(2, 3)(reshape(2, 1, 3)(REDUCE&lt;ADD,1&gt;(permute(1, 0, 2)(MUL(B, permute(1, 2, 0)(expand(3,)(expand(2, 2)(cast&lt;f32&gt;(1.0)))))))))
+dL/dA   = [[1.0, 1.0, 2.0], [1.0, 1.0, 2.0]]    expected ones(2,2) @ B.T = [[1.0, 1.0, 2.0], [1.0, 1.0, 2.0]]
+dL/dB   = [[5.0, 5.0], [7.0, 7.0], [9.0, 9.0]]    expected A.T @ ones(2,2) = [[5.0, 5.0], [7.0, 7.0], [9.0, 9.0]]</code></pre>
+  <p>Read <code>dL/dA</code> from the inside out: the two REDUCEs' gradients are EXPANDs of the constant 1 (<code>expand(2,2)</code> then <code>expand(3,)</code> — a new <em>leading</em> axis, exactly
+  undoing a REDUCE that removed a leading axis); the PERMUTE's gradient is the inverse permutation <code>(1,2,0)</code>; the MUL's gradient for A is "the other source", <code>B</code>,
+  times that; and because A was <code>(2,1,3)</code> but the product is <code>(2,2,3)</code>, compute_gradient <b>sums over the broadcast axis</b> (<code>permute(1,0,2)</code> + <code>REDUCE</code>);
+  finally two RESHAPEs undo A's reshapes. That sum over the N axis of \(B_{kj}G_{ij}\) is precisely \((G B^\top)_{ik}\).</p>
+  <div class="quiz" data-answer="2">
+    <div class="q">What is the gradient of <code>x.max()</code> for <code>x = [1, 3, 3]</code> (upstream 1)?</div>
+    <button class="opt">[0, 1, 1]</button><button class="opt">[0, 1, 0] — the first maximum wins</button><button class="opt">[0, 0.5, 0.5]</button><button class="opt">[1/3, 1/3, 1/3]</button>
+    <div class="explain"><code>reduce_gradient</code> for MAX: mask = <code>[0,1,1]</code>, divided by the tie count 2. The captured worked example "REDUCE (MAX)" in the rule explorer shows exactly <code>[0.0, 0.5, 0.5]</code>, and the finite difference agrees.</div>
+  </div>
+
+  <h2 id="detach"><span class="sec">9.8</span>DETACH, CONTIGUOUS_BACKWARD and STAGE</h2>
+  <p>Three ops exist mainly to talk to the autograd and the scheduler:</p>
+  <ul>
+    <li><b><code>DETACH</code></b> (<code>x.detach()</code>, <a class="src" data-path="tinygrad/mixin/elementwise.py" data-line="43"></a>): identity in the forward pass. <code>_deepwalk</code> removes it from the walk, so no gradient
+      flows through it. softmax and logsumexp detach the max they subtract (it cancels mathematically, so differentiating through it would only add work).</li>
+    <li><b><code>CONTIGUOUS_BACKWARD</code></b> (<code>x.contiguous_backward()</code>, <a class="src" data-path="tinygrad/mixin/elementwise.py" data-line="67"></a>): identity in the forward pass; its gradient rule is
+      <code>ctx.contiguous()</code> — "materialize the <em>gradient</em> here". A way to cut a huge fused backward kernel without touching the forward.</li>
+    <li><b><code>STAGE</code></b> (<code>contiguous()</code>): gradient passes straight through (<code>(ctx,)</code>).</li>
+  </ul>
+  <p>Before scheduling, both DETACH and CONTIGUOUS_BACKWARD are simply deleted (<code>earliest_rewrites</code>, <a class="src" data-path="tinygrad/schedule/prepare.py" data-line="196">prepare.py:196</a>) — by then
+  the gradient graph has been built and they have done their job.</p>
+  <pre class="output"><code>=== 6. DETACH stops the gradient; the graph walk skips it
+d/dz (z * z.detach()).sum() = [2.0, 3.0]  (only one branch contributes)
+d/dz (z * z).sum()          = [4.0, 6.0]</code></pre>
+
+  <h2 id="lazy"><span class="sec">9.9</span>Gradients are lazy UOps: forward and backward fuse</h2>
+  <p>Because a gradient is just a UOp graph that <em>reuses the forward UOps</em> (MUL's rule mentions <code>ret.src[1]</code>, EXP2's rule mentions <code>ret</code> itself), the scheduler sees one
+  big DAG containing loss and gradients. It decides once what to materialize and what to fuse (<a href="11-kernel-split.html">Chapter 11</a>). Realize them separately and it cannot share:</p>
+  <div class="codecap"><b>examples/09_fusion.py</b> — run with <code>DEV=CPU python3 examples/09_fusion.py</code></div>
+  <pre><code class="language-python">X, Y, W1, W2 = setup()
+loss = mlp_loss(X, Y, W1, W2)
+g1, g2 = loss.gradient(W1, W2)                          # build the gradient graph first (lazy) ...
+loss.realize()                                          # ... run the forward on its own ...
+bwd = kernels(g1, g2)                                   # ... then schedule only the gradients
+print(f&quot;backward after forward  : {len(bwd):2d} kernels  {bwd}&quot;)
+CAPTURE[&quot;bwd_after_fwd&quot;] = bwd
+print(f&quot;  -&gt; separately: {len(fwd)} + {len(bwd)} = {len(fwd) + len(bwd)} kernels (forward intermediates get recomputed)&quot;)
+
+X, Y, W1, W2 = setup()
+loss = mlp_loss(X, Y, W1, W2); loss.realize()          # PITFALL: realize first, then ask for the gradient
+g1, = loss.gradient(W1)
+print(f&quot;gradient AFTER realize  : loss.uop is now {loss.uop.base.op.name}; dL/dW1 = {g1.uop.op.name} of a constant, all zero: {g1.abs().sum().item() == 0}&quot;)
+
+X, Y, W1, W2 = setup()
+loss = mlp_loss(X, Y, W1, W2)
+g1, g2 = loss.gradient(W1, W2)
+both = kernels(loss, g1, g2)                            # one schedule for loss AND gradients
+print(f&quot;forward+backward at once: {len(both):2d} kernels  {both}&quot;)</code></pre>
+  <pre class="output"><code>=== MLP  loss = xent(relu(X @ W1) @ W2)
+forward only            :  5 kernels  [&#x27;r_16_32_8&#x27;, &#x27;r_16_4_32&#x27;, &#x27;r_16_4&#x27;, &#x27;r_16_4&#x27;, &#x27;r_16&#x27;]
+backward after forward  :  8 kernels  [&#x27;r_16_32_8&#x27;, &#x27;r_16_4_32&#x27;, &#x27;r_16_4&#x27;, &#x27;r_16_4&#x27;, &#x27;E_16_4&#x27;, &#x27;r_16_32_4&#x27;, &#x27;r_4_32_16&#x27;, &#x27;r_32_8_16&#x27;]
+  -&gt; separately: 5 + 8 = 13 kernels (forward intermediates get recomputed)
+gradient AFTER realize  : loss.uop is now BUFFER; dL/dW1 = EXPAND of a constant, all zero: True
+forward+backward at once: 10 kernels  [&#x27;r_16_32_8&#x27;, &#x27;r_16_4_32&#x27;, &#x27;r_16_4&#x27;, &#x27;r_16_4&#x27;, &#x27;r_16&#x27;, &#x27;E_4_4&#x27;, &#x27;E_16_4&#x27;, &#x27;r_16_32_4&#x27;, &#x27;r_4_32_16&#x27;, &#x27;r_32_8_16&#x27;]
+fwd+bwd+SGD update      : 12 kernels  [&#x27;r_16_32_8&#x27;, &#x27;r_16_4_32&#x27;, &#x27;r_16_4&#x27;, &#x27;r_16_4&#x27;, &#x27;r_16&#x27;, &#x27;E_4_4&#x27;, &#x27;E_16_4&#x27;, &#x27;r_16_32_4&#x27;, &#x27;r_32_4_16&#x27;, &#x27;r_8_32_16&#x27;, &#x27;E_32_4&#x27;, &#x27;E_64_4&#x27;]
+
+=== tiny examples
+sum(x*x) and its grad   : [&#x27;r_3&#x27;, &#x27;E_3&#x27;]
+relu(A@B).sum() + grads : [&#x27;r_4_4_4&#x27;, &#x27;r_16&#x27;, &#x27;r_4_4_4&#x27;, &#x27;r_4_4_4&#x27;]</code></pre>
+  <div class="demo" id="demo-fusion">
+    <div class="demo-title">Fused forward+backward: kernel counts</div>
+    <div class="demo-desc">Each box is one real kernel from the schedules above (names are tinygrad's: <code>r_…</code> contains a reduction, <code>E_…</code> is purely elementwise, the numbers are loop sizes).
+      Press <b>play</b> to build the schedules kernel by kernel. Purple = a forward kernel that the backward-only schedule had to <em>recompute</em>.</div>
+    <div class="controls"><button class="primary" id="fu-play">▶ play</button><span class="ch09-legend"><span><i style="background:var(--blue)"></i>forward</span><span><i style="background:var(--purple)"></i>recomputed forward</span><span><i style="background:var(--red)"></i>backward</span><span><i style="background:var(--green)"></i>SGD update</span></span></div>
+    <div id="fu-rows"></div>
+    <div class="ch09-kv" id="fu-note" style="font-size:13px;color:var(--dim)"></div>
+  </div>
+  <div class="callout warn"><span class="title">The pitfall that line 5 shows</span>
+  <code>realize()</code> replaces a tensor's UOp with its buffer (the scheduler rewrites all live tensors through <code>becomes_map</code>). If you realize the loss and
+  <em>then</em> ask for its gradient, the loss is a <code>BUFFER</code> with no path to the weights, and you silently get zeros. Build the gradients first (or call
+  <code>backward()</code>) and realize everything together — which is also the fastest option.</div>
+  <div class="quiz" data-answer="0">
+    <div class="q">Why is "forward + backward at once" (10 kernels) cheaper than forward then backward (5 + 8 = 13)?</div>
+    <button class="opt">When scheduled together, forward intermediates that the backward needs are computed once and shared; scheduled separately, the backward graph re-derives them from the inputs</button><button class="opt">because backward kernels are smaller</button><button class="opt">because the JIT caches kernels</button>
+    <div class="explain">The backward-only schedule starts with <code>r_16_32_8, r_16_4_32, r_16_4, r_16_4</code> — the same forward kernels again — because the gradient UOps reference forward UOps that were not kept as buffers.</div>
+  </div>
+
+  <h2 id="again"><span class="sec">9.10</span>Hammer it again: a real MLP, checked numerically</h2>
+  <p>Different angle: forget the rules and check the result against the definition of a derivative. A 3→5→3 MLP with relu and cross-entropy:</p>
+  <pre><code class="language-python">
+print(&quot;\n=== 5. MLP: gradients of a real loss, checked against finite differences&quot;)
+Tensor.manual_seed(1)
+X = Tensor.randn(4, 3).realize(); Y = Tensor([0, 2, 1, 2]).realize()
+W1, b1 = Tensor.randn(3, 5).realize(), Tensor.zeros(5).contiguous().realize()
+W2, b2 = Tensor.randn(5, 3).realize(), Tensor.zeros(3).contiguous().realize()
+def loss_fn(W1, b1, W2, b2): return ((X @ W1 + b1).relu() @ W2 + b2).sparse_categorical_crossentropy(Y)
+loss = loss_fn(W1, b1, W2, b2)
+grads = loss.gradient(W1, b1, W2, b2)
+print(&quot;loss =&quot;, round(loss.item(), 5), &quot; gradient shapes:&quot;, [g.shape for g in grads])
+eps = 1e-3
+W1l, gW1 = W1.tolist(), grads[0].tolist()
+for (i, j) in [(0, 0), (1, 3), (2, 4)]:
+  plus = [row[:] for row in W1l]; plus[i][j] += eps
+  minus = [row[:] for row in W1l]; minus[i][j] -= eps
+  fd = (loss_fn(Tensor(plus), b1, W2, b2).item() - loss_fn(Tensor(minus), b1, W2, b2).item()) / (2 * eps)
+  print(f&quot;dL/dW1[{i},{j}]  autograd {gW1[i][j]: .5f}   finite-diff {fd: .5f}&quot;)</code></pre>
+  <pre class="output"><code>=== 5. MLP: gradients of a real loss, checked against finite differences
+loss = 1.10119  gradient shapes: [(3, 5), (5,), (5, 3), (3,)]
+dL/dW1[0,0]  autograd -0.17981   finite-diff -0.17977
+dL/dW1[1,3]  autograd -0.06292   finite-diff -0.06294
+dL/dW1[2,4]  autograd -0.26655   finite-diff -0.26655</code></pre>
+  <p>Agreement to ~4 decimals in float32 (the residual is finite-difference error, \(O(\epsilon^2)\) plus float32 rounding of the loss). Everything in that loss —
+  <code>log_softmax</code>'s detached max, the one-hot from <code>sparse_categorical_crossentropy</code>, relu's WHERE, the implicit broadcasts of the biases — went through the
+  same twenty-odd rules.</p>
+  <h3>What breaks, and other edges</h3>
+  <ul>
+    <li><b>Non-scalar loss without <code>gradient=</code></b>: assertion "backward must be called on a scalar tensor". Pass an upstream gradient of the same shape (as section 4 of the example does).</li>
+    <li><b>Integer tensors</b>: "only float Tensors have gradient"; weak (Python-constant) tensors cannot be targets either.</li>
+    <li><b>Ops with no rule</b> (e.g. <code>BITCAST</code> returns <code>None</code>; comparisons return <code>None</code>): gradient simply stops there.</li>
+    <li><b>Custom kernels / CALLs</b>: <code>call_gradient</code> (<a class="src" data-path="tinygrad/mixin/gradient.py" data-line="20"></a>) either uses a user-supplied <code>grad_fxn</code> (e.g.
+      <code>nn.Embedding</code>'s backward) or differentiates the call's body and wraps the result in a new backward CALL — functions (<a href="18-jit.html">Chapter 18</a>) are differentiable too.</li>
+    <li><b>Assign/in-place</b>: the <code>AFTER</code>/<code>STORE</code> rules route gradients through assignments, including partial stores through a view (<code>partial_store_gradient</code>).</li>
+  </ul>
+  <div class="quiz" data-answer="3">
+    <div class="q">You compute <code>h = x @ W</code>, keep a Python reference to <code>h</code>, then call <code>loss.backward()</code>. What happens to <code>h</code>?</div>
+    <button class="opt">nothing; only leaves get gradients</button><button class="opt">it raises because h has no requires_grad</button><button class="opt">h is realized</button><button class="opt">h.grad is set too: backward targets every live float Tensor whose UOp is in the loss graph</button>
+    <div class="explain"><code>tensors_need_grad</code> is built from <code>all_tensors</code>: anything alive, floating point, on a device and in <code>self.uop.toposort()</code>. There is no leaf/non-leaf distinction.</div>
+  </div>
+
+  <div class="summary-box"><h3>Chapter summary</h3><ul>
+    <li><code>Tensor.gradient(*targets)</code> → <code>compute_gradient(root, root_grad, targets)</code>; <code>backward()</code> targets every live float tensor in the graph (no <code>requires_grad</code>) and accumulates into <code>.grad</code>.</li>
+    <li><code>_deepwalk</code> keeps only nodes on a path to a target (DETACH excluded); iterating the toposort in reverse processes consumers before sources.</li>
+    <li><code>pm_gradient</code> has one rule per primitive; composites (sub, div, exp, sigmoid, softmax, matmul, conv) get gradients for free by chaining.</li>
+    <li>Movement gradients are inverse movements; REDUCE and EXPAND are each other's gradient; implicit broadcasts are summed by one generic line.</li>
+    <li>MAX splits ties, WHERE routes by condition, REDUCE MAX/MUL are handled in <code>reduce_gradient</code>; DETACH / CONTIGUOUS_BACKWARD steer autograd and are removed before scheduling.</li>
+    <li>Gradients are lazy UOps that reuse forward UOps, so forward+backward schedule and fuse together (10 kernels vs 5+8). Never realize the loss before building its gradients.</li>
+  </ul></div>
+</main>
+</div>
+<script>
+(function () {
+  const G = Guide, el = G.el;
+  const short = (v) => {
+    const r = (x) => (typeof x === "number" ? (Number.isInteger(x) ? String(x) : (+x.toFixed(3)).toString()) : typeof x === "boolean" ? (x ? "T" : "F") : Array.isArray(x) ? "[" + x.map(r).join(", ") + "]" : String(x));
+    const s = r(v); return s.length > 34 ? s.slice(0, 33) + "…" : s;
+  };
+  const RULE = {
+    REDUCE: ["reduce_gradient(ctx, ret, op)", "ADD: ctx._broadcast_to(src.shape) — the scalar/row gradient is copied back to every summed element"],
+    MUL: ["(ret.src[1]*ctx, ret.src[0]*ctx)", "each source gets upstream × the other source"],
+    ADD: ["(ctx, ctx)", "both sources get the upstream gradient unchanged"],
+    WHERE: ["(None, c.where(ctx, 0), c.where(0, ctx))", "the condition gets nothing; each branch gets the gradient where it was selected"],
+    RECIP: ["(-ctx * ret * ret,)", "d(1/x) = -1/x²  = -ret²"],
+    EXP2: ["(ret * ctx * math.log(2),)", "d(2^x) = 2^x · ln 2"],
+    LOG2: ["(ctx / (ret.src[0] * math.log(2)),)", "d log2 x = 1/(x ln 2)"],
+    PERMUTE: ["(ctx.permute(argsort(ret.marg)), None)", "inverse permutation"],
+    RESHAPE: ["(ctx.reshape(ret.src[0].shape), None)", "reshape back"],
+    EXPAND: ["(ctx, None)", "pass through; compute_gradient sums the broadcast axes"],
+    CAST: ["(ctx.cast(ret.src[0].dtype),)", "cast the gradient back"],
+    CMPLT: ["(None, None)", "comparisons have no gradient"],
+  };
+
+  // ============ rule explorer ============
+  G.loadJSON("../data/ch09_rules.json").then((D) => {
+    const box = G.$("#rl-ops"), body = G.$("#rl-body");
+    const btns = D.rules.map((r, i) => { const b = el("button", { onclick: () => show(i) }, r.title); box.append(b); return b; });
+    function show(i) {
+      const r = D.rules[i];
+      btns.forEach((b, j) => b.classList.toggle("active", i === j));
+      body.innerHTML = "";
+      body.append(el("div", { style: "font-size:15px;margin-bottom:4px" }, el("b", { class: "hl-yellow" }, r.title), " — " + r.desc));
+      if (r.tex) { const t = el("div", { style: "margin:6px 0" }, "\\[" + r.tex + "\\]"); body.append(t); if (window.renderMathInElement) renderMathInElement(t); }
+      for (const s of r.src || []) {
+        body.append(el("div", { class: "codecap" }, el("b", {}, el("a", { class: "src", href: G.src(D.file, s.line), target: "_blank" }, `${D.file}:${s.line}`))));
+        const pre = el("pre", {}, el("code", { class: "language-python" }, s.code.replace(/^\s+/gm, (m) => m.slice(Math.min(m.length, 2)))));
+        body.append(pre); if (window.hljs) hljs.highlightElement(pre.firstChild);
+      }
+      if (r.grads) {
+        const names = ["a", "b", "c"];
+        const t = el("table", { class: "ch09-ex" });
+        t.append(el("tr", {}, el("th", {}, ""), el("th", {}, "value"), el("th", {}, "tinygrad gradient"), el("th", {}, "finite difference")));
+        r.inputs.forEach((v, j) => t.append(el("tr", {}, el("td", {}, `input ${names[j]}`), el("td", { style: "color:var(--blue)" }, short(v)), el("td", { style: "color:var(--red)" }, short(r.grads[j])), el("td", { style: "color:var(--green)" }, short(r.finite_diff[j])))));
+        t.append(el("tr", {}, el("td", {}, "output"), el("td", { style: "color:var(--blue)" }, short(r.output)), el("td", { colspan: 2, style: "color:var(--dim)" }, "upstream gradient: " + short(r.upstream))));
+        body.append(el("div", { class: "ch09-kv", style: "margin-top:6px;font-size:12px;color:var(--dim)" }, "worked example (captured):"), t);
+      } else body.append(el("div", { style: "font-size:13px;color:var(--dim);margin-top:6px" }, "(plumbing rule — no standalone numeric example; see the linked source)"));
+    }
+    show(1);
+  });
+
+  // ============ reverse-mode walk ============
+  G.loadJSON("../data/ch09_walk.json").then((W) => {
+    const pres = G.$("#wk-presets");
+    let gctl = null, stepper = null;
+    const keys = Object.keys(W);
+    const pbtns = keys.map((k) => { const b = el("button", { onclick: () => load(k) }, W[k].title); pres.append(b); return b; });
+    function load(key) {
+      pbtns.forEach((b, i) => b.classList.toggle("active", keys[i] === key));
+      const P = W[key];
+      const byId = new Map(P.graph.nodes.map((n) => [n.id, n]));
+      // gradient state after each step
+      const states = []; let gstate = {};
+      for (const s of P.steps) {
+        gstate = Object.assign({}, gstate);
+        if (s.kind === "seed") gstate[s.node] = s.grad;
+        if (s.kind === "rule") for (const c of s.contrib) gstate[c.src] = c.total;
+        states.push(gstate);
+      }
+      const mkGraph = (i) => ({ nodes: P.graph.nodes.map((n) => Object.assign({}, n, { sub: (n.arg ? n.arg + " · " : "") + "v=" + short(n.value) + (states[i][n.id] !== undefined ? "  ∂=" + short(states[i][n.id]) : "") })), edges: P.graph.edges });
+      gctl = G.uopGraph(G.$("#wk-graph"), mkGraph(0), { height: 560, legend: false, compact: true });
+      const steps = P.steps.map((s, i) => {
+        const n = byId.get(s.node);
+        let cap;
+        if (s.kind === "seed") cap = `<b>seed</b>: \\(\\partial L/\\partial L = 1\\) at the root <code>${n.label}</code>.`;
+        else if (s.kind === "skip") cap = `<b>${n.label}</b>: in the target path, but no gradient ever arrived (its consumer's rule returned <code>None</code> for it) → skipped.`;
+        else cap = `<b>${n.label}</b> rule fires with upstream ∂ = <code>${short(s.grad)}</code> → sends ${s.contrib.map((c) => `<code>${short(c.value)}</code> to ${byId.get(c.src).label}${c.broadcast_summed ? " (summed over broadcast axes)" : ""}${c.accumulated ? " <b>(accumulated: +)</b>" : ""}`).join(", ") || "nothing"}.`;
+        return { caption: cap };
+      });
+      steps.push({ caption: `<b>done.</b> Gradients: ${Object.entries(P.result).map(([k, v]) => `∂L/∂${k} = <code>${short(v)}</code>`).join(", ")} — identical to <code>loss.gradient(...)</code>.` });
+      G.$("#wk-stepper").innerHTML = "";
+      stepper = G.stepper(G.$("#wk-stepper"), steps, (i) => {
+        const si = Math.min(i, P.steps.length - 1), s = P.steps[si];
+        gctl.setGraph(mkGraph(si), { animate: false });
+        const hl = i >= P.steps.length ? Object.values(P.targets) : [s.node, ...(s.contrib || []).map((c) => c.src)];
+        gctl.highlight(hl);
+        // table
+        const tb = G.$("#wk-table"); tb.innerHTML = "";
+        tb.append(el("tr", {}, el("th", {}, "node"), el("th", {}, "shape"), el("th", {}, "value"), el("th", {}, "∂L/∂node")));
+        for (const n of P.graph.nodes.slice().reverse()) {
+          const cls = n.id === s.node && i < P.steps.length ? "cur" : (s.contrib || []).some((c) => c.src === n.id) ? "src" : "";
+          const g = states[si][n.id];
+          tb.append(el("tr", { class: cls }, el("td", {}, n.label + (n.arg ? " " + n.arg : "")), el("td", {}, n.shape), el("td", { class: "v" }, short(n.value)), el("td", { class: "g" }, g === undefined ? "" : short(g))));
+        }
+        const rb = G.$("#wk-rule"); rb.innerHTML = "";
+        if (s.kind === "rule" && i < P.steps.length) {
+          const r = RULE[s.op] || ["", ""];
+          rb.append(el("div", { class: "c" }, `pm_gradient rule for ${s.op}:`), el("div", { class: "r" }, r[0]), el("div", { class: "c" }, r[1]));
+        } else if (s.kind === "seed") rb.append(el("div", { class: "c" }, "grads = {root: root_grad}"));
+        else if (s.kind === "skip") rb.append(el("div", { class: "c" }, "if t0 not in grads: continue"));
+        else rb.append(el("div", { class: "c" }, "return grads"));
+      }, { autoplayMs: 2200 });
+    }
+    load("neuron");
+  });
+
+  // ============ fusion visualization ============
+  G.loadJSON("../data/ch09_fusion.json").then((F) => {
+    const fwdSet = new Set(F.fwd);
+    const rows = [
+      ["forward only", F.fwd.map((k) => [k, "f"])],
+      ["backward after forward", F.bwd_after_fwd.map((k, i) => [k, i < 4 && fwdSet.has(k) ? "r" : "b"])],
+      ["forward + backward, scheduled together", F.fwd_bwd.map((k, i) => [k, i < F.fwd.length ? "f" : "b"])],
+      ["fwd + bwd + SGD update", F.fwd_bwd_sgd.map((k, i) => [k, i < F.fwd.length ? "f" : i >= F.fwd_bwd_sgd.length - 2 ? "u" : "b"])],
+    ];
+    const wrap = G.$("#fu-rows"), boxes = [];
+    for (const [name, ks] of rows) {
+      const kd = el("div", { class: "ch09-ks" });
+      ks.forEach(([k, c]) => { const b = el("span", { class: "ch09-k " + c, title: `${k}: ${k.startsWith("r_") ? "contains a reduction" : "elementwise"}; loop sizes ${k.split("_").slice(1).join("×")}` }, k); kd.append(b); boxes.push(b); });
+      wrap.append(el("div", { class: "ch09-krow" }, el("span", {}, name), kd, el("b", { class: "hl-yellow" }, ks.length)));
+    }
+    G.$("#fu-note").textContent = `separately: ${F.fwd.length} + ${F.bwd_after_fwd.length} = ${F.fwd.length + F.bwd_after_fwd.length} kernels; together: ${F.fwd_bwd.length}. The SGD update (W -= lr·g) adds only ${F.fwd_bwd_sgd.length - F.fwd_bwd.length} kernels.`;
+    const show = () => boxes.forEach((b) => b.classList.add("on"));
+    show();
+    G.$("#fu-play").addEventListener("click", async () => {
+      boxes.forEach((b) => b.classList.remove("on"));
+      for (const b of boxes) { await G.sleep(140); b.classList.add("on"); }
+    });
+  });
+})();
+</script>
+</body>
+</html>

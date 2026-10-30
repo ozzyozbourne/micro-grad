@@ -1,0 +1,167 @@
+{
+ "graph": {
+  "nodes": [
+   {
+    "id": "n0",
+    "op": "STACK",
+    "dtype": "dtypes.void",
+    "arg": "None",
+    "shape": "()",
+    "label": "STACK",
+    "sub": "() shape"
+   },
+   {
+    "id": "n1",
+    "op": "PARAM",
+    "dtype": "dtypes.weakint",
+    "arg": "ParamArg(-1, dtypes.weakint, vmin_vmax=(0, 10), name='x', a\u2026",
+    "shape": "()",
+    "label": "PARAM",
+    "sub": "x"
+   },
+   {
+    "id": "n2",
+    "op": "PARAM",
+    "dtype": "dtypes.weakint",
+    "arg": "ParamArg(-1, dtypes.weakint, vmin_vmax=(0, 10), name='y', a\u2026",
+    "shape": "()",
+    "label": "PARAM",
+    "sub": "y"
+   },
+   {
+    "id": "n3",
+    "op": "ADD",
+    "dtype": "dtypes.weakint",
+    "arg": "None",
+    "shape": "()",
+    "label": "ADD",
+    "sub": "(x+y)"
+   },
+   {
+    "id": "n4",
+    "op": "MUL",
+    "dtype": "dtypes.weakint",
+    "arg": "None",
+    "shape": "()",
+    "label": "MUL",
+    "sub": "((x+y)*(x+y))"
+   },
+   {
+    "id": "n5",
+    "op": "CONST",
+    "dtype": "dtypes.weakint",
+    "arg": "2",
+    "shape": "()",
+    "label": "CONST",
+    "sub": "2"
+   },
+   {
+    "id": "n6",
+    "op": "MUL",
+    "dtype": "dtypes.weakint",
+    "arg": "None",
+    "shape": "()",
+    "label": "MUL",
+    "sub": "(x*2)"
+   },
+   {
+    "id": "n7",
+    "op": "ADD",
+    "dtype": "dtypes.weakint",
+    "arg": "None",
+    "shape": "()",
+    "label": "ADD",
+    "sub": "((x+y)*(x+y)+x*2)"
+   }
+  ],
+  "edges": [
+   [
+    "n0",
+    "n1",
+    0
+   ],
+   [
+    "n0",
+    "n2",
+    0
+   ],
+   [
+    "n1",
+    "n3",
+    0
+   ],
+   [
+    "n2",
+    "n3",
+    1
+   ],
+   [
+    "n3",
+    "n4",
+    0
+   ],
+   [
+    "n3",
+    "n4",
+    1
+   ],
+   [
+    "n1",
+    "n6",
+    0
+   ],
+   [
+    "n5",
+    "n6",
+    1
+   ],
+   [
+    "n4",
+    "n7",
+    0
+   ],
+   [
+    "n6",
+    "n7",
+    1
+   ]
+  ]
+ },
+ "root": "n7",
+ "order": [
+  "n0",
+  "n1",
+  "n2",
+  "n3",
+  "n4",
+  "n5",
+  "n6",
+  "n7"
+ ],
+ "src_order": {
+  "n0": [],
+  "n1": [
+   "n0"
+  ],
+  "n2": [
+   "n0"
+  ],
+  "n3": [
+   "n1",
+   "n2"
+  ],
+  "n4": [
+   "n3",
+   "n3"
+  ],
+  "n5": [],
+  "n6": [
+   "n1",
+   "n5"
+  ],
+  "n7": [
+   "n4",
+   "n6"
+  ]
+ }
+}

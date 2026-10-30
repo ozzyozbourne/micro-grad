@@ -1,0 +1,5280 @@
+[
+ {
+  "expr": "x - y",
+  "where": "elementwise.py sub",
+  "shape": "(3,)",
+  "graph": {
+   "nodes": [
+    {
+     "id": "n0",
+     "op": "BUFFER",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32",
+     "label": "BUFFER x"
+    },
+    {
+     "id": "n1",
+     "op": "BUFFER",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32",
+     "label": "BUFFER y"
+    },
+    {
+     "id": "n2",
+     "op": "CONST",
+     "arg": "-1.0",
+     "shape": "()",
+     "dtype": "dtypes.weakfloat"
+    },
+    {
+     "id": "n3",
+     "op": "MUL",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n4",
+     "op": "ADD",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32"
+    }
+   ],
+   "edges": [
+    [
+     "n1",
+     "n3",
+     0
+    ],
+    [
+     "n2",
+     "n3",
+     1
+    ],
+    [
+     "n0",
+     "n4",
+     0
+    ],
+    [
+     "n3",
+     "n4",
+     1
+    ]
+   ]
+  },
+  "ops": {
+   "BUFFER": 2,
+   "CONST": 1,
+   "MUL": 1,
+   "ADD": 1
+  },
+  "value": [
+   -3.0,
+   -3.0,
+   -3.0
+  ]
+ },
+ {
+  "expr": "x / y",
+  "where": "elementwise.py div",
+  "shape": "(3,)",
+  "graph": {
+   "nodes": [
+    {
+     "id": "n0",
+     "op": "BUFFER",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32",
+     "label": "BUFFER x"
+    },
+    {
+     "id": "n1",
+     "op": "BUFFER",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32",
+     "label": "BUFFER y"
+    },
+    {
+     "id": "n2",
+     "op": "RECIP",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n3",
+     "op": "MUL",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32"
+    }
+   ],
+   "edges": [
+    [
+     "n1",
+     "n2",
+     0
+    ],
+    [
+     "n0",
+     "n3",
+     0
+    ],
+    [
+     "n2",
+     "n3",
+     1
+    ]
+   ]
+  },
+  "ops": {
+   "BUFFER": 2,
+   "RECIP": 1,
+   "MUL": 1
+  },
+  "value": [
+   0.25,
+   0.4000000059604645,
+   0.5
+  ]
+ },
+ {
+  "expr": "x.exp()",
+  "where": "elementwise.py exp",
+  "shape": "(3,)",
+  "graph": {
+   "nodes": [
+    {
+     "id": "n0",
+     "op": "BUFFER",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32",
+     "label": "BUFFER x"
+    },
+    {
+     "id": "n1",
+     "op": "CONST",
+     "arg": "1.4426950408889634",
+     "shape": "()",
+     "dtype": "dtypes.weakfloat"
+    },
+    {
+     "id": "n2",
+     "op": "MUL",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n3",
+     "op": "EXP2",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32"
+    }
+   ],
+   "edges": [
+    [
+     "n0",
+     "n2",
+     0
+    ],
+    [
+     "n1",
+     "n2",
+     1
+    ],
+    [
+     "n2",
+     "n3",
+     0
+    ]
+   ]
+  },
+  "ops": {
+   "BUFFER": 1,
+   "CONST": 1,
+   "MUL": 1,
+   "EXP2": 1
+  },
+  "value": [
+   2.7182817459106445,
+   7.3890557289123535,
+   20.085535049438477
+  ]
+ },
+ {
+  "expr": "x.log()",
+  "where": "elementwise.py log",
+  "shape": "(3,)",
+  "graph": {
+   "nodes": [
+    {
+     "id": "n0",
+     "op": "BUFFER",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32",
+     "label": "BUFFER x"
+    },
+    {
+     "id": "n1",
+     "op": "LOG2",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n2",
+     "op": "CONST",
+     "arg": "0.6931471805599453",
+     "shape": "()",
+     "dtype": "dtypes.weakfloat"
+    },
+    {
+     "id": "n3",
+     "op": "MUL",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32"
+    }
+   ],
+   "edges": [
+    [
+     "n0",
+     "n1",
+     0
+    ],
+    [
+     "n1",
+     "n3",
+     0
+    ],
+    [
+     "n2",
+     "n3",
+     1
+    ]
+   ]
+  },
+  "ops": {
+   "BUFFER": 1,
+   "LOG2": 1,
+   "CONST": 1,
+   "MUL": 1
+  },
+  "value": [
+   0.0,
+   0.6931471824645996,
+   1.0986123085021973
+  ]
+ },
+ {
+  "expr": "x.sigmoid()",
+  "where": "elementwise.py sigmoid",
+  "shape": "(3,)",
+  "graph": {
+   "nodes": [
+    {
+     "id": "n0",
+     "op": "CONST",
+     "arg": "1.0",
+     "shape": "()",
+     "dtype": "dtypes.weakfloat"
+    },
+    {
+     "id": "n1",
+     "op": "BUFFER",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32",
+     "label": "BUFFER x"
+    },
+    {
+     "id": "n2",
+     "op": "CONST",
+     "arg": "-1.4426950408889634",
+     "shape": "()",
+     "dtype": "dtypes.weakfloat"
+    },
+    {
+     "id": "n3",
+     "op": "MUL",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n4",
+     "op": "EXP2",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n5",
+     "op": "ADD",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n6",
+     "op": "RECIP",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32"
+    }
+   ],
+   "edges": [
+    [
+     "n1",
+     "n3",
+     0
+    ],
+    [
+     "n2",
+     "n3",
+     1
+    ],
+    [
+     "n3",
+     "n4",
+     0
+    ],
+    [
+     "n0",
+     "n5",
+     0
+    ],
+    [
+     "n4",
+     "n5",
+     1
+    ],
+    [
+     "n5",
+     "n6",
+     0
+    ]
+   ]
+  },
+  "ops": {
+   "CONST": 2,
+   "BUFFER": 1,
+   "MUL": 1,
+   "EXP2": 1,
+   "ADD": 1,
+   "RECIP": 1
+  },
+  "value": [
+   0.7310585975646973,
+   0.8807970285415649,
+   0.9525741338729858
+  ]
+ },
+ {
+  "expr": "x.relu()",
+  "where": "elementwise.py relu",
+  "shape": "(3,)",
+  "graph": {
+   "nodes": [
+    {
+     "id": "n0",
+     "op": "CONST",
+     "arg": "0.0",
+     "shape": "()",
+     "dtype": "dtypes.weakfloat"
+    },
+    {
+     "id": "n1",
+     "op": "BUFFER",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32",
+     "label": "BUFFER x"
+    },
+    {
+     "id": "n2",
+     "op": "CMPLT",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.bool"
+    },
+    {
+     "id": "n3",
+     "op": "WHERE",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32"
+    }
+   ],
+   "edges": [
+    [
+     "n0",
+     "n2",
+     0
+    ],
+    [
+     "n1",
+     "n2",
+     1
+    ],
+    [
+     "n2",
+     "n3",
+     0
+    ],
+    [
+     "n1",
+     "n3",
+     1
+    ],
+    [
+     "n0",
+     "n3",
+     2
+    ]
+   ]
+  },
+  "ops": {
+   "CONST": 1,
+   "BUFFER": 1,
+   "CMPLT": 1,
+   "WHERE": 1
+  },
+  "value": [
+   1.0,
+   2.0,
+   3.0
+  ]
+ },
+ {
+  "expr": "x.minimum(y)",
+  "where": "elementwise.py minimum",
+  "shape": "(3,)",
+  "graph": {
+   "nodes": [
+    {
+     "id": "n0",
+     "op": "BUFFER",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32",
+     "label": "BUFFER x"
+    },
+    {
+     "id": "n1",
+     "op": "CONST",
+     "arg": "-1.0",
+     "shape": "()",
+     "dtype": "dtypes.weakfloat"
+    },
+    {
+     "id": "n2",
+     "op": "MUL",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n3",
+     "op": "BUFFER",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32",
+     "label": "BUFFER y"
+    },
+    {
+     "id": "n4",
+     "op": "MUL",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n5",
+     "op": "MAX",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n6",
+     "op": "MUL",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32"
+    }
+   ],
+   "edges": [
+    [
+     "n0",
+     "n2",
+     0
+    ],
+    [
+     "n1",
+     "n2",
+     1
+    ],
+    [
+     "n3",
+     "n4",
+     0
+    ],
+    [
+     "n1",
+     "n4",
+     1
+    ],
+    [
+     "n2",
+     "n5",
+     0
+    ],
+    [
+     "n4",
+     "n5",
+     1
+    ],
+    [
+     "n5",
+     "n6",
+     0
+    ],
+    [
+     "n1",
+     "n6",
+     1
+    ]
+   ]
+  },
+  "ops": {
+   "BUFFER": 2,
+   "CONST": 1,
+   "MUL": 3,
+   "MAX": 1
+  },
+  "value": [
+   1.0,
+   2.0,
+   3.0
+  ]
+ },
+ {
+  "expr": "x.tanh()",
+  "where": "elementwise.py tanh",
+  "shape": "(3,)",
+  "graph": {
+   "nodes": [
+    {
+     "id": "n0",
+     "op": "CONST",
+     "arg": "2.0",
+     "shape": "()",
+     "dtype": "dtypes.weakfloat"
+    },
+    {
+     "id": "n1",
+     "op": "CONST",
+     "arg": "1.0",
+     "shape": "()",
+     "dtype": "dtypes.weakfloat"
+    },
+    {
+     "id": "n2",
+     "op": "BUFFER",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32",
+     "label": "BUFFER x"
+    },
+    {
+     "id": "n3",
+     "op": "MUL",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n4",
+     "op": "CONST",
+     "arg": "-1.4426950408889634",
+     "shape": "()",
+     "dtype": "dtypes.weakfloat"
+    },
+    {
+     "id": "n5",
+     "op": "MUL",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n6",
+     "op": "EXP2",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n7",
+     "op": "ADD",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n8",
+     "op": "RECIP",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n9",
+     "op": "MUL",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n10",
+     "op": "CONST",
+     "arg": "-1.0",
+     "shape": "()",
+     "dtype": "dtypes.weakfloat"
+    },
+    {
+     "id": "n11",
+     "op": "MUL",
+     "arg": "",
+     "shape": "()",
+     "dtype": "dtypes.weakfloat"
+    },
+    {
+     "id": "n12",
+     "op": "ADD",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32"
+    }
+   ],
+   "edges": [
+    [
+     "n0",
+     "n3",
+     0
+    ],
+    [
+     "n2",
+     "n3",
+     1
+    ],
+    [
+     "n3",
+     "n5",
+     0
+    ],
+    [
+     "n4",
+     "n5",
+     1
+    ],
+    [
+     "n5",
+     "n6",
+     0
+    ],
+    [
+     "n1",
+     "n7",
+     0
+    ],
+    [
+     "n6",
+     "n7",
+     1
+    ],
+    [
+     "n7",
+     "n8",
+     0
+    ],
+    [
+     "n0",
+     "n9",
+     0
+    ],
+    [
+     "n8",
+     "n9",
+     1
+    ],
+    [
+     "n1",
+     "n11",
+     0
+    ],
+    [
+     "n10",
+     "n11",
+     1
+    ],
+    [
+     "n9",
+     "n12",
+     0
+    ],
+    [
+     "n11",
+     "n12",
+     1
+    ]
+   ]
+  },
+  "ops": {
+   "CONST": 4,
+   "BUFFER": 1,
+   "MUL": 4,
+   "EXP2": 1,
+   "ADD": 2,
+   "RECIP": 1
+  },
+  "value": [
+   0.7615940570831299,
+   0.9640275239944458,
+   0.9950548410415649
+  ]
+ },
+ {
+  "expr": "x.mean()",
+  "where": "op.py mean",
+  "shape": "()",
+  "graph": {
+   "nodes": [
+    {
+     "id": "n0",
+     "op": "BUFFER",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.f32",
+     "label": "BUFFER x"
+    },
+    {
+     "id": "n1",
+     "op": "REDUCE",
+     "arg": "ADD, 1 axes",
+     "shape": "()",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n2",
+     "op": "CONST",
+     "arg": "3.0",
+     "shape": "()",
+     "dtype": "dtypes.weakfloat"
+    },
+    {
+     "id": "n3",
+     "op": "RECIP",
+     "arg": "",
+     "shape": "()",
+     "dtype": "dtypes.weakfloat"
+    },
+    {
+     "id": "n4",
+     "op": "MUL",
+     "arg": "",
+     "shape": "()",
+     "dtype": "dtypes.f32"
+    }
+   ],
+   "edges": [
+    [
+     "n0",
+     "n1",
+     0
+    ],
+    [
+     "n2",
+     "n3",
+     0
+    ],
+    [
+     "n1",
+     "n4",
+     0
+    ],
+    [
+     "n3",
+     "n4",
+     1
+    ]
+   ]
+  },
+  "ops": {
+   "BUFFER": 1,
+   "REDUCE": 1,
+   "CONST": 1,
+   "RECIP": 1,
+   "MUL": 1
+  },
+  "value": 2.0
+ },
+ {
+  "expr": "m.softmax()",
+  "where": "op.py softmax",
+  "shape": "(2, 3)",
+  "graph": {
+   "nodes": [
+    {
+     "id": "n0",
+     "op": "BUFFER",
+     "arg": "",
+     "shape": "(6,)",
+     "dtype": "dtypes.f32",
+     "label": "BUFFER m"
+    },
+    {
+     "id": "n1",
+     "op": "RESHAPE",
+     "arg": "(2, 3)",
+     "shape": "(2, 3)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n2",
+     "op": "PERMUTE",
+     "arg": "(1, 0)",
+     "shape": "(3, 2)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n3",
+     "op": "REDUCE",
+     "arg": "MAX, 1 axes",
+     "shape": "(2,)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n4",
+     "op": "RESHAPE",
+     "arg": "(2, 1)",
+     "shape": "(2, 1)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n5",
+     "op": "DETACH",
+     "arg": "",
+     "shape": "(2, 1)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n6",
+     "op": "CONST",
+     "arg": "-1.0",
+     "shape": "()",
+     "dtype": "dtypes.weakfloat"
+    },
+    {
+     "id": "n7",
+     "op": "MUL",
+     "arg": "",
+     "shape": "(2, 1)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n8",
+     "op": "ADD",
+     "arg": "",
+     "shape": "(2, 3)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n9",
+     "op": "CONST",
+     "arg": "1.4426950408889634",
+     "shape": "()",
+     "dtype": "dtypes.weakfloat"
+    },
+    {
+     "id": "n10",
+     "op": "MUL",
+     "arg": "",
+     "shape": "(2, 3)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n11",
+     "op": "EXP2",
+     "arg": "",
+     "shape": "(2, 3)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n12",
+     "op": "PERMUTE",
+     "arg": "(1, 0)",
+     "shape": "(3, 2)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n13",
+     "op": "REDUCE",
+     "arg": "ADD, 1 axes",
+     "shape": "(2,)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n14",
+     "op": "RESHAPE",
+     "arg": "(2, 1)",
+     "shape": "(2, 1)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n15",
+     "op": "RECIP",
+     "arg": "",
+     "shape": "(2, 1)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n16",
+     "op": "MUL",
+     "arg": "",
+     "shape": "(2, 3)",
+     "dtype": "dtypes.f32"
+    }
+   ],
+   "edges": [
+    [
+     "n0",
+     "n1",
+     0
+    ],
+    [
+     "n1",
+     "n2",
+     0
+    ],
+    [
+     "n2",
+     "n3",
+     0
+    ],
+    [
+     "n3",
+     "n4",
+     0
+    ],
+    [
+     "n4",
+     "n5",
+     0
+    ],
+    [
+     "n5",
+     "n7",
+     0
+    ],
+    [
+     "n6",
+     "n7",
+     1
+    ],
+    [
+     "n1",
+     "n8",
+     0
+    ],
+    [
+     "n7",
+     "n8",
+     1
+    ],
+    [
+     "n8",
+     "n10",
+     0
+    ],
+    [
+     "n9",
+     "n10",
+     1
+    ],
+    [
+     "n10",
+     "n11",
+     0
+    ],
+    [
+     "n11",
+     "n12",
+     0
+    ],
+    [
+     "n12",
+     "n13",
+     0
+    ],
+    [
+     "n13",
+     "n14",
+     0
+    ],
+    [
+     "n14",
+     "n15",
+     0
+    ],
+    [
+     "n11",
+     "n16",
+     0
+    ],
+    [
+     "n15",
+     "n16",
+     1
+    ]
+   ]
+  },
+  "ops": {
+   "BUFFER": 1,
+   "RESHAPE": 3,
+   "PERMUTE": 2,
+   "REDUCE": 2,
+   "DETACH": 1,
+   "CONST": 2,
+   "MUL": 3,
+   "ADD": 1,
+   "EXP2": 1,
+   "RECIP": 1
+  },
+  "value": [
+   [
+    0.09003057330846786,
+    0.2447284758090973,
+    0.6652409434318542
+   ],
+   [
+    0.09003057330846786,
+    0.2447284758090973,
+    0.6652409434318542
+   ]
+  ]
+ },
+ {
+  "expr": "m.log_softmax()",
+  "where": "op.py log_softmax",
+  "shape": "(2, 3)",
+  "graph": {
+   "nodes": [
+    {
+     "id": "n0",
+     "op": "BUFFER",
+     "arg": "",
+     "shape": "(6,)",
+     "dtype": "dtypes.f32",
+     "label": "BUFFER m"
+    },
+    {
+     "id": "n1",
+     "op": "RESHAPE",
+     "arg": "(2, 3)",
+     "shape": "(2, 3)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n2",
+     "op": "PERMUTE",
+     "arg": "(1, 0)",
+     "shape": "(3, 2)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n3",
+     "op": "REDUCE",
+     "arg": "MAX, 1 axes",
+     "shape": "(2,)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n4",
+     "op": "RESHAPE",
+     "arg": "(2, 1)",
+     "shape": "(2, 1)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n5",
+     "op": "DETACH",
+     "arg": "",
+     "shape": "(2, 1)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n6",
+     "op": "CONST",
+     "arg": "-1.0",
+     "shape": "()",
+     "dtype": "dtypes.weakfloat"
+    },
+    {
+     "id": "n7",
+     "op": "MUL",
+     "arg": "",
+     "shape": "(2, 1)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n8",
+     "op": "ADD",
+     "arg": "",
+     "shape": "(2, 3)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n9",
+     "op": "CONST",
+     "arg": "1.4426950408889634",
+     "shape": "()",
+     "dtype": "dtypes.weakfloat"
+    },
+    {
+     "id": "n10",
+     "op": "MUL",
+     "arg": "",
+     "shape": "(2, 3)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n11",
+     "op": "EXP2",
+     "arg": "",
+     "shape": "(2, 3)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n12",
+     "op": "PERMUTE",
+     "arg": "(1, 0)",
+     "shape": "(3, 2)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n13",
+     "op": "REDUCE",
+     "arg": "ADD, 1 axes",
+     "shape": "(2,)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n14",
+     "op": "RESHAPE",
+     "arg": "(2, 1)",
+     "shape": "(2, 1)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n15",
+     "op": "LOG2",
+     "arg": "",
+     "shape": "(2, 1)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n16",
+     "op": "CONST",
+     "arg": "0.6931471805599453",
+     "shape": "()",
+     "dtype": "dtypes.weakfloat"
+    },
+    {
+     "id": "n17",
+     "op": "MUL",
+     "arg": "",
+     "shape": "(2, 1)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n18",
+     "op": "MUL",
+     "arg": "",
+     "shape": "(2, 1)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n19",
+     "op": "ADD",
+     "arg": "",
+     "shape": "(2, 3)",
+     "dtype": "dtypes.f32"
+    }
+   ],
+   "edges": [
+    [
+     "n0",
+     "n1",
+     0
+    ],
+    [
+     "n1",
+     "n2",
+     0
+    ],
+    [
+     "n2",
+     "n3",
+     0
+    ],
+    [
+     "n3",
+     "n4",
+     0
+    ],
+    [
+     "n4",
+     "n5",
+     0
+    ],
+    [
+     "n5",
+     "n7",
+     0
+    ],
+    [
+     "n6",
+     "n7",
+     1
+    ],
+    [
+     "n1",
+     "n8",
+     0
+    ],
+    [
+     "n7",
+     "n8",
+     1
+    ],
+    [
+     "n8",
+     "n10",
+     0
+    ],
+    [
+     "n9",
+     "n10",
+     1
+    ],
+    [
+     "n10",
+     "n11",
+     0
+    ],
+    [
+     "n11",
+     "n12",
+     0
+    ],
+    [
+     "n12",
+     "n13",
+     0
+    ],
+    [
+     "n13",
+     "n14",
+     0
+    ],
+    [
+     "n14",
+     "n15",
+     0
+    ],
+    [
+     "n15",
+     "n17",
+     0
+    ],
+    [
+     "n16",
+     "n17",
+     1
+    ],
+    [
+     "n17",
+     "n18",
+     0
+    ],
+    [
+     "n6",
+     "n18",
+     1
+    ],
+    [
+     "n8",
+     "n19",
+     0
+    ],
+    [
+     "n18",
+     "n19",
+     1
+    ]
+   ]
+  },
+  "ops": {
+   "BUFFER": 1,
+   "RESHAPE": 3,
+   "PERMUTE": 2,
+   "REDUCE": 2,
+   "DETACH": 1,
+   "CONST": 3,
+   "MUL": 4,
+   "ADD": 2,
+   "EXP2": 1,
+   "LOG2": 1
+  },
+  "value": [
+   [
+    -2.4076061248779297,
+    -1.4076060056686401,
+    -0.40760600566864014
+   ],
+   [
+    -2.4076061248779297,
+    -1.4076060056686401,
+    -0.40760600566864014
+   ]
+  ]
+ },
+ {
+  "expr": "m.layernorm()",
+  "where": "op.py layernorm",
+  "shape": "(2, 3)",
+  "graph": {
+   "nodes": [
+    {
+     "id": "n0",
+     "op": "BUFFER",
+     "arg": "",
+     "shape": "(6,)",
+     "dtype": "dtypes.f32",
+     "label": "BUFFER m"
+    },
+    {
+     "id": "n1",
+     "op": "RESHAPE",
+     "arg": "(2, 3)",
+     "shape": "(2, 3)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n2",
+     "op": "PERMUTE",
+     "arg": "(1, 0)",
+     "shape": "(3, 2)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n3",
+     "op": "REDUCE",
+     "arg": "ADD, 1 axes",
+     "shape": "(2,)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n4",
+     "op": "RESHAPE",
+     "arg": "(2, 1)",
+     "shape": "(2, 1)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n5",
+     "op": "CONST",
+     "arg": "3.0",
+     "shape": "()",
+     "dtype": "dtypes.weakfloat"
+    },
+    {
+     "id": "n6",
+     "op": "RECIP",
+     "arg": "",
+     "shape": "()",
+     "dtype": "dtypes.weakfloat"
+    },
+    {
+     "id": "n7",
+     "op": "MUL",
+     "arg": "",
+     "shape": "(2, 1)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n8",
+     "op": "CONST",
+     "arg": "-1.0",
+     "shape": "()",
+     "dtype": "dtypes.weakfloat"
+    },
+    {
+     "id": "n9",
+     "op": "MUL",
+     "arg": "",
+     "shape": "(2, 1)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n10",
+     "op": "ADD",
+     "arg": "",
+     "shape": "(2, 3)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n11",
+     "op": "MUL",
+     "arg": "",
+     "shape": "(2, 3)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n12",
+     "op": "PERMUTE",
+     "arg": "(1, 0)",
+     "shape": "(3, 2)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n13",
+     "op": "REDUCE",
+     "arg": "ADD, 1 axes",
+     "shape": "(2,)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n14",
+     "op": "RESHAPE",
+     "arg": "(2, 1)",
+     "shape": "(2, 1)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n15",
+     "op": "MUL",
+     "arg": "",
+     "shape": "(2, 1)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n16",
+     "op": "CONST",
+     "arg": "1e-05",
+     "shape": "()",
+     "dtype": "dtypes.weakfloat"
+    },
+    {
+     "id": "n17",
+     "op": "ADD",
+     "arg": "",
+     "shape": "(2, 1)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n18",
+     "op": "SQRT",
+     "arg": "",
+     "shape": "(2, 1)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n19",
+     "op": "RECIP",
+     "arg": "",
+     "shape": "(2, 1)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n20",
+     "op": "MUL",
+     "arg": "",
+     "shape": "(2, 3)",
+     "dtype": "dtypes.f32"
+    }
+   ],
+   "edges": [
+    [
+     "n0",
+     "n1",
+     0
+    ],
+    [
+     "n1",
+     "n2",
+     0
+    ],
+    [
+     "n2",
+     "n3",
+     0
+    ],
+    [
+     "n3",
+     "n4",
+     0
+    ],
+    [
+     "n5",
+     "n6",
+     0
+    ],
+    [
+     "n4",
+     "n7",
+     0
+    ],
+    [
+     "n6",
+     "n7",
+     1
+    ],
+    [
+     "n7",
+     "n9",
+     0
+    ],
+    [
+     "n8",
+     "n9",
+     1
+    ],
+    [
+     "n1",
+     "n10",
+     0
+    ],
+    [
+     "n9",
+     "n10",
+     1
+    ],
+    [
+     "n10",
+     "n11",
+     0
+    ],
+    [
+     "n10",
+     "n11",
+     1
+    ],
+    [
+     "n11",
+     "n12",
+     0
+    ],
+    [
+     "n12",
+     "n13",
+     0
+    ],
+    [
+     "n13",
+     "n14",
+     0
+    ],
+    [
+     "n14",
+     "n15",
+     0
+    ],
+    [
+     "n6",
+     "n15",
+     1
+    ],
+    [
+     "n15",
+     "n17",
+     0
+    ],
+    [
+     "n16",
+     "n17",
+     1
+    ],
+    [
+     "n17",
+     "n18",
+     0
+    ],
+    [
+     "n18",
+     "n19",
+     0
+    ],
+    [
+     "n10",
+     "n20",
+     0
+    ],
+    [
+     "n19",
+     "n20",
+     1
+    ]
+   ]
+  },
+  "ops": {
+   "BUFFER": 1,
+   "RESHAPE": 3,
+   "PERMUTE": 2,
+   "REDUCE": 2,
+   "CONST": 3,
+   "RECIP": 2,
+   "MUL": 5,
+   "ADD": 2,
+   "SQRT": 1
+  },
+  "value": [
+   [
+    -1.2247356176376343,
+    0.0,
+    1.2247356176376343
+   ],
+   [
+    -1.2247356176376343,
+    0.0,
+    1.2247356176376343
+   ]
+  ]
+ },
+ {
+  "expr": "m @ w",
+  "where": "op.py dot",
+  "shape": "(2, 2)",
+  "graph": {
+   "nodes": [
+    {
+     "id": "n0",
+     "op": "BUFFER",
+     "arg": "",
+     "shape": "(6,)",
+     "dtype": "dtypes.f32",
+     "label": "BUFFER m"
+    },
+    {
+     "id": "n1",
+     "op": "RESHAPE",
+     "arg": "(2, 3)",
+     "shape": "(2, 3)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n2",
+     "op": "RESHAPE",
+     "arg": "(2, 1, 3)",
+     "shape": "(2, 1, 3)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n3",
+     "op": "BUFFER",
+     "arg": "",
+     "shape": "(6,)",
+     "dtype": "dtypes.f32",
+     "label": "BUFFER w"
+    },
+    {
+     "id": "n4",
+     "op": "RESHAPE",
+     "arg": "(3, 2)",
+     "shape": "(3, 2)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n5",
+     "op": "RESHAPE",
+     "arg": "(1, 3, 2)",
+     "shape": "(1, 3, 2)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n6",
+     "op": "PERMUTE",
+     "arg": "(0, 2, 1)",
+     "shape": "(1, 2, 3)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n7",
+     "op": "MUL",
+     "arg": "",
+     "shape": "(2, 2, 3)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n8",
+     "op": "PERMUTE",
+     "arg": "(2, 0, 1)",
+     "shape": "(3, 2, 2)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n9",
+     "op": "REDUCE",
+     "arg": "ADD, 1 axes",
+     "shape": "(2, 2)",
+     "dtype": "dtypes.f32"
+    }
+   ],
+   "edges": [
+    [
+     "n0",
+     "n1",
+     0
+    ],
+    [
+     "n1",
+     "n2",
+     0
+    ],
+    [
+     "n3",
+     "n4",
+     0
+    ],
+    [
+     "n4",
+     "n5",
+     0
+    ],
+    [
+     "n5",
+     "n6",
+     0
+    ],
+    [
+     "n2",
+     "n7",
+     0
+    ],
+    [
+     "n6",
+     "n7",
+     1
+    ],
+    [
+     "n7",
+     "n8",
+     0
+    ],
+    [
+     "n8",
+     "n9",
+     0
+    ]
+   ]
+  },
+  "ops": {
+   "BUFFER": 2,
+   "RESHAPE": 4,
+   "PERMUTE": 2,
+   "MUL": 1,
+   "REDUCE": 1
+  },
+  "value": [
+   [
+    4.0,
+    5.0
+   ],
+   [
+    10.0,
+    11.0
+   ]
+  ]
+ },
+ {
+  "expr": "m.argmax(1)",
+  "where": "op.py argmax",
+  "shape": "(2,)",
+  "graph": {
+   "nodes": [
+    {
+     "id": "n0",
+     "op": "CONST",
+     "arg": "3",
+     "shape": "()",
+     "dtype": "dtypes.weakint"
+    },
+    {
+     "id": "n1",
+     "op": "BUFFER",
+     "arg": "",
+     "shape": "(6,)",
+     "dtype": "dtypes.f32",
+     "label": "BUFFER m"
+    },
+    {
+     "id": "n2",
+     "op": "RESHAPE",
+     "arg": "(2, 3)",
+     "shape": "(2, 3)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n3",
+     "op": "PERMUTE",
+     "arg": "(1, 0)",
+     "shape": "(3, 2)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n4",
+     "op": "REDUCE",
+     "arg": "MAX, 1 axes",
+     "shape": "(2,)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n5",
+     "op": "RESHAPE",
+     "arg": "(2, 1)",
+     "shape": "(2, 1)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n6",
+     "op": "CMPEQ",
+     "arg": "",
+     "shape": "(2, 3)",
+     "dtype": "dtypes.bool"
+    },
+    {
+     "id": "n7",
+     "op": "CAST",
+     "arg": "dtypes.i32",
+     "shape": "(2, 3)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n8",
+     "op": "CONST",
+     "arg": "-1",
+     "shape": "()",
+     "dtype": "dtypes.weakint"
+    },
+    {
+     "id": "n9",
+     "op": "CAST",
+     "arg": "dtypes.i32",
+     "shape": "()",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n10",
+     "op": "EXPAND",
+     "arg": "(3,)",
+     "shape": "(3,)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n11",
+     "op": "PAD",
+     "arg": "((2, 5),)",
+     "shape": "(5,)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n12",
+     "op": "RESHAPE",
+     "arg": "(1, 5)",
+     "shape": "(1, 5)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n13",
+     "op": "RESHAPE",
+     "arg": "(5,)",
+     "shape": "(5,)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n14",
+     "op": "CONST",
+     "arg": "4",
+     "shape": "()",
+     "dtype": "dtypes.weakint"
+    },
+    {
+     "id": "n15",
+     "op": "EXPAND",
+     "arg": "(4,)",
+     "shape": "(4, 5)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n16",
+     "op": "RESHAPE",
+     "arg": "(20,)",
+     "shape": "(20,)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n17",
+     "op": "SHRINK",
+     "arg": "((0, 18),)",
+     "shape": "(18,)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n18",
+     "op": "RESHAPE",
+     "arg": "(3, 6)",
+     "shape": "(3, 6)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n19",
+     "op": "SHRINK",
+     "arg": "((0, 3), (0, 3))",
+     "shape": "(3, 3)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n20",
+     "op": "RESHAPE",
+     "arg": "(3, 3, 1)",
+     "shape": "(3, 3, 1)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n21",
+     "op": "RESHAPE",
+     "arg": "(3, 3)",
+     "shape": "(3, 3)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n22",
+     "op": "PERMUTE",
+     "arg": "(1, 0)",
+     "shape": "(3, 3)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n23",
+     "op": "PERMUTE",
+     "arg": "(1, 0)",
+     "shape": "(3, 3)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n24",
+     "op": "REDUCE",
+     "arg": "ADD, 1 axes",
+     "shape": "(3,)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n25",
+     "op": "ADD",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n26",
+     "op": "MUL",
+     "arg": "",
+     "shape": "(2, 3)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n27",
+     "op": "PERMUTE",
+     "arg": "(1, 0)",
+     "shape": "(3, 2)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n28",
+     "op": "REDUCE",
+     "arg": "MAX, 1 axes",
+     "shape": "(2,)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n29",
+     "op": "MUL",
+     "arg": "",
+     "shape": "(2,)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n30",
+     "op": "ADD",
+     "arg": "",
+     "shape": "(2,)",
+     "dtype": "dtypes.i32"
+    }
+   ],
+   "edges": [
+    [
+     "n1",
+     "n2",
+     0
+    ],
+    [
+     "n2",
+     "n3",
+     0
+    ],
+    [
+     "n3",
+     "n4",
+     0
+    ],
+    [
+     "n4",
+     "n5",
+     0
+    ],
+    [
+     "n2",
+     "n6",
+     0
+    ],
+    [
+     "n5",
+     "n6",
+     1
+    ],
+    [
+     "n6",
+     "n7",
+     0
+    ],
+    [
+     "n8",
+     "n9",
+     0
+    ],
+    [
+     "n9",
+     "n10",
+     0
+    ],
+    [
+     "n0",
+     "n10",
+     1
+    ],
+    [
+     "n10",
+     "n11",
+     0
+    ],
+    [
+     "n11",
+     "n12",
+     0
+    ],
+    [
+     "n12",
+     "n13",
+     0
+    ],
+    [
+     "n13",
+     "n15",
+     0
+    ],
+    [
+     "n14",
+     "n15",
+     1
+    ],
+    [
+     "n15",
+     "n16",
+     0
+    ],
+    [
+     "n16",
+     "n17",
+     0
+    ],
+    [
+     "n17",
+     "n18",
+     0
+    ],
+    [
+     "n18",
+     "n19",
+     0
+    ],
+    [
+     "n19",
+     "n20",
+     0
+    ],
+    [
+     "n20",
+     "n21",
+     0
+    ],
+    [
+     "n21",
+     "n22",
+     0
+    ],
+    [
+     "n22",
+     "n23",
+     0
+    ],
+    [
+     "n23",
+     "n24",
+     0
+    ],
+    [
+     "n24",
+     "n25",
+     0
+    ],
+    [
+     "n14",
+     "n25",
+     1
+    ],
+    [
+     "n7",
+     "n26",
+     0
+    ],
+    [
+     "n25",
+     "n26",
+     1
+    ],
+    [
+     "n26",
+     "n27",
+     0
+    ],
+    [
+     "n27",
+     "n28",
+     0
+    ],
+    [
+     "n28",
+     "n29",
+     0
+    ],
+    [
+     "n8",
+     "n29",
+     1
+    ],
+    [
+     "n0",
+     "n30",
+     0
+    ],
+    [
+     "n29",
+     "n30",
+     1
+    ]
+   ]
+  },
+  "ops": {
+   "CONST": 3,
+   "BUFFER": 1,
+   "RESHAPE": 8,
+   "PERMUTE": 4,
+   "REDUCE": 3,
+   "CMPEQ": 1,
+   "CAST": 2,
+   "EXPAND": 2,
+   "PAD": 1,
+   "SHRINK": 2,
+   "ADD": 2,
+   "MUL": 2
+  },
+  "value": [
+   2,
+   2
+  ]
+ },
+ {
+  "expr": "m.cumsum(1)",
+  "where": "op.py cumsum",
+  "shape": "(2, 3)",
+  "graph": {
+   "nodes": [
+    {
+     "id": "n0",
+     "op": "BUFFER",
+     "arg": "",
+     "shape": "(6,)",
+     "dtype": "dtypes.f32",
+     "label": "BUFFER m"
+    },
+    {
+     "id": "n1",
+     "op": "RESHAPE",
+     "arg": "(2, 3)",
+     "shape": "(2, 3)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n2",
+     "op": "PAD",
+     "arg": "((0, 2), (2, 5))",
+     "shape": "(2, 5)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n3",
+     "op": "RESHAPE",
+     "arg": "(2, 1, 5)",
+     "shape": "(2, 1, 5)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n4",
+     "op": "RESHAPE",
+     "arg": "(2, 5)",
+     "shape": "(2, 5)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n5",
+     "op": "EXPAND",
+     "arg": "(4,)",
+     "shape": "(4, 2, 5)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n6",
+     "op": "PERMUTE",
+     "arg": "(1, 0, 2)",
+     "shape": "(2, 4, 5)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n7",
+     "op": "RESHAPE",
+     "arg": "(2, 20)",
+     "shape": "(2, 20)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n8",
+     "op": "SHRINK",
+     "arg": "((0, 2), (0, 18))",
+     "shape": "(2, 18)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n9",
+     "op": "RESHAPE",
+     "arg": "(2, 3, 6)",
+     "shape": "(2, 3, 6)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n10",
+     "op": "SHRINK",
+     "arg": "((0, 2), (0, 3), (0, 3))",
+     "shape": "(2, 3, 3)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n11",
+     "op": "RESHAPE",
+     "arg": "(2, 3, 3, 1)",
+     "shape": "(2, 3, 3, 1)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n12",
+     "op": "RESHAPE",
+     "arg": "(2, 3, 3)",
+     "shape": "(2, 3, 3)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n13",
+     "op": "PERMUTE",
+     "arg": "(0, 2, 1)",
+     "shape": "(2, 3, 3)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n14",
+     "op": "PERMUTE",
+     "arg": "(2, 0, 1)",
+     "shape": "(3, 2, 3)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n15",
+     "op": "REDUCE",
+     "arg": "ADD, 1 axes",
+     "shape": "(2, 3)",
+     "dtype": "dtypes.f32"
+    }
+   ],
+   "edges": [
+    [
+     "n0",
+     "n1",
+     0
+    ],
+    [
+     "n1",
+     "n2",
+     0
+    ],
+    [
+     "n2",
+     "n3",
+     0
+    ],
+    [
+     "n3",
+     "n4",
+     0
+    ],
+    [
+     "n4",
+     "n5",
+     0
+    ],
+    [
+     "n5",
+     "n6",
+     0
+    ],
+    [
+     "n6",
+     "n7",
+     0
+    ],
+    [
+     "n7",
+     "n8",
+     0
+    ],
+    [
+     "n8",
+     "n9",
+     0
+    ],
+    [
+     "n9",
+     "n10",
+     0
+    ],
+    [
+     "n10",
+     "n11",
+     0
+    ],
+    [
+     "n11",
+     "n12",
+     0
+    ],
+    [
+     "n12",
+     "n13",
+     0
+    ],
+    [
+     "n13",
+     "n14",
+     0
+    ],
+    [
+     "n14",
+     "n15",
+     0
+    ]
+   ]
+  },
+  "ops": {
+   "BUFFER": 1,
+   "RESHAPE": 7,
+   "PAD": 1,
+   "EXPAND": 1,
+   "PERMUTE": 3,
+   "SHRINK": 2,
+   "REDUCE": 1
+  },
+  "value": [
+   [
+    1.0,
+    3.0,
+    6.0
+   ],
+   [
+    4.0,
+    9.0,
+    15.0
+   ]
+  ]
+ },
+ {
+  "expr": "Tensor.arange(4)",
+  "where": "op.py arange",
+  "shape": "(4,)",
+  "graph": {
+   "nodes": [
+    {
+     "id": "n0",
+     "op": "CONST",
+     "arg": "1",
+     "shape": "()",
+     "dtype": "dtypes.weakint"
+    },
+    {
+     "id": "n1",
+     "op": "CAST",
+     "arg": "dtypes.i32",
+     "shape": "()",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n2",
+     "op": "EXPAND",
+     "arg": "(4,)",
+     "shape": "(4,)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n3",
+     "op": "PAD",
+     "arg": "((3, 7),)",
+     "shape": "(7,)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n4",
+     "op": "RESHAPE",
+     "arg": "(1, 7)",
+     "shape": "(1, 7)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n5",
+     "op": "RESHAPE",
+     "arg": "(7,)",
+     "shape": "(7,)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n6",
+     "op": "EXPAND",
+     "arg": "(5,)",
+     "shape": "(5, 7)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n7",
+     "op": "RESHAPE",
+     "arg": "(35,)",
+     "shape": "(35,)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n8",
+     "op": "SHRINK",
+     "arg": "((0, 32),)",
+     "shape": "(32,)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n9",
+     "op": "RESHAPE",
+     "arg": "(4, 8)",
+     "shape": "(4, 8)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n10",
+     "op": "SHRINK",
+     "arg": "((0, 4), (0, 4))",
+     "shape": "(4, 4)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n11",
+     "op": "RESHAPE",
+     "arg": "(4, 4, 1)",
+     "shape": "(4, 4, 1)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n12",
+     "op": "RESHAPE",
+     "arg": "(4, 4)",
+     "shape": "(4, 4)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n13",
+     "op": "PERMUTE",
+     "arg": "(1, 0)",
+     "shape": "(4, 4)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n14",
+     "op": "PERMUTE",
+     "arg": "(1, 0)",
+     "shape": "(4, 4)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n15",
+     "op": "REDUCE",
+     "arg": "ADD, 1 axes",
+     "shape": "(4,)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n16",
+     "op": "CONST",
+     "arg": "-1",
+     "shape": "()",
+     "dtype": "dtypes.weakint"
+    },
+    {
+     "id": "n17",
+     "op": "ADD",
+     "arg": "",
+     "shape": "(4,)",
+     "dtype": "dtypes.i32"
+    }
+   ],
+   "edges": [
+    [
+     "n0",
+     "n1",
+     0
+    ],
+    [
+     "n1",
+     "n2",
+     0
+    ],
+    [
+     "n2",
+     "n3",
+     0
+    ],
+    [
+     "n3",
+     "n4",
+     0
+    ],
+    [
+     "n4",
+     "n5",
+     0
+    ],
+    [
+     "n5",
+     "n6",
+     0
+    ],
+    [
+     "n6",
+     "n7",
+     0
+    ],
+    [
+     "n7",
+     "n8",
+     0
+    ],
+    [
+     "n8",
+     "n9",
+     0
+    ],
+    [
+     "n9",
+     "n10",
+     0
+    ],
+    [
+     "n10",
+     "n11",
+     0
+    ],
+    [
+     "n11",
+     "n12",
+     0
+    ],
+    [
+     "n12",
+     "n13",
+     0
+    ],
+    [
+     "n13",
+     "n14",
+     0
+    ],
+    [
+     "n14",
+     "n15",
+     0
+    ],
+    [
+     "n15",
+     "n17",
+     0
+    ],
+    [
+     "n16",
+     "n17",
+     1
+    ]
+   ]
+  },
+  "ops": {
+   "CONST": 2,
+   "CAST": 1,
+   "EXPAND": 2,
+   "PAD": 1,
+   "RESHAPE": 6,
+   "SHRINK": 2,
+   "PERMUTE": 2,
+   "REDUCE": 1,
+   "ADD": 1
+  },
+  "value": [
+   0,
+   1,
+   2,
+   3
+  ]
+ },
+ {
+  "expr": "idx.one_hot(3)",
+  "where": "op.py one_hot",
+  "shape": "(2, 3)",
+  "graph": {
+   "nodes": [
+    {
+     "id": "n0",
+     "op": "BUFFER",
+     "arg": "",
+     "shape": "(2,)",
+     "dtype": "dtypes.i32",
+     "label": "BUFFER idx"
+    },
+    {
+     "id": "n1",
+     "op": "CONST",
+     "arg": "1",
+     "shape": "()",
+     "dtype": "dtypes.weakint"
+    },
+    {
+     "id": "n2",
+     "op": "RESHAPE",
+     "arg": "(2, 1)",
+     "shape": "(2, 1)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n3",
+     "op": "CAST",
+     "arg": "dtypes.i32",
+     "shape": "()",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n4",
+     "op": "EXPAND",
+     "arg": "(3,)",
+     "shape": "(3,)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n5",
+     "op": "PAD",
+     "arg": "((2, 5),)",
+     "shape": "(5,)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n6",
+     "op": "RESHAPE",
+     "arg": "(1, 5)",
+     "shape": "(1, 5)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n7",
+     "op": "RESHAPE",
+     "arg": "(5,)",
+     "shape": "(5,)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n8",
+     "op": "EXPAND",
+     "arg": "(4,)",
+     "shape": "(4, 5)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n9",
+     "op": "RESHAPE",
+     "arg": "(20,)",
+     "shape": "(20,)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n10",
+     "op": "CONST",
+     "arg": "0",
+     "shape": "()",
+     "dtype": "dtypes.weakint"
+    },
+    {
+     "id": "n11",
+     "op": "SHRINK",
+     "arg": "((0, 18),)",
+     "shape": "(18,)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n12",
+     "op": "RESHAPE",
+     "arg": "(3, 6)",
+     "shape": "(3, 6)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n13",
+     "op": "SHRINK",
+     "arg": "((0, 3), (0, 3))",
+     "shape": "(3, 3)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n14",
+     "op": "RESHAPE",
+     "arg": "(3, 3, 1)",
+     "shape": "(3, 3, 1)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n15",
+     "op": "RESHAPE",
+     "arg": "(3, 3)",
+     "shape": "(3, 3)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n16",
+     "op": "PERMUTE",
+     "arg": "(1, 0)",
+     "shape": "(3, 3)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n17",
+     "op": "PERMUTE",
+     "arg": "(1, 0)",
+     "shape": "(3, 3)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n18",
+     "op": "REDUCE",
+     "arg": "ADD, 1 axes",
+     "shape": "(3,)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n19",
+     "op": "CONST",
+     "arg": "-1",
+     "shape": "()",
+     "dtype": "dtypes.weakint"
+    },
+    {
+     "id": "n20",
+     "op": "ADD",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n21",
+     "op": "CMPEQ",
+     "arg": "",
+     "shape": "(2, 3)",
+     "dtype": "dtypes.bool"
+    },
+    {
+     "id": "n22",
+     "op": "WHERE",
+     "arg": "",
+     "shape": "(2, 3)",
+     "dtype": "dtypes.weakint"
+    }
+   ],
+   "edges": [
+    [
+     "n0",
+     "n2",
+     0
+    ],
+    [
+     "n1",
+     "n3",
+     0
+    ],
+    [
+     "n3",
+     "n4",
+     0
+    ],
+    [
+     "n4",
+     "n5",
+     0
+    ],
+    [
+     "n5",
+     "n6",
+     0
+    ],
+    [
+     "n6",
+     "n7",
+     0
+    ],
+    [
+     "n7",
+     "n8",
+     0
+    ],
+    [
+     "n8",
+     "n9",
+     0
+    ],
+    [
+     "n9",
+     "n11",
+     0
+    ],
+    [
+     "n10",
+     "n11",
+     1
+    ],
+    [
+     "n11",
+     "n12",
+     0
+    ],
+    [
+     "n12",
+     "n13",
+     0
+    ],
+    [
+     "n13",
+     "n14",
+     0
+    ],
+    [
+     "n14",
+     "n15",
+     0
+    ],
+    [
+     "n15",
+     "n16",
+     0
+    ],
+    [
+     "n16",
+     "n17",
+     0
+    ],
+    [
+     "n17",
+     "n18",
+     0
+    ],
+    [
+     "n18",
+     "n20",
+     0
+    ],
+    [
+     "n19",
+     "n20",
+     1
+    ],
+    [
+     "n2",
+     "n21",
+     0
+    ],
+    [
+     "n20",
+     "n21",
+     1
+    ],
+    [
+     "n21",
+     "n22",
+     0
+    ],
+    [
+     "n1",
+     "n22",
+     1
+    ],
+    [
+     "n10",
+     "n22",
+     2
+    ]
+   ]
+  },
+  "ops": {
+   "BUFFER": 1,
+   "CONST": 3,
+   "RESHAPE": 7,
+   "CAST": 1,
+   "EXPAND": 2,
+   "PAD": 1,
+   "SHRINK": 2,
+   "PERMUTE": 2,
+   "REDUCE": 1,
+   "ADD": 1,
+   "CMPEQ": 1,
+   "WHERE": 1
+  },
+  "value": [
+   [
+    0,
+    0,
+    1
+   ],
+   [
+    1,
+    0,
+    0
+   ]
+  ]
+ },
+ {
+  "expr": "m.gather(1, idx[:,None])",
+  "where": "op.py gather",
+  "shape": "(2, 1)",
+  "graph": {
+   "nodes": [
+    {
+     "id": "n0",
+     "op": "BUFFER",
+     "arg": "",
+     "shape": "(2,)",
+     "dtype": "dtypes.i32",
+     "label": "BUFFER idx"
+    },
+    {
+     "id": "n1",
+     "op": "CONST",
+     "arg": "1",
+     "shape": "()",
+     "dtype": "dtypes.weakint"
+    },
+    {
+     "id": "n2",
+     "op": "RESHAPE",
+     "arg": "(2, 1)",
+     "shape": "(2, 1)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n3",
+     "op": "RESHAPE",
+     "arg": "(2, 1, 1)",
+     "shape": "(2, 1, 1)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n4",
+     "op": "CAST",
+     "arg": "dtypes.i32",
+     "shape": "()",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n5",
+     "op": "EXPAND",
+     "arg": "(3,)",
+     "shape": "(3,)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n6",
+     "op": "PAD",
+     "arg": "((2, 5),)",
+     "shape": "(5,)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n7",
+     "op": "RESHAPE",
+     "arg": "(1, 5)",
+     "shape": "(1, 5)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n8",
+     "op": "RESHAPE",
+     "arg": "(5,)",
+     "shape": "(5,)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n9",
+     "op": "EXPAND",
+     "arg": "(4,)",
+     "shape": "(4, 5)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n10",
+     "op": "RESHAPE",
+     "arg": "(20,)",
+     "shape": "(20,)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n11",
+     "op": "SHRINK",
+     "arg": "((0, 18),)",
+     "shape": "(18,)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n12",
+     "op": "RESHAPE",
+     "arg": "(3, 6)",
+     "shape": "(3, 6)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n13",
+     "op": "SHRINK",
+     "arg": "((0, 3), (0, 3))",
+     "shape": "(3, 3)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n14",
+     "op": "RESHAPE",
+     "arg": "(3, 3, 1)",
+     "shape": "(3, 3, 1)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n15",
+     "op": "RESHAPE",
+     "arg": "(3, 3)",
+     "shape": "(3, 3)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n16",
+     "op": "PERMUTE",
+     "arg": "(1, 0)",
+     "shape": "(3, 3)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n17",
+     "op": "PERMUTE",
+     "arg": "(1, 0)",
+     "shape": "(3, 3)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n18",
+     "op": "REDUCE",
+     "arg": "ADD, 1 axes",
+     "shape": "(3,)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n19",
+     "op": "CONST",
+     "arg": "-1",
+     "shape": "()",
+     "dtype": "dtypes.weakint"
+    },
+    {
+     "id": "n20",
+     "op": "ADD",
+     "arg": "",
+     "shape": "(3,)",
+     "dtype": "dtypes.i32"
+    },
+    {
+     "id": "n21",
+     "op": "CMPEQ",
+     "arg": "",
+     "shape": "(2, 1, 3)",
+     "dtype": "dtypes.bool"
+    },
+    {
+     "id": "n22",
+     "op": "BUFFER",
+     "arg": "",
+     "shape": "(6,)",
+     "dtype": "dtypes.f32",
+     "label": "BUFFER m"
+    },
+    {
+     "id": "n23",
+     "op": "RESHAPE",
+     "arg": "(2, 3)",
+     "shape": "(2, 3)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n24",
+     "op": "RESHAPE",
+     "arg": "(2, 3, 1)",
+     "shape": "(2, 3, 1)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n25",
+     "op": "PERMUTE",
+     "arg": "(0, 2, 1)",
+     "shape": "(2, 1, 3)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n26",
+     "op": "CONST",
+     "arg": "0.0",
+     "shape": "()",
+     "dtype": "dtypes.weakfloat"
+    },
+    {
+     "id": "n27",
+     "op": "WHERE",
+     "arg": "",
+     "shape": "(2, 1, 3)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n28",
+     "op": "PERMUTE",
+     "arg": "(2, 0, 1)",
+     "shape": "(3, 2, 1)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n29",
+     "op": "REDUCE",
+     "arg": "ADD, 1 axes",
+     "shape": "(2, 1)",
+     "dtype": "dtypes.f32"
+    }
+   ],
+   "edges": [
+    [
+     "n0",
+     "n2",
+     0
+    ],
+    [
+     "n2",
+     "n3",
+     0
+    ],
+    [
+     "n1",
+     "n4",
+     0
+    ],
+    [
+     "n4",
+     "n5",
+     0
+    ],
+    [
+     "n5",
+     "n6",
+     0
+    ],
+    [
+     "n6",
+     "n7",
+     0
+    ],
+    [
+     "n7",
+     "n8",
+     0
+    ],
+    [
+     "n8",
+     "n9",
+     0
+    ],
+    [
+     "n9",
+     "n10",
+     0
+    ],
+    [
+     "n10",
+     "n11",
+     0
+    ],
+    [
+     "n11",
+     "n12",
+     0
+    ],
+    [
+     "n12",
+     "n13",
+     0
+    ],
+    [
+     "n13",
+     "n14",
+     0
+    ],
+    [
+     "n14",
+     "n15",
+     0
+    ],
+    [
+     "n15",
+     "n16",
+     0
+    ],
+    [
+     "n16",
+     "n17",
+     0
+    ],
+    [
+     "n17",
+     "n18",
+     0
+    ],
+    [
+     "n18",
+     "n20",
+     0
+    ],
+    [
+     "n19",
+     "n20",
+     1
+    ],
+    [
+     "n3",
+     "n21",
+     0
+    ],
+    [
+     "n20",
+     "n21",
+     1
+    ],
+    [
+     "n22",
+     "n23",
+     0
+    ],
+    [
+     "n23",
+     "n24",
+     0
+    ],
+    [
+     "n24",
+     "n25",
+     0
+    ],
+    [
+     "n21",
+     "n27",
+     0
+    ],
+    [
+     "n25",
+     "n27",
+     1
+    ],
+    [
+     "n26",
+     "n27",
+     2
+    ],
+    [
+     "n27",
+     "n28",
+     0
+    ],
+    [
+     "n28",
+     "n29",
+     0
+    ]
+   ]
+  },
+  "ops": {
+   "BUFFER": 2,
+   "CONST": 3,
+   "RESHAPE": 10,
+   "CAST": 1,
+   "EXPAND": 2,
+   "PAD": 1,
+   "SHRINK": 2,
+   "PERMUTE": 4,
+   "REDUCE": 2,
+   "ADD": 1,
+   "CMPEQ": 1,
+   "WHERE": 1
+  },
+  "value": [
+   [
+    3.0
+   ],
+   [
+    4.0
+   ]
+  ]
+ },
+ {
+  "expr": "img.conv2d(k)",
+  "where": "op.py conv2d",
+  "shape": "(1, 1, 3, 3)",
+  "graph": {
+   "nodes": [
+    {
+     "id": "n0",
+     "op": "BUFFER",
+     "arg": "",
+     "shape": "(16,)",
+     "dtype": "dtypes.f32",
+     "label": "BUFFER img"
+    },
+    {
+     "id": "n1",
+     "op": "RESHAPE",
+     "arg": "(1, 1, 4, 4)",
+     "shape": "(1, 1, 4, 4)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n2",
+     "op": "RESHAPE",
+     "arg": "(1, 1, 1, 4, 1, 4)",
+     "shape": "(1, 1, 1, 4, 1, 4)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n3",
+     "op": "RESHAPE",
+     "arg": "(1, 1, 4, 4)",
+     "shape": "(1, 1, 4, 4)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n4",
+     "op": "EXPAND",
+     "arg": "(3, 3)",
+     "shape": "(3, 3, 1, 1, 4, 4)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n5",
+     "op": "PERMUTE",
+     "arg": "(2, 3, 0, 4, 1, 5)",
+     "shape": "(1, 1, 3, 4, 3, 4)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n6",
+     "op": "RESHAPE",
+     "arg": "(1, 1, 12, 12)",
+     "shape": "(1, 1, 12, 12)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n7",
+     "op": "SHRINK",
+     "arg": "((0, 1), (0, 1), (0, 10), (0, 10))",
+     "shape": "(1, 1, 10, 10)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n8",
+     "op": "RESHAPE",
+     "arg": "(1, 1, 2, 5, 2, 5)",
+     "shape": "(1, 1, 2, 5, 2, 5)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n9",
+     "op": "SHRINK",
+     "arg": "((0, 1), (0, 1), (0, 2), (0, 3), (0, 2),",
+     "shape": "(1, 1, 2, 3, 2, 3)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n10",
+     "op": "RESHAPE",
+     "arg": "(1, 1, 2, 3, 1, 2, 3, 1)",
+     "shape": "(1, 1, 2, 3, 1, 2, 3, 1)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n11",
+     "op": "RESHAPE",
+     "arg": "(1, 1, 2, 3, 2, 3)",
+     "shape": "(1, 1, 2, 3, 2, 3)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n12",
+     "op": "PERMUTE",
+     "arg": "(0, 1, 3, 5, 2, 4)",
+     "shape": "(1, 1, 3, 3, 2, 2)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n13",
+     "op": "RESHAPE",
+     "arg": "(1, 1, 1, 1, 3, 3, 2, 2)",
+     "shape": "(1, 1, 1, 1, 3, 3, 2, 2)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n14",
+     "op": "PERMUTE",
+     "arg": "(0, 1, 3, 4, 5, 2, 6, 7)",
+     "shape": "(1, 1, 1, 3, 3, 1, 2, 2)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n15",
+     "op": "BUFFER",
+     "arg": "",
+     "shape": "(4,)",
+     "dtype": "dtypes.f32",
+     "label": "BUFFER k"
+    },
+    {
+     "id": "n16",
+     "op": "RESHAPE",
+     "arg": "(1, 1, 2, 2)",
+     "shape": "(1, 1, 2, 2)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n17",
+     "op": "RESHAPE",
+     "arg": "(1, 1, 1, 1, 1, 1, 2, 2)",
+     "shape": "(1, 1, 1, 1, 1, 1, 2, 2)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n18",
+     "op": "MUL",
+     "arg": "",
+     "shape": "(1, 1, 1, 3, 3, 1, 2, 2)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n19",
+     "op": "PERMUTE",
+     "arg": "(6, 7, 0, 1, 2, 3, 4, 5)",
+     "shape": "(2, 2, 1, 1, 1, 3, 3, 1)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n20",
+     "op": "REDUCE",
+     "arg": "ADD, 2 axes",
+     "shape": "(1, 1, 1, 3, 3, 1)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n21",
+     "op": "RESHAPE",
+     "arg": "(1, 1, 1, 3, 3)",
+     "shape": "(1, 1, 1, 3, 3)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n22",
+     "op": "RESHAPE",
+     "arg": "(1, 1, 1, 3, 3, 1, 1, 1)",
+     "shape": "(1, 1, 1, 3, 3, 1, 1, 1)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n23",
+     "op": "RESHAPE",
+     "arg": "(1, 1, 3, 3)",
+     "shape": "(1, 1, 3, 3)",
+     "dtype": "dtypes.f32"
+    }
+   ],
+   "edges": [
+    [
+     "n0",
+     "n1",
+     0
+    ],
+    [
+     "n1",
+     "n2",
+     0
+    ],
+    [
+     "n2",
+     "n3",
+     0
+    ],
+    [
+     "n3",
+     "n4",
+     0
+    ],
+    [
+     "n4",
+     "n5",
+     0
+    ],
+    [
+     "n5",
+     "n6",
+     0
+    ],
+    [
+     "n6",
+     "n7",
+     0
+    ],
+    [
+     "n7",
+     "n8",
+     0
+    ],
+    [
+     "n8",
+     "n9",
+     0
+    ],
+    [
+     "n9",
+     "n10",
+     0
+    ],
+    [
+     "n10",
+     "n11",
+     0
+    ],
+    [
+     "n11",
+     "n12",
+     0
+    ],
+    [
+     "n12",
+     "n13",
+     0
+    ],
+    [
+     "n13",
+     "n14",
+     0
+    ],
+    [
+     "n15",
+     "n16",
+     0
+    ],
+    [
+     "n16",
+     "n17",
+     0
+    ],
+    [
+     "n14",
+     "n18",
+     0
+    ],
+    [
+     "n17",
+     "n18",
+     1
+    ],
+    [
+     "n18",
+     "n19",
+     0
+    ],
+    [
+     "n19",
+     "n20",
+     0
+    ],
+    [
+     "n20",
+     "n21",
+     0
+    ],
+    [
+     "n21",
+     "n22",
+     0
+    ],
+    [
+     "n22",
+     "n23",
+     0
+    ]
+   ]
+  },
+  "ops": {
+   "BUFFER": 2,
+   "RESHAPE": 13,
+   "EXPAND": 1,
+   "PERMUTE": 4,
+   "SHRINK": 2,
+   "MUL": 1,
+   "REDUCE": 1
+  },
+  "value": [
+   [
+    [
+     [
+      5.0,
+      7.0,
+      9.0
+     ],
+     [
+      13.0,
+      15.0,
+      17.0
+     ],
+     [
+      21.0,
+      23.0,
+      25.0
+     ]
+    ]
+   ]
+  ]
+ },
+ {
+  "expr": "img.max_pool2d()",
+  "where": "op.py max_pool2d",
+  "shape": "(1, 1, 2, 2)",
+  "graph": {
+   "nodes": [
+    {
+     "id": "n0",
+     "op": "CONST",
+     "arg": "True",
+     "shape": "()",
+     "dtype": "dtypes.bool"
+    },
+    {
+     "id": "n1",
+     "op": "EXPAND",
+     "arg": "(1, 1, 4, 4)",
+     "shape": "(1, 1, 4, 4)",
+     "dtype": "dtypes.bool"
+    },
+    {
+     "id": "n2",
+     "op": "BUFFER",
+     "arg": "",
+     "shape": "(16,)",
+     "dtype": "dtypes.f32",
+     "label": "BUFFER img"
+    },
+    {
+     "id": "n3",
+     "op": "RESHAPE",
+     "arg": "(1, 1, 4, 4)",
+     "shape": "(1, 1, 4, 4)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n4",
+     "op": "CONST",
+     "arg": "-inf",
+     "shape": "()",
+     "dtype": "dtypes.weakfloat"
+    },
+    {
+     "id": "n5",
+     "op": "WHERE",
+     "arg": "",
+     "shape": "(1, 1, 4, 4)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n6",
+     "op": "RESHAPE",
+     "arg": "(1, 1, 1, 4, 1, 4)",
+     "shape": "(1, 1, 1, 4, 1, 4)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n7",
+     "op": "RESHAPE",
+     "arg": "(1, 1, 4, 4)",
+     "shape": "(1, 1, 4, 4)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n8",
+     "op": "EXPAND",
+     "arg": "(3, 3)",
+     "shape": "(3, 3, 1, 1, 4, 4)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n9",
+     "op": "PERMUTE",
+     "arg": "(2, 3, 0, 4, 1, 5)",
+     "shape": "(1, 1, 3, 4, 3, 4)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n10",
+     "op": "RESHAPE",
+     "arg": "(1, 1, 12, 12)",
+     "shape": "(1, 1, 12, 12)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n11",
+     "op": "SHRINK",
+     "arg": "((0, 1), (0, 1), (0, 10), (0, 10))",
+     "shape": "(1, 1, 10, 10)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n12",
+     "op": "RESHAPE",
+     "arg": "(1, 1, 2, 5, 2, 5)",
+     "shape": "(1, 1, 2, 5, 2, 5)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n13",
+     "op": "SHRINK",
+     "arg": "((0, 1), (0, 1), (0, 2), (0, 4), (0, 2),",
+     "shape": "(1, 1, 2, 4, 2, 4)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n14",
+     "op": "RESHAPE",
+     "arg": "(1, 1, 2, 2, 2, 2, 2, 2)",
+     "shape": "(1, 1, 2, 2, 2, 2, 2, 2)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n15",
+     "op": "SHRINK",
+     "arg": "((0, 1), (0, 1), (0, 2), (0, 2), (0, 1),",
+     "shape": "(1, 1, 2, 2, 1, 2, 2, 1)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n16",
+     "op": "RESHAPE",
+     "arg": "(1, 1, 2, 2, 2, 2)",
+     "shape": "(1, 1, 2, 2, 2, 2)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n17",
+     "op": "PERMUTE",
+     "arg": "(0, 1, 3, 5, 2, 4)",
+     "shape": "(1, 1, 2, 2, 2, 2)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n18",
+     "op": "PERMUTE",
+     "arg": "(4, 5, 0, 1, 2, 3)",
+     "shape": "(2, 2, 1, 1, 2, 2)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n19",
+     "op": "REDUCE",
+     "arg": "MAX, 2 axes",
+     "shape": "(1, 1, 2, 2)",
+     "dtype": "dtypes.f32"
+    }
+   ],
+   "edges": [
+    [
+     "n0",
+     "n1",
+     0
+    ],
+    [
+     "n2",
+     "n3",
+     0
+    ],
+    [
+     "n1",
+     "n5",
+     0
+    ],
+    [
+     "n3",
+     "n5",
+     1
+    ],
+    [
+     "n4",
+     "n5",
+     2
+    ],
+    [
+     "n5",
+     "n6",
+     0
+    ],
+    [
+     "n6",
+     "n7",
+     0
+    ],
+    [
+     "n7",
+     "n8",
+     0
+    ],
+    [
+     "n8",
+     "n9",
+     0
+    ],
+    [
+     "n9",
+     "n10",
+     0
+    ],
+    [
+     "n10",
+     "n11",
+     0
+    ],
+    [
+     "n11",
+     "n12",
+     0
+    ],
+    [
+     "n12",
+     "n13",
+     0
+    ],
+    [
+     "n13",
+     "n14",
+     0
+    ],
+    [
+     "n14",
+     "n15",
+     0
+    ],
+    [
+     "n15",
+     "n16",
+     0
+    ],
+    [
+     "n16",
+     "n17",
+     0
+    ],
+    [
+     "n17",
+     "n18",
+     0
+    ],
+    [
+     "n18",
+     "n19",
+     0
+    ]
+   ]
+  },
+  "ops": {
+   "CONST": 2,
+   "EXPAND": 2,
+   "BUFFER": 1,
+   "RESHAPE": 7,
+   "WHERE": 1,
+   "PERMUTE": 3,
+   "SHRINK": 3,
+   "REDUCE": 1
+  },
+  "value": [
+   [
+    [
+     [
+      5.0,
+      7.0
+     ],
+     [
+      13.0,
+      15.0
+     ]
+    ]
+   ]
+  ]
+ },
+ {
+  "expr": "Tensor.rand(4)",
+  "where": "rand.py rand",
+  "shape": "(4,)",
+  "graph": {
+   "nodes": [
+    {
+     "id": "n0",
+     "op": "CONST",
+     "arg": "1",
+     "shape": "()",
+     "dtype": "dtypes.weakint"
+    },
+    {
+     "id": "n1",
+     "op": "CAST",
+     "arg": "dtypes.u32",
+     "shape": "()",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n2",
+     "op": "CONST",
+     "arg": "2",
+     "shape": "()",
+     "dtype": "dtypes.weakint"
+    },
+    {
+     "id": "n3",
+     "op": "EXPAND",
+     "arg": "(2,)",
+     "shape": "(2,)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n4",
+     "op": "PAD",
+     "arg": "((1, 3),)",
+     "shape": "(3,)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n5",
+     "op": "RESHAPE",
+     "arg": "(1, 3)",
+     "shape": "(1, 3)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n6",
+     "op": "RESHAPE",
+     "arg": "(3,)",
+     "shape": "(3,)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n7",
+     "op": "EXPAND",
+     "arg": "(3,)",
+     "shape": "(3, 3)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n8",
+     "op": "CONST",
+     "arg": "9",
+     "shape": "()",
+     "dtype": "dtypes.weakint"
+    },
+    {
+     "id": "n9",
+     "op": "RESHAPE",
+     "arg": "(9,)",
+     "shape": "(9,)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n10",
+     "op": "CONST",
+     "arg": "0",
+     "shape": "()",
+     "dtype": "dtypes.weakint"
+    },
+    {
+     "id": "n11",
+     "op": "SHRINK",
+     "arg": "((0, 8),)",
+     "shape": "(8,)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n12",
+     "op": "CONST",
+     "arg": "4",
+     "shape": "()",
+     "dtype": "dtypes.weakint"
+    },
+    {
+     "id": "n13",
+     "op": "RESHAPE",
+     "arg": "(2, 4)",
+     "shape": "(2, 4)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n14",
+     "op": "SHRINK",
+     "arg": "((0, 2), (0, 2))",
+     "shape": "(2, 2)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n15",
+     "op": "RESHAPE",
+     "arg": "(2, 2, 1)",
+     "shape": "(2, 2, 1)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n16",
+     "op": "RESHAPE",
+     "arg": "(2, 2)",
+     "shape": "(2, 2)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n17",
+     "op": "PERMUTE",
+     "arg": "(1, 0)",
+     "shape": "(2, 2)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n18",
+     "op": "PERMUTE",
+     "arg": "(1, 0)",
+     "shape": "(2, 2)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n19",
+     "op": "REDUCE",
+     "arg": "ADD, 1 axes",
+     "shape": "(2,)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n20",
+     "op": "CONST",
+     "arg": "-1",
+     "shape": "()",
+     "dtype": "dtypes.weakint"
+    },
+    {
+     "id": "n21",
+     "op": "ADD",
+     "arg": "",
+     "shape": "(2,)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n22",
+     "op": "ADD",
+     "arg": "",
+     "shape": "(2,)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n23",
+     "op": "CAST",
+     "arg": "dtypes.u64",
+     "shape": "(2,)",
+     "dtype": "dtypes.u64"
+    },
+    {
+     "id": "n24",
+     "op": "CONST",
+     "arg": "32",
+     "shape": "()",
+     "dtype": "dtypes.weakint"
+    },
+    {
+     "id": "n25",
+     "op": "SHL",
+     "arg": "",
+     "shape": "(2,)",
+     "dtype": "dtypes.u64"
+    },
+    {
+     "id": "n26",
+     "op": "CAST",
+     "arg": "dtypes.u64",
+     "shape": "(2,)",
+     "dtype": "dtypes.u64"
+    },
+    {
+     "id": "n27",
+     "op": "OR",
+     "arg": "",
+     "shape": "(2,)",
+     "dtype": "dtypes.u64"
+    },
+    {
+     "id": "n28",
+     "op": "ALLOC",
+     "arg": "",
+     "shape": "(1,)",
+     "dtype": "dtypes.u64"
+    },
+    {
+     "id": "n29",
+     "op": "BUFFER",
+     "arg": "",
+     "shape": "(1,)",
+     "dtype": "dtypes.u64"
+    },
+    {
+     "id": "n30",
+     "op": "COPY",
+     "arg": "CPU",
+     "shape": "(1,)",
+     "dtype": "dtypes.u64"
+    },
+    {
+     "id": "n31",
+     "op": "ADD",
+     "arg": "",
+     "shape": "(1,)",
+     "dtype": "dtypes.u64"
+    },
+    {
+     "id": "n32",
+     "op": "STORE",
+     "arg": "",
+     "shape": "(1,)",
+     "dtype": "dtypes.void"
+    },
+    {
+     "id": "n33",
+     "op": "AFTER",
+     "arg": "",
+     "shape": "(1,)",
+     "dtype": "dtypes.u64"
+    },
+    {
+     "id": "n34",
+     "op": "MUL",
+     "arg": "",
+     "shape": "()",
+     "dtype": "dtypes.weakint"
+    },
+    {
+     "id": "n35",
+     "op": "ADD",
+     "arg": "",
+     "shape": "(1,)",
+     "dtype": "dtypes.u64"
+    },
+    {
+     "id": "n36",
+     "op": "BITCAST",
+     "arg": "dtypes.u32",
+     "shape": "(2,)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n37",
+     "op": "SHRINK",
+     "arg": "((1, 1),)",
+     "shape": "(1,)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n38",
+     "op": "ADD",
+     "arg": "",
+     "shape": "(1,)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n39",
+     "op": "SHRINK",
+     "arg": "((0, 1),)",
+     "shape": "(1,)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n40",
+     "op": "ADD",
+     "arg": "",
+     "shape": "(1,)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n41",
+     "op": "CMPLT",
+     "arg": "",
+     "shape": "(1,)",
+     "dtype": "dtypes.bool"
+    },
+    {
+     "id": "n42",
+     "op": "CAST",
+     "arg": "dtypes.u32",
+     "shape": "(1,)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n43",
+     "op": "ADD",
+     "arg": "",
+     "shape": "(1,)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n44",
+     "op": "CAST",
+     "arg": "dtypes.u64",
+     "shape": "(1,)",
+     "dtype": "dtypes.u64"
+    },
+    {
+     "id": "n45",
+     "op": "SHL",
+     "arg": "",
+     "shape": "(1,)",
+     "dtype": "dtypes.u64"
+    },
+    {
+     "id": "n46",
+     "op": "CAST",
+     "arg": "dtypes.u64",
+     "shape": "(1,)",
+     "dtype": "dtypes.u64"
+    },
+    {
+     "id": "n47",
+     "op": "OR",
+     "arg": "",
+     "shape": "(1,)",
+     "dtype": "dtypes.u64"
+    },
+    {
+     "id": "n48",
+     "op": "BUFFER",
+     "arg": "",
+     "shape": "(2,)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n49",
+     "op": "COPY",
+     "arg": "CPU",
+     "shape": "(2,)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n50",
+     "op": "SHRINK",
+     "arg": "((1, 1),)",
+     "shape": "(1,)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n51",
+     "op": "RESHAPE",
+     "arg": "()",
+     "shape": "()",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n52",
+     "op": "CAST",
+     "arg": "dtypes.u64",
+     "shape": "()",
+     "dtype": "dtypes.u64"
+    },
+    {
+     "id": "n53",
+     "op": "SHL",
+     "arg": "",
+     "shape": "()",
+     "dtype": "dtypes.u64"
+    },
+    {
+     "id": "n54",
+     "op": "SHRINK",
+     "arg": "((0, 1),)",
+     "shape": "(1,)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n55",
+     "op": "RESHAPE",
+     "arg": "()",
+     "shape": "()",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n56",
+     "op": "CAST",
+     "arg": "dtypes.u64",
+     "shape": "()",
+     "dtype": "dtypes.u64"
+    },
+    {
+     "id": "n57",
+     "op": "OR",
+     "arg": "",
+     "shape": "()",
+     "dtype": "dtypes.u64"
+    },
+    {
+     "id": "n58",
+     "op": "THREEFRY",
+     "arg": "",
+     "shape": "(1,)",
+     "dtype": "dtypes.u64"
+    },
+    {
+     "id": "n59",
+     "op": "CAST",
+     "arg": "dtypes.u32",
+     "shape": "(1,)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n60",
+     "op": "SHR",
+     "arg": "",
+     "shape": "(1,)",
+     "dtype": "dtypes.u64"
+    },
+    {
+     "id": "n61",
+     "op": "CAST",
+     "arg": "dtypes.u32",
+     "shape": "(1,)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n62",
+     "op": "STACK",
+     "arg": "",
+     "shape": "(2, 1)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n63",
+     "op": "RESHAPE",
+     "arg": "(2,)",
+     "shape": "(2,)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n64",
+     "op": "SHRINK",
+     "arg": "((1, 1),)",
+     "shape": "(1,)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n65",
+     "op": "RESHAPE",
+     "arg": "()",
+     "shape": "()",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n66",
+     "op": "CAST",
+     "arg": "dtypes.u64",
+     "shape": "()",
+     "dtype": "dtypes.u64"
+    },
+    {
+     "id": "n67",
+     "op": "SHL",
+     "arg": "",
+     "shape": "()",
+     "dtype": "dtypes.u64"
+    },
+    {
+     "id": "n68",
+     "op": "SHRINK",
+     "arg": "((0, 1),)",
+     "shape": "(1,)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n69",
+     "op": "RESHAPE",
+     "arg": "()",
+     "shape": "()",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n70",
+     "op": "CAST",
+     "arg": "dtypes.u64",
+     "shape": "()",
+     "dtype": "dtypes.u64"
+    },
+    {
+     "id": "n71",
+     "op": "OR",
+     "arg": "",
+     "shape": "()",
+     "dtype": "dtypes.u64"
+    },
+    {
+     "id": "n72",
+     "op": "THREEFRY",
+     "arg": "",
+     "shape": "(2,)",
+     "dtype": "dtypes.u64"
+    },
+    {
+     "id": "n73",
+     "op": "CAST",
+     "arg": "dtypes.u32",
+     "shape": "(2,)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n74",
+     "op": "SHR",
+     "arg": "",
+     "shape": "(2,)",
+     "dtype": "dtypes.u64"
+    },
+    {
+     "id": "n75",
+     "op": "CAST",
+     "arg": "dtypes.u32",
+     "shape": "(2,)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n76",
+     "op": "STACK",
+     "arg": "",
+     "shape": "(2, 2)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n77",
+     "op": "RESHAPE",
+     "arg": "(4,)",
+     "shape": "(4,)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n78",
+     "op": "STACK",
+     "arg": "",
+     "shape": "(1, 4)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n79",
+     "op": "RESHAPE",
+     "arg": "(4,)",
+     "shape": "(4,)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n80",
+     "op": "SHR",
+     "arg": "",
+     "shape": "(4,)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n81",
+     "op": "CONST",
+     "arg": "1065353216",
+     "shape": "()",
+     "dtype": "dtypes.weakint"
+    },
+    {
+     "id": "n82",
+     "op": "OR",
+     "arg": "",
+     "shape": "(4,)",
+     "dtype": "dtypes.u32"
+    },
+    {
+     "id": "n83",
+     "op": "BITCAST",
+     "arg": "dtypes.f32",
+     "shape": "(4,)",
+     "dtype": "dtypes.f32"
+    },
+    {
+     "id": "n84",
+     "op": "CONST",
+     "arg": "1.0",
+     "shape": "()",
+     "dtype": "dtypes.weakfloat"
+    },
+    {
+     "id": "n85",
+     "op": "CONST",
+     "arg": "-1.0",
+     "shape": "()",
+     "dtype": "dtypes.weakfloat"
+    },
+    {
+     "id": "n86",
+     "op": "MUL",
+     "arg": "",
+     "shape": "()",
+     "dtype": "dtypes.weakfloat"
+    },
+    {
+     "id": "n87",
+     "op": "ADD",
+     "arg": "",
+     "shape": "(4,)",
+     "dtype": "dtypes.f32"
+    }
+   ],
+   "edges": [
+    [
+     "n0",
+     "n1",
+     0
+    ],
+    [
+     "n1",
+     "n3",
+     0
+    ],
+    [
+     "n2",
+     "n3",
+     1
+    ],
+    [
+     "n3",
+     "n4",
+     0
+    ],
+    [
+     "n0",
+     "n4",
+     1
+    ],
+    [
+     "n4",
+     "n5",
+     0
+    ],
+    [
+     "n5",
+     "n6",
+     0
+    ],
+    [
+     "n6",
+     "n7",
+     0
+    ],
+    [
+     "n7",
+     "n9",
+     0
+    ],
+    [
+     "n8",
+     "n9",
+     1
+    ],
+    [
+     "n9",
+     "n11",
+     0
+    ],
+    [
+     "n10",
+     "n11",
+     1
+    ],
+    [
+     "n11",
+     "n13",
+     0
+    ],
+    [
+     "n13",
+     "n14",
+     0
+    ],
+    [
+     "n14",
+     "n15",
+     0
+    ],
+    [
+     "n15",
+     "n16",
+     0
+    ],
+    [
+     "n16",
+     "n17",
+     0
+    ],
+    [
+     "n17",
+     "n18",
+     0
+    ],
+    [
+     "n18",
+     "n19",
+     0
+    ],
+    [
+     "n19",
+     "n21",
+     0
+    ],
+    [
+     "n20",
+     "n21",
+     1
+    ],
+    [
+     "n21",
+     "n22",
+     0
+    ],
+    [
+     "n2",
+     "n22",
+     1
+    ],
+    [
+     "n22",
+     "n23",
+     0
+    ],
+    [
+     "n23",
+     "n25",
+     0
+    ],
+    [
+     "n24",
+     "n25",
+     1
+    ],
+    [
+     "n21",
+     "n26",
+     0
+    ],
+    [
+     "n25",
+     "n27",
+     0
+    ],
+    [
+     "n26",
+     "n27",
+     1
+    ],
+    [
+     "n0",
+     "n28",
+     0
+    ],
+    [
+     "n0",
+     "n29",
+     0
+    ],
+    [
+     "n29",
+     "n30",
+     0
+    ],
+    [
+     "n30",
+     "n31",
+     0
+    ],
+    [
+     "n12",
+     "n31",
+     1
+    ],
+    [
+     "n28",
+     "n32",
+     0
+    ],
+    [
+     "n31",
+     "n32",
+     1
+    ],
+    [
+     "n28",
+     "n33",
+     0
+    ],
+    [
+     "n32",
+     "n33",
+     1
+    ],
+    [
+     "n12",
+     "n34",
+     0
+    ],
+    [
+     "n20",
+     "n34",
+     1
+    ],
+    [
+     "n33",
+     "n35",
+     0
+    ],
+    [
+     "n34",
+     "n35",
+     1
+    ],
+    [
+     "n35",
+     "n36",
+     0
+    ],
+    [
+     "n36",
+     "n37",
+     0
+    ],
+    [
+     "n0",
+     "n37",
+     1
+    ],
+    [
+     "n0",
+     "n37",
+     2
+    ],
+    [
+     "n37",
+     "n38",
+     0
+    ],
+    [
+     "n10",
+     "n38",
+     1
+    ],
+    [
+     "n36",
+     "n39",
+     0
+    ],
+    [
+     "n10",
+     "n39",
+     1
+    ],
+    [
+     "n0",
+     "n39",
+     2
+    ],
+    [
+     "n39",
+     "n40",
+     0
+    ],
+    [
+     "n10",
+     "n40",
+     1
+    ],
+    [
+     "n40",
+     "n41",
+     0
+    ],
+    [
+     "n39",
+     "n41",
+     1
+    ],
+    [
+     "n41",
+     "n42",
+     0
+    ],
+    [
+     "n38",
+     "n43",
+     0
+    ],
+    [
+     "n42",
+     "n43",
+     1
+    ],
+    [
+     "n43",
+     "n44",
+     0
+    ],
+    [
+     "n44",
+     "n45",
+     0
+    ],
+    [
+     "n24",
+     "n45",
+     1
+    ],
+    [
+     "n40",
+     "n46",
+     0
+    ],
+    [
+     "n45",
+     "n47",
+     0
+    ],
+    [
+     "n46",
+     "n47",
+     1
+    ],
+    [
+     "n2",
+     "n48",
+     0
+    ],
+    [
+     "n48",
+     "n49",
+     0
+    ],
+    [
+     "n49",
+     "n50",
+     0
+    ],
+    [
+     "n0",
+     "n50",
+     1
+    ],
+    [
+     "n0",
+     "n50",
+     2
+    ],
+    [
+     "n50",
+     "n51",
+     0
+    ],
+    [
+     "n51",
+     "n52",
+     0
+    ],
+    [
+     "n52",
+     "n53",
+     0
+    ],
+    [
+     "n24",
+     "n53",
+     1
+    ],
+    [
+     "n49",
+     "n54",
+     0
+    ],
+    [
+     "n10",
+     "n54",
+     1
+    ],
+    [
+     "n0",
+     "n54",
+     2
+    ],
+    [
+     "n54",
+     "n55",
+     0
+    ],
+    [
+     "n55",
+     "n56",
+     0
+    ],
+    [
+     "n53",
+     "n57",
+     0
+    ],
+    [
+     "n56",
+     "n57",
+     1
+    ],
+    [
+     "n47",
+     "n58",
+     0
+    ],
+    [
+     "n57",
+     "n58",
+     1
+    ],
+    [
+     "n58",
+     "n59",
+     0
+    ],
+    [
+     "n58",
+     "n60",
+     0
+    ],
+    [
+     "n24",
+     "n60",
+     1
+    ],
+    [
+     "n60",
+     "n61",
+     0
+    ],
+    [
+     "n59",
+     "n62",
+     0
+    ],
+    [
+     "n61",
+     "n62",
+     1
+    ],
+    [
+     "n62",
+     "n63",
+     0
+    ],
+    [
+     "n2",
+     "n63",
+     1
+    ],
+    [
+     "n63",
+     "n64",
+     0
+    ],
+    [
+     "n0",
+     "n64",
+     1
+    ],
+    [
+     "n0",
+     "n64",
+     2
+    ],
+    [
+     "n64",
+     "n65",
+     0
+    ],
+    [
+     "n65",
+     "n66",
+     0
+    ],
+    [
+     "n66",
+     "n67",
+     0
+    ],
+    [
+     "n24",
+     "n67",
+     1
+    ],
+    [
+     "n63",
+     "n68",
+     0
+    ],
+    [
+     "n10",
+     "n68",
+     1
+    ],
+    [
+     "n0",
+     "n68",
+     2
+    ],
+    [
+     "n68",
+     "n69",
+     0
+    ],
+    [
+     "n69",
+     "n70",
+     0
+    ],
+    [
+     "n67",
+     "n71",
+     0
+    ],
+    [
+     "n70",
+     "n71",
+     1
+    ],
+    [
+     "n27",
+     "n72",
+     0
+    ],
+    [
+     "n71",
+     "n72",
+     1
+    ],
+    [
+     "n72",
+     "n73",
+     0
+    ],
+    [
+     "n72",
+     "n74",
+     0
+    ],
+    [
+     "n24",
+     "n74",
+     1
+    ],
+    [
+     "n74",
+     "n75",
+     0
+    ],
+    [
+     "n73",
+     "n76",
+     0
+    ],
+    [
+     "n75",
+     "n76",
+     1
+    ],
+    [
+     "n76",
+     "n77",
+     0
+    ],
+    [
+     "n12",
+     "n77",
+     1
+    ],
+    [
+     "n77",
+     "n78",
+     0
+    ],
+    [
+     "n78",
+     "n79",
+     0
+    ],
+    [
+     "n12",
+     "n79",
+     1
+    ],
+    [
+     "n79",
+     "n80",
+     0
+    ],
+    [
+     "n8",
+     "n80",
+     1
+    ],
+    [
+     "n80",
+     "n82",
+     0
+    ],
+    [
+     "n81",
+     "n82",
+     1
+    ],
+    [
+     "n82",
+     "n83",
+     0
+    ],
+    [
+     "n84",
+     "n86",
+     0
+    ],
+    [
+     "n85",
+     "n86",
+     1
+    ],
+    [
+     "n83",
+     "n87",
+     0
+    ],
+    [
+     "n86",
+     "n87",
+     1
+    ]
+   ]
+  },
+  "ops": {
+   "CONST": 10,
+   "CAST": 14,
+   "EXPAND": 2,
+   "PAD": 1,
+   "RESHAPE": 13,
+   "SHRINK": 8,
+   "PERMUTE": 2,
+   "REDUCE": 1,
+   "ADD": 8,
+   "SHL": 4,
+   "OR": 5,
+   "ALLOC": 1,
+   "BUFFER": 2,
+   "COPY": 2,
+   "STORE": 1,
+   "AFTER": 1,
+   "MUL": 2,
+   "BITCAST": 2,
+   "CMPLT": 1,
+   "THREEFRY": 2,
+   "SHR": 3,
+   "STACK": 3
+  },
+  "value": [
+   0.7748395204544067,
+   0.32171499729156494,
+   0.12298858165740967,
+   0.8034805059432983
+  ]
+ }
+]

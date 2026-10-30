@@ -1,0 +1,1333 @@
+{
+ "ops": [
+  {
+   "name": "SPECIAL",
+   "value": 1,
+   "section": "1 \u00b7 defines/special",
+   "comment": "this is a RANGE for GPU dimensions, similar to symbolic shapes but not exactly",
+   "groups": [
+    "Irreducible"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": []
+  },
+  {
+   "name": "BUFFER",
+   "value": 2,
+   "section": "1 \u00b7 defines/special",
+   "comment": "BUFFER references bound storage; ALLOC declares unbound global storage",
+   "groups": [
+    "Defines"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": true,
+   "seen": [
+    "tensor",
+    "schedule",
+    "codegen",
+    "program",
+    "runtime"
+   ]
+  },
+  {
+   "name": "ALLOC",
+   "value": 3,
+   "section": "1 \u00b7 defines/special",
+   "comment": "BUFFER references bound storage; ALLOC declares unbound global storage",
+   "groups": [
+    "Defines"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": true,
+   "seen": [
+    "schedule",
+    "codegen"
+   ]
+  },
+  {
+   "name": "NOOP",
+   "value": 4,
+   "section": "2 \u00b7 non op uops",
+   "comment": "uops that aren't rendered",
+   "groups": [],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": []
+  },
+  {
+   "name": "REWRITE_ERROR",
+   "value": 5,
+   "section": "2 \u00b7 non op uops",
+   "comment": "uops that aren't rendered",
+   "groups": [],
+   "spec_tensor": false,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "schedule"
+   ]
+  },
+  {
+   "name": "PARAM",
+   "value": 6,
+   "section": "2 \u00b7 non op uops",
+   "comment": "CALL is a kernel invocation; value-producing calls write to ALLOC arguments",
+   "groups": [
+    "Defines",
+    "Irreducible"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": true,
+   "seen": [
+    "tensor",
+    "schedule",
+    "ast",
+    "codegen",
+    "program",
+    "runtime"
+   ]
+  },
+  {
+   "name": "CALL",
+   "value": 7,
+   "section": "2 \u00b7 non op uops",
+   "comment": "CALL is a kernel invocation; value-producing calls write to ALLOC arguments",
+   "groups": [],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": true,
+   "seen": [
+    "schedule",
+    "codegen",
+    "runtime"
+   ]
+  },
+  {
+   "name": "PROGRAM",
+   "value": 8,
+   "section": "2 \u00b7 non op uops",
+   "comment": "renderer LINEAR is a list of UOps, SOURCE has a str arg that's human readable, BINARY has bytes arg that's compiled",
+   "groups": [],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "schedule",
+    "codegen",
+    "runtime"
+   ]
+  },
+  {
+   "name": "LINEAR",
+   "value": 9,
+   "section": "2 \u00b7 non op uops",
+   "comment": "renderer LINEAR is a list of UOps, SOURCE has a str arg that's human readable, BINARY has bytes arg that's compiled",
+   "groups": [],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "schedule",
+    "codegen",
+    "runtime"
+   ]
+  },
+  {
+   "name": "SOURCE",
+   "value": 10,
+   "section": "2 \u00b7 non op uops",
+   "comment": "renderer LINEAR is a list of UOps, SOURCE has a str arg that's human readable, BINARY has bytes arg that's compiled",
+   "groups": [],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "schedule",
+    "codegen",
+    "runtime"
+   ]
+  },
+  {
+   "name": "BINARY",
+   "value": 11,
+   "section": "2 \u00b7 non op uops",
+   "comment": "renderer LINEAR is a list of UOps, SOURCE has a str arg that's human readable, BINARY has bytes arg that's compiled",
+   "groups": [],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "schedule",
+    "codegen",
+    "runtime"
+   ]
+  },
+  {
+   "name": "SINK",
+   "value": 12,
+   "section": "2 \u00b7 non op uops",
+   "comment": "AFTER passes src[0] through and promises in the toposort that any consumers of the AFTER run after src[1:]",
+   "groups": [],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": true,
+   "seen": [
+    "tensor",
+    "schedule",
+    "ast",
+    "codegen",
+    "program",
+    "runtime"
+   ]
+  },
+  {
+   "name": "AFTER",
+   "value": 13,
+   "section": "2 \u00b7 non op uops",
+   "comment": "AFTER passes src[0] through and promises in the toposort that any consumers of the AFTER run after src[1:]",
+   "groups": [],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": true,
+   "seen": [
+    "tensor",
+    "schedule",
+    "codegen",
+    "program",
+    "runtime"
+   ]
+  },
+  {
+   "name": "STACK",
+   "value": 14,
+   "section": "2 \u00b7 non op uops",
+   "comment": "vector creation / item selection",
+   "groups": [],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": true,
+   "seen": [
+    "tensor",
+    "schedule",
+    "ast",
+    "codegen",
+    "program",
+    "runtime"
+   ]
+  },
+  {
+   "name": "GETADDR",
+   "value": 15,
+   "section": "2 \u00b7 non op uops",
+   "comment": "hcq specific",
+   "groups": [
+    "Irreducible"
+   ],
+   "spec_tensor": false,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": []
+  },
+  {
+   "name": "INDEX",
+   "value": 16,
+   "section": "3 \u00b7 load/store",
+   "comment": "INDEX is a BinaryOp similar to ADD, but it operates on pointers",
+   "groups": [],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "schedule",
+    "ast",
+    "codegen",
+    "program",
+    "runtime"
+   ]
+  },
+  {
+   "name": "SHRINK",
+   "value": 17,
+   "section": "3 \u00b7 load/store",
+   "comment": "INDEX is a BinaryOp similar to ADD, but it operates on pointers",
+   "groups": [
+    "Movement"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "tensor",
+    "schedule",
+    "codegen",
+    "program",
+    "runtime"
+   ]
+  },
+  {
+   "name": "LOAD",
+   "value": 18,
+   "section": "3 \u00b7 load/store",
+   "comment": "load/store before math",
+   "groups": [],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "schedule",
+    "codegen",
+    "program",
+    "runtime"
+   ]
+  },
+  {
+   "name": "STORE",
+   "value": 19,
+   "section": "3 \u00b7 load/store",
+   "comment": "load/store before math",
+   "groups": [],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "tensor",
+    "schedule",
+    "ast",
+    "codegen",
+    "program",
+    "runtime"
+   ]
+  },
+  {
+   "name": "WMMA",
+   "value": 20,
+   "section": "4 \u00b7 math",
+   "comment": "tensor core math op, not elementwise",
+   "groups": [],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": []
+  },
+  {
+   "name": "CAST",
+   "value": 21,
+   "section": "4 \u00b7 math",
+   "comment": "UnaryOps",
+   "groups": [
+    "Elementwise"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": true,
+   "seen": [
+    "tensor",
+    "schedule",
+    "ast",
+    "codegen",
+    "program",
+    "runtime"
+   ]
+  },
+  {
+   "name": "BITCAST",
+   "value": 22,
+   "section": "4 \u00b7 math",
+   "comment": "UnaryOps",
+   "groups": [
+    "Elementwise"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": true,
+   "seen": [
+    "tensor",
+    "schedule",
+    "ast",
+    "codegen",
+    "program",
+    "runtime"
+   ]
+  },
+  {
+   "name": "EXP2",
+   "value": 23,
+   "section": "4 \u00b7 math",
+   "comment": "UnaryOps",
+   "groups": [
+    "ALU",
+    "Elementwise",
+    "Unary"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "tensor",
+    "schedule",
+    "ast",
+    "codegen"
+   ]
+  },
+  {
+   "name": "LOG2",
+   "value": 24,
+   "section": "4 \u00b7 math",
+   "comment": "UnaryOps",
+   "groups": [
+    "ALU",
+    "Elementwise",
+    "Unary"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "tensor",
+    "schedule",
+    "ast",
+    "codegen"
+   ]
+  },
+  {
+   "name": "SIN",
+   "value": 25,
+   "section": "4 \u00b7 math",
+   "comment": "UnaryOps",
+   "groups": [
+    "ALU",
+    "Elementwise",
+    "Unary"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "tensor",
+    "schedule",
+    "ast",
+    "codegen"
+   ]
+  },
+  {
+   "name": "SQRT",
+   "value": 26,
+   "section": "4 \u00b7 math",
+   "comment": "",
+   "groups": [
+    "ALU",
+    "Elementwise",
+    "Unary"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "tensor",
+    "schedule",
+    "ast",
+    "codegen",
+    "program",
+    "runtime"
+   ]
+  },
+  {
+   "name": "RECIP",
+   "value": 27,
+   "section": "4 \u00b7 math",
+   "comment": "",
+   "groups": [
+    "ALU",
+    "Elementwise",
+    "Unary"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "tensor",
+    "schedule",
+    "ast",
+    "codegen"
+   ]
+  },
+  {
+   "name": "NEG",
+   "value": 28,
+   "section": "4 \u00b7 math",
+   "comment": "",
+   "groups": [
+    "ALU",
+    "Elementwise",
+    "Unary"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "codegen",
+    "program",
+    "runtime"
+   ]
+  },
+  {
+   "name": "TRUNC",
+   "value": 29,
+   "section": "4 \u00b7 math",
+   "comment": "",
+   "groups": [
+    "ALU",
+    "Elementwise",
+    "Unary"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": []
+  },
+  {
+   "name": "ADD",
+   "value": 30,
+   "section": "4 \u00b7 math",
+   "comment": "BinaryOps",
+   "groups": [
+    "ALU",
+    "Associative",
+    "Binary",
+    "Broadcastable",
+    "Commutative",
+    "Elementwise",
+    "Reduce"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "tensor",
+    "schedule",
+    "ast",
+    "codegen",
+    "program",
+    "runtime"
+   ]
+  },
+  {
+   "name": "MUL",
+   "value": 31,
+   "section": "4 \u00b7 math",
+   "comment": "BinaryOps",
+   "groups": [
+    "ALU",
+    "Associative",
+    "Binary",
+    "Broadcastable",
+    "Commutative",
+    "Elementwise",
+    "Reduce"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "tensor",
+    "schedule",
+    "ast",
+    "codegen",
+    "program",
+    "runtime"
+   ]
+  },
+  {
+   "name": "SHL",
+   "value": 32,
+   "section": "4 \u00b7 math",
+   "comment": "BinaryOps",
+   "groups": [
+    "ALU",
+    "Binary",
+    "Broadcastable",
+    "Elementwise"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "tensor",
+    "schedule",
+    "codegen",
+    "program",
+    "runtime"
+   ]
+  },
+  {
+   "name": "SHR",
+   "value": 33,
+   "section": "4 \u00b7 math",
+   "comment": "BinaryOps",
+   "groups": [
+    "ALU",
+    "Binary",
+    "Broadcastable",
+    "Elementwise"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "tensor",
+    "schedule",
+    "ast",
+    "codegen",
+    "program",
+    "runtime"
+   ]
+  },
+  {
+   "name": "TRUNCDIV",
+   "value": 34,
+   "section": "4 \u00b7 math",
+   "comment": "BinaryOps",
+   "groups": [
+    "ALU",
+    "Binary",
+    "Broadcastable",
+    "Elementwise"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "codegen",
+    "program",
+    "runtime"
+   ]
+  },
+  {
+   "name": "MAX",
+   "value": 35,
+   "section": "4 \u00b7 math",
+   "comment": "BinaryOps",
+   "groups": [
+    "ALU",
+    "Associative",
+    "Binary",
+    "Broadcastable",
+    "Commutative",
+    "Elementwise",
+    "Idempotent",
+    "Reduce"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "schedule"
+   ]
+  },
+  {
+   "name": "TRUNCMOD",
+   "value": 36,
+   "section": "4 \u00b7 math",
+   "comment": "BinaryOps",
+   "groups": [
+    "ALU",
+    "Binary",
+    "Broadcastable",
+    "Elementwise"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "codegen",
+    "program",
+    "runtime"
+   ]
+  },
+  {
+   "name": "CMPLT",
+   "value": 37,
+   "section": "4 \u00b7 math",
+   "comment": "",
+   "groups": [
+    "ALU",
+    "Binary",
+    "Broadcastable",
+    "Comparison",
+    "Elementwise"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "tensor",
+    "schedule",
+    "ast",
+    "codegen",
+    "program",
+    "runtime"
+   ]
+  },
+  {
+   "name": "CMPNE",
+   "value": 38,
+   "section": "4 \u00b7 math",
+   "comment": "",
+   "groups": [
+    "ALU",
+    "Binary",
+    "Broadcastable",
+    "Commutative",
+    "Comparison",
+    "Elementwise"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "codegen",
+    "program",
+    "runtime"
+   ]
+  },
+  {
+   "name": "CMPEQ",
+   "value": 39,
+   "section": "4 \u00b7 math",
+   "comment": "",
+   "groups": [
+    "ALU",
+    "Binary",
+    "Broadcastable",
+    "Commutative",
+    "Comparison",
+    "Elementwise"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "tensor",
+    "schedule",
+    "ast",
+    "codegen",
+    "program",
+    "runtime"
+   ]
+  },
+  {
+   "name": "XOR",
+   "value": 40,
+   "section": "4 \u00b7 math",
+   "comment": "",
+   "groups": [
+    "ALU",
+    "Associative",
+    "Binary",
+    "Broadcastable",
+    "Commutative",
+    "Elementwise"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "tensor",
+    "schedule",
+    "ast",
+    "codegen",
+    "program",
+    "runtime"
+   ]
+  },
+  {
+   "name": "OR",
+   "value": 41,
+   "section": "4 \u00b7 math",
+   "comment": "",
+   "groups": [
+    "ALU",
+    "Associative",
+    "Binary",
+    "Broadcastable",
+    "Commutative",
+    "Elementwise",
+    "Idempotent"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "tensor",
+    "schedule",
+    "ast",
+    "codegen",
+    "program",
+    "runtime"
+   ]
+  },
+  {
+   "name": "AND",
+   "value": 42,
+   "section": "4 \u00b7 math",
+   "comment": "",
+   "groups": [
+    "ALU",
+    "Associative",
+    "Binary",
+    "Broadcastable",
+    "Commutative",
+    "Elementwise",
+    "Idempotent"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "tensor",
+    "schedule",
+    "ast",
+    "codegen",
+    "program",
+    "runtime"
+   ]
+  },
+  {
+   "name": "THREEFRY",
+   "value": 43,
+   "section": "4 \u00b7 math",
+   "comment": "",
+   "groups": [
+    "ALU",
+    "Binary",
+    "Broadcastable",
+    "Elementwise"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "tensor",
+    "schedule"
+   ]
+  },
+  {
+   "name": "SUB",
+   "value": 44,
+   "section": "4 \u00b7 math",
+   "comment": "",
+   "groups": [
+    "ALU",
+    "Binary",
+    "Broadcastable",
+    "Elementwise"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "schedule",
+    "codegen",
+    "program",
+    "runtime"
+   ]
+  },
+  {
+   "name": "FDIV",
+   "value": 45,
+   "section": "4 \u00b7 math",
+   "comment": "",
+   "groups": [
+    "ALU",
+    "Binary",
+    "Broadcastable",
+    "Elementwise"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "codegen",
+    "program",
+    "runtime"
+   ]
+  },
+  {
+   "name": "POW",
+   "value": 46,
+   "section": "4 \u00b7 math",
+   "comment": "",
+   "groups": [
+    "ALU",
+    "Binary",
+    "Broadcastable",
+    "Elementwise"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "tensor",
+    "schedule"
+   ]
+  },
+  {
+   "name": "DIV",
+   "value": 47,
+   "section": "4 \u00b7 math",
+   "comment": "",
+   "groups": [
+    "ALU",
+    "Binary",
+    "Broadcastable",
+    "Elementwise"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "tensor",
+    "schedule",
+    "ast",
+    "codegen"
+   ]
+  },
+  {
+   "name": "MOD",
+   "value": 48,
+   "section": "4 \u00b7 math",
+   "comment": "",
+   "groups": [
+    "ALU",
+    "Binary",
+    "Broadcastable",
+    "Elementwise"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "tensor",
+    "schedule",
+    "ast",
+    "codegen"
+   ]
+  },
+  {
+   "name": "WHERE",
+   "value": 49,
+   "section": "4 \u00b7 math",
+   "comment": "TernaryOps",
+   "groups": [
+    "ALU",
+    "Broadcastable",
+    "Elementwise",
+    "Ternary"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "tensor",
+    "schedule",
+    "ast",
+    "codegen",
+    "program",
+    "runtime"
+   ]
+  },
+  {
+   "name": "MULACC",
+   "value": 50,
+   "section": "4 \u00b7 math",
+   "comment": "TernaryOps",
+   "groups": [
+    "ALU",
+    "Broadcastable",
+    "Elementwise",
+    "Ternary"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": []
+  },
+  {
+   "name": "BARRIER",
+   "value": 51,
+   "section": "5 \u00b7 control flow / consts / custom",
+   "comment": "control flow ops",
+   "groups": [],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": []
+  },
+  {
+   "name": "RANGE",
+   "value": 52,
+   "section": "5 \u00b7 control flow / consts / custom",
+   "comment": "control flow ops",
+   "groups": [
+    "Irreducible"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": true,
+   "seen": [
+    "tensor",
+    "schedule",
+    "ast",
+    "codegen",
+    "program",
+    "runtime"
+   ]
+  },
+  {
+   "name": "IF",
+   "value": 53,
+   "section": "5 \u00b7 control flow / consts / custom",
+   "comment": "control flow ops",
+   "groups": [],
+   "spec_tensor": false,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": []
+  },
+  {
+   "name": "END",
+   "value": 54,
+   "section": "5 \u00b7 control flow / consts / custom",
+   "comment": "control flow ops",
+   "groups": [],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "schedule",
+    "ast",
+    "codegen",
+    "program",
+    "runtime"
+   ]
+  },
+  {
+   "name": "ENDIF",
+   "value": 55,
+   "section": "5 \u00b7 control flow / consts / custom",
+   "comment": "control flow ops",
+   "groups": [],
+   "spec_tensor": false,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": []
+  },
+  {
+   "name": "BACKEDGE",
+   "value": 56,
+   "section": "5 \u00b7 control flow / consts / custom",
+   "comment": "(body, unbounded RANGE, condition): repeat while condition is true",
+   "groups": [],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": []
+  },
+  {
+   "name": "CONST",
+   "value": 57,
+   "section": "5 \u00b7 control flow / consts / custom",
+   "comment": "const.",
+   "groups": [
+    "Irreducible"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": true,
+   "seen": [
+    "tensor",
+    "schedule",
+    "ast",
+    "codegen",
+    "program",
+    "runtime"
+   ]
+  },
+  {
+   "name": "CUSTOM",
+   "value": 58,
+   "section": "5 \u00b7 control flow / consts / custom",
+   "comment": "CUSTOM/CUSTOMI are used to output strings into codegen. the I makes the string inline",
+   "groups": [],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": []
+  },
+  {
+   "name": "CUSTOMI",
+   "value": 59,
+   "section": "5 \u00b7 control flow / consts / custom",
+   "comment": "CUSTOM/CUSTOMI are used to output strings into codegen. the I makes the string inline",
+   "groups": [],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": []
+  },
+  {
+   "name": "INS",
+   "value": 60,
+   "section": "5 \u00b7 control flow / consts / custom",
+   "comment": "INS is a machine instruction",
+   "groups": [],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": []
+  },
+  {
+   "name": "CONTIGUOUS_BACKWARD",
+   "value": 61,
+   "section": "6 \u00b7 ops that don't exist in programs",
+   "comment": "ops that adjust the behavior of the scheduler",
+   "groups": [],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "tensor",
+    "schedule"
+   ]
+  },
+  {
+   "name": "DETACH",
+   "value": 62,
+   "section": "6 \u00b7 ops that don't exist in programs",
+   "comment": "ops that adjust the behavior of the scheduler",
+   "groups": [],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "tensor",
+    "schedule"
+   ]
+  },
+  {
+   "name": "STAGE",
+   "value": 63,
+   "section": "6 \u00b7 ops that don't exist in programs",
+   "comment": "buffer ops",
+   "groups": [],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "tensor",
+    "schedule"
+   ]
+  },
+  {
+   "name": "COPY",
+   "value": 64,
+   "section": "6 \u00b7 ops that don't exist in programs",
+   "comment": "buffer ops",
+   "groups": [],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "tensor",
+    "schedule"
+   ]
+  },
+  {
+   "name": "MSELECT",
+   "value": 65,
+   "section": "6 \u00b7 ops that don't exist in programs",
+   "comment": "buffer ops",
+   "groups": [],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": true,
+   "seen": [
+    "schedule",
+    "runtime"
+   ]
+  },
+  {
+   "name": "MSTACK",
+   "value": 66,
+   "section": "6 \u00b7 ops that don't exist in programs",
+   "comment": "buffer ops",
+   "groups": [],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": true,
+   "seen": [
+    "schedule",
+    "runtime"
+   ]
+  },
+  {
+   "name": "CUSTOM_FUNCTION",
+   "value": 67,
+   "section": "6 \u00b7 ops that don't exist in programs",
+   "comment": "buffer ops",
+   "groups": [],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": []
+  },
+  {
+   "name": "RESHAPE",
+   "value": 68,
+   "section": "6 \u00b7 ops that don't exist in programs",
+   "comment": "the core 5 movement ops! these only exist in the tensor graph",
+   "groups": [
+    "Movement"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "tensor",
+    "schedule",
+    "codegen"
+   ]
+  },
+  {
+   "name": "PERMUTE",
+   "value": 69,
+   "section": "6 \u00b7 ops that don't exist in programs",
+   "comment": "the core 5 movement ops! these only exist in the tensor graph",
+   "groups": [
+    "Movement"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "tensor",
+    "schedule"
+   ]
+  },
+  {
+   "name": "EXPAND",
+   "value": 70,
+   "section": "6 \u00b7 ops that don't exist in programs",
+   "comment": "the core 5 movement ops! these only exist in the tensor graph",
+   "groups": [
+    "Movement"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "tensor",
+    "schedule",
+    "codegen"
+   ]
+  },
+  {
+   "name": "PAD",
+   "value": 71,
+   "section": "6 \u00b7 ops that don't exist in programs",
+   "comment": "the core 5 movement ops! these only exist in the tensor graph",
+   "groups": [
+    "Movement"
+   ],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "tensor",
+    "schedule"
+   ]
+  },
+  {
+   "name": "UNSHARD",
+   "value": 72,
+   "section": "6 \u00b7 ops that don't exist in programs",
+   "comment": "UNSHARD is really a movement op",
+   "groups": [],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "tensor",
+    "schedule"
+   ]
+  },
+  {
+   "name": "REDUCE",
+   "value": 73,
+   "section": "6 \u00b7 ops that don't exist in programs",
+   "comment": "reduce",
+   "groups": [],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "tensor",
+    "schedule",
+    "ast",
+    "codegen"
+   ]
+  },
+  {
+   "name": "ALLREDUCE",
+   "value": 74,
+   "section": "6 \u00b7 ops that don't exist in programs",
+   "comment": "reduce",
+   "groups": [],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": [
+    "schedule"
+   ]
+  },
+  {
+   "name": "PYLITERAL",
+   "value": 75,
+   "section": "7 \u00b7 pattern compiler IR (used in upat.py)",
+   "comment": "PYLITERAL carries a Python literal as an arg for CUSTOM predicates",
+   "groups": [],
+   "spec_tensor": true,
+   "spec_program": true,
+   "spec_kernel_graph": false,
+   "seen": []
+  }
+ ],
+ "corpus": [
+  "elementwise",
+  "reduce",
+  "matmul",
+  "conv2d",
+  "pad/shrink/flip",
+  "cast/bitcast",
+  "where/cmp",
+  "transcendentals",
+  "int div/mod",
+  "bitwise",
+  "rand",
+  "argmax/cumsum",
+  "gather",
+  "symbolic shape",
+  "backward",
+  "assign",
+  "multi-device",
+  "copy to device",
+  "detach/contiguous_backward",
+  "pow"
+ ]
+}

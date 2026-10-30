@@ -1,0 +1,10211 @@
+{
+ "cases": [
+  {
+   "name": "constant folding",
+   "before": "(3*4+2)",
+   "after": "14",
+   "vmin": "14",
+   "vmax": "14"
+  },
+  {
+   "name": "x*1, x+0",
+   "before": "(x*1+0)",
+   "after": "x",
+   "vmin": "0",
+   "vmax": "100"
+  },
+  {
+   "name": "combine terms",
+   "before": "(x*2+x*3)",
+   "after": "(x*5)",
+   "vmin": "0",
+   "vmax": "500"
+  },
+  {
+   "name": "move consts to the end",
+   "before": "(x+3+y+5)",
+   "after": "(x+y+8)",
+   "vmin": "8",
+   "vmax": "111"
+  },
+  {
+   "name": "x//c*c + x%c -> x",
+   "before": "(x//4*4+x%4)",
+   "after": "x",
+   "vmin": "0",
+   "vmax": "103"
+  },
+  {
+   "name": "exact division",
+   "before": "((x*4+y)//4)",
+   "after": "x",
+   "vmin": "0",
+   "vmax": "100"
+  },
+  {
+   "name": "mod of a congruent sum",
+   "before": "((x*4+y)%4)",
+   "after": "y",
+   "vmin": "0",
+   "vmax": "3"
+  },
+  {
+   "name": "nested div",
+   "before": "(x//3//4)",
+   "after": "(x//12)",
+   "vmin": "0",
+   "vmax": "8"
+  },
+  {
+   "name": "div of a mod",
+   "before": "(x%12//4)",
+   "after": "(x//4%3)",
+   "vmin": "0",
+   "vmax": "2"
+  },
+  {
+   "name": "lt folding",
+   "before": "((x*4+y)<8)",
+   "after": "(x<2)",
+   "vmin": "False",
+   "vmax": "True"
+  },
+  {
+   "name": "range says it's const",
+   "before": "(y//4)",
+   "after": "0",
+   "vmin": "0",
+   "vmax": "0"
+  },
+  {
+   "name": "comparison always true",
+   "before": "(y<4)",
+   "after": "True",
+   "vmin": "True",
+   "vmax": "True"
+  },
+  {
+   "name": "max with known order",
+   "before": "max(y, 5)",
+   "after": "5",
+   "vmin": "5",
+   "vmax": "5"
+  },
+  {
+   "name": "range mod its bound",
+   "before": "(r0%16)",
+   "after": "r0",
+   "vmin": "0",
+   "vmax": "15"
+  },
+  {
+   "name": "x - x (interval is loose)",
+   "before": "(x+x*-1)",
+   "after": "0",
+   "vmin": "-100",
+   "vmax": "100"
+  },
+  {
+   "name": "divide by gcd (w in [1,10])",
+   "before": "(x*4//(w*2))",
+   "after": "(x*2//w)",
+   "vmin": "0",
+   "vmax": "200"
+  }
+ ],
+ "game": [
+  {
+   "before": "((x*4+z)//8)",
+   "after": "((x+z//4)//2)",
+   "vmin": "0",
+   "vmax": "50",
+   "rules": [
+    {
+     "before": "(x*4+z)",
+     "after": "(z+x*4)",
+     "rule": "symbolic.py:237",
+     "branch": "COMMUTATIVE flipping (only for index)"
+    },
+    {
+     "before": "((z+x*4)//8)",
+     "after": "(((0+z+0)//4+(0+x*1))//2)",
+     "rule": "divandmod.py:103",
+     "branch_line": 65,
+     "branch": "nest_by_factor"
+    },
+    {
+     "before": "(0+z)",
+     "after": "z",
+     "rule": "symbolic.py:126",
+     "branch": "x+0 / x^0 / x|0 -> x"
+    },
+    {
+     "before": "(z+0)",
+     "after": "z",
+     "rule": "symbolic.py:126",
+     "branch": "x+0 / x^0 / x|0 -> x"
+    },
+    {
+     "before": "(x*1)",
+     "after": "x",
+     "rule": "symbolic.py:128",
+     "branch": "x*1 -> x"
+    },
+    {
+     "before": "(0+x)",
+     "after": "x",
+     "rule": "symbolic.py:126",
+     "branch": "x+0 / x^0 / x|0 -> x"
+    },
+    {
+     "before": "(z//4+x)",
+     "after": "(x+z//4)",
+     "rule": "symbolic.py:237",
+     "branch": "COMMUTATIVE flipping (only for index)"
+    }
+   ]
+  },
+  {
+   "before": "((x*8+z)%8)",
+   "after": "z",
+   "vmin": "0",
+   "vmax": "7",
+   "rules": [
+    {
+     "before": "(x*8+z)",
+     "after": "(z+x*8)",
+     "rule": "symbolic.py:237",
+     "branch": "COMMUTATIVE flipping (only for index)"
+    },
+    {
+     "before": "((z+x*8)%8)",
+     "after": "(0+1*z+0*(x*1)+0+0*-1)",
+     "rule": "divandmod.py:103",
+     "branch_line": 48,
+     "branch": "fold_divmod_congruence"
+    },
+    {
+     "before": "(1*z)",
+     "after": "z",
+     "rule": "symbolic.py:128",
+     "branch": "x*1 -> x"
+    },
+    {
+     "before": "(x*1)",
+     "after": "x",
+     "rule": "symbolic.py:128",
+     "branch": "x*1 -> x"
+    },
+    {
+     "before": "(0*x)",
+     "after": "0",
+     "rule": "symbolic.py:185",
+     "branch": "x*0 -> 0 or 0*x -> 0"
+    },
+    {
+     "before": "(0+z)",
+     "after": "z",
+     "rule": "symbolic.py:126",
+     "branch": "x+0 / x^0 / x|0 -> x"
+    },
+    {
+     "before": "(z+0)",
+     "after": "z",
+     "rule": "symbolic.py:126",
+     "branch": "x+0 / x^0 / x|0 -> x"
+    },
+    {
+     "before": "(0*-1)",
+     "after": "0",
+     "rule": "symbolic.py:165",
+     "branch": "fold_const_alu"
+    }
+   ]
+  },
+  {
+   "before": "((z+8)//8)",
+   "after": "1",
+   "vmin": "1",
+   "vmax": "1",
+   "rules": [
+    {
+     "before": "((z+8)//8)",
+     "after": "1",
+     "rule": "symbolic.py:286",
+     "branch": "ALU/variable min==max -> CONST"
+    }
+   ]
+  },
+  {
+   "before": "((z*2+1)%2)",
+   "after": "1",
+   "vmin": "0",
+   "vmax": "1",
+   "rules": [
+    {
+     "before": "((z*2+1)%2)",
+     "after": "(0+0*(z*1)+1+0*-1)",
+     "rule": "divandmod.py:103",
+     "branch_line": 48,
+     "branch": "fold_divmod_congruence"
+    },
+    {
+     "before": "(z*1)",
+     "after": "z",
+     "rule": "symbolic.py:128",
+     "branch": "x*1 -> x"
+    },
+    {
+     "before": "(0*z)",
+     "after": "0",
+     "rule": "symbolic.py:185",
+     "branch": "x*0 -> 0 or 0*x -> 0"
+    },
+    {
+     "before": "(0+0)",
+     "after": "0",
+     "rule": "symbolic.py:126",
+     "branch": "x+0 / x^0 / x|0 -> x"
+    },
+    {
+     "before": "(0+1)",
+     "after": "1",
+     "rule": "symbolic.py:126",
+     "branch": "x+0 / x^0 / x|0 -> x"
+    },
+    {
+     "before": "(0*-1)",
+     "after": "0",
+     "rule": "symbolic.py:165",
+     "branch": "fold_const_alu"
+    },
+    {
+     "before": "(1+0)",
+     "after": "1",
+     "rule": "symbolic.py:126",
+     "branch": "x+0 / x^0 / x|0 -> x"
+    }
+   ]
+  },
+  {
+   "before": "(x//2//2//2)",
+   "after": "(x//8)",
+   "vmin": "0",
+   "vmax": "12",
+   "rules": [
+    {
+     "before": "(x//2//2)",
+     "after": "(x//(2*2))",
+     "rule": "symbolic.py:298",
+     "branch": "(x//c1)//c2 -> x//(c1*c2) for c2>0 when c1*c2 fits"
+    },
+    {
+     "before": "(2*2)",
+     "after": "4",
+     "rule": "symbolic.py:165",
+     "branch": "fold_const_alu"
+    },
+    {
+     "before": "(x//4//2)",
+     "after": "(x//(4*2))",
+     "rule": "symbolic.py:298",
+     "branch": "(x//c1)//c2 -> x//(c1*c2) for c2>0 when c1*c2 fits"
+    },
+    {
+     "before": "(4*2)",
+     "after": "8",
+     "rule": "symbolic.py:165",
+     "branch": "fold_const_alu"
+    }
+   ]
+  },
+  {
+   "before": "(x*3+x)",
+   "after": "(x*4)",
+   "vmin": "0",
+   "vmax": "400",
+   "rules": [
+    {
+     "before": "(x*3+x)",
+     "after": "(x+x*3)",
+     "rule": "symbolic.py:237",
+     "branch": "COMMUTATIVE flipping (only for index)"
+    },
+    {
+     "before": "(x+x*3)",
+     "after": "(x*(3+1))",
+     "rule": "symbolic.py:256",
+     "branch": "(x+x*c)-> x*(c+1)"
+    },
+    {
+     "before": "(3+1)",
+     "after": "4",
+     "rule": "symbolic.py:165",
+     "branch": "fold_const_alu"
+    }
+   ]
+  },
+  {
+   "before": "((x+1)*2+2*-1)",
+   "after": "(x*2)",
+   "vmin": "0",
+   "vmax": "200",
+   "rules": [
+    {
+     "before": "((x+1)*2)",
+     "after": "(2*x+2*1)",
+     "rule": "symbolic.py:264",
+     "branch": "y*(x+c) -> y*x + y*c"
+    },
+    {
+     "before": "(2*x)",
+     "after": "(x*2)",
+     "rule": "symbolic.py:237",
+     "branch": "COMMUTATIVE flipping (only for index)"
+    },
+    {
+     "before": "(2*1)",
+     "after": "2",
+     "rule": "symbolic.py:128",
+     "branch": "x*1 -> x"
+    },
+    {
+     "before": "(2*-1)",
+     "after": "-2",
+     "rule": "symbolic.py:165",
+     "branch": "fold_const_alu"
+    },
+    {
+     "before": "(x*2+2+-2)",
+     "after": "(x*2+(2+-2))",
+     "rule": "symbolic.py:171",
+     "branch": "two stage ALU folding"
+    },
+    {
+     "before": "(2+-2)",
+     "after": "0",
+     "rule": "symbolic.py:165",
+     "branch": "fold_const_alu"
+    },
+    {
+     "before": "(x*2+0)",
+     "after": "(x*2)",
+     "rule": "symbolic.py:126",
+     "branch": "x+0 / x^0 / x|0 -> x"
+    }
+   ]
+  },
+  {
+   "before": "(z<8)",
+   "after": "True",
+   "vmin": "True",
+   "vmax": "True",
+   "rules": [
+    {
+     "before": "(z<8)",
+     "after": "True",
+     "rule": "symbolic.py:286",
+     "branch": "ALU/variable min==max -> CONST"
+    }
+   ]
+  },
+  {
+   "before": "(z<3)",
+   "after": "(z<3)",
+   "vmin": "False",
+   "vmax": "True",
+   "rules": []
+  },
+  {
+   "before": "((x*2)<7)",
+   "after": "(x<4)",
+   "vmin": "False",
+   "vmax": "True",
+   "rules": [
+    {
+     "before": "((x*2)<7)",
+     "after": "((x*1)<4)",
+     "rule": "symbolic.py:312",
+     "branch": "generic lt folding"
+    },
+    {
+     "before": "(x*1)",
+     "after": "x",
+     "rule": "symbolic.py:128",
+     "branch": "x*1 -> x"
+    }
+   ]
+  },
+  {
+   "before": "(x//4*4+x%4+1)",
+   "after": "(x+1)",
+   "vmin": "1",
+   "vmax": "104",
+   "rules": [
+    {
+     "before": "(x//4*4+x%4)",
+     "after": "(x*1)",
+     "rule": "symbolic.py:135",
+     "branch": "fold_add_divmod_recombine"
+    },
+    {
+     "before": "(x*1)",
+     "after": "x",
+     "rule": "symbolic.py:128",
+     "branch": "x*1 -> x"
+    }
+   ]
+  },
+  {
+   "before": "(x%16//4)",
+   "after": "(x//4%4)",
+   "vmin": "0",
+   "vmax": "3",
+   "rules": [
+    {
+     "before": "(x%16//4)",
+     "after": "(x//4%4)",
+     "rule": "divandmod.py:103",
+     "branch_line": 23,
+     "branch": "nested_div"
+    }
+   ]
+  },
+  {
+   "before": "(x%16%4)",
+   "after": "(x%4)",
+   "vmin": "0",
+   "vmax": "3",
+   "rules": [
+    {
+     "before": "(x%16%4)",
+     "after": "((x+0)%4)",
+     "rule": "divandmod.py:103",
+     "branch_line": 33,
+     "branch": "remove_nested_mod"
+    },
+    {
+     "before": "(x+0)",
+     "after": "x",
+     "rule": "symbolic.py:126",
+     "branch": "x+0 / x^0 / x|0 -> x"
+    }
+   ]
+  },
+  {
+   "before": "max(z, -1)",
+   "after": "z",
+   "vmin": "0",
+   "vmax": "7",
+   "rules": [
+    {
+     "before": "max(z, -1)",
+     "after": "z",
+     "rule": "symbolic.py:294",
+     "branch": "(UPat.maximum(UPat.var(\"x\"), UPat.var(\"y\")), lambda x,y: x if x.vmin >= y.vmax e"
+    }
+   ]
+  },
+  {
+   "before": "((x*6+z)//3)",
+   "after": "(x*2+z//3)",
+   "vmin": "0",
+   "vmax": "202",
+   "rules": [
+    {
+     "before": "(x*6+z)",
+     "after": "(z+x*6)",
+     "rule": "symbolic.py:237",
+     "branch": "COMMUTATIVE flipping (only for index)"
+    },
+    {
+     "before": "((z+x*6)//3)",
+     "after": "((0+z+0)//3+(0+x*2))",
+     "rule": "divandmod.py:103",
+     "branch_line": 91,
+     "branch": "factor_remainder"
+    },
+    {
+     "before": "(0+z)",
+     "after": "z",
+     "rule": "symbolic.py:126",
+     "branch": "x+0 / x^0 / x|0 -> x"
+    },
+    {
+     "before": "(z+0)",
+     "after": "z",
+     "rule": "symbolic.py:126",
+     "branch": "x+0 / x^0 / x|0 -> x"
+    },
+    {
+     "before": "(0+x*2)",
+     "after": "(x*2)",
+     "rule": "symbolic.py:126",
+     "branch": "x+0 / x^0 / x|0 -> x"
+    },
+    {
+     "before": "(z//3+x*2)",
+     "after": "(x*2+z//3)",
+     "rule": "symbolic.py:237",
+     "branch": "COMMUTATIVE flipping (only for index)"
+    }
+   ]
+  },
+  {
+   "before": "((z*4+3)//4)",
+   "after": "z",
+   "vmin": "0",
+   "vmax": "7",
+   "rules": [
+    {
+     "before": "((z*4+3)//4)",
+     "after": "(z*1+0)",
+     "rule": "divandmod.py:103",
+     "branch_line": 36,
+     "branch": "exact division"
+    },
+    {
+     "before": "(z*1)",
+     "after": "z",
+     "rule": "symbolic.py:128",
+     "branch": "x*1 -> x"
+    },
+    {
+     "before": "(z+0)",
+     "after": "z",
+     "rule": "symbolic.py:126",
+     "branch": "x+0 / x^0 / x|0 -> x"
+    }
+   ]
+  },
+  {
+   "before": "(r0//8)",
+   "after": "0",
+   "vmin": "0",
+   "vmax": "0",
+   "rules": [
+    {
+     "before": "(r0//8)",
+     "after": "0",
+     "rule": "symbolic.py:286",
+     "branch": "ALU/variable min==max -> CONST"
+    }
+   ]
+  },
+  {
+   "before": "((x+5)%5)",
+   "after": "(x%5)",
+   "vmin": "0",
+   "vmax": "4",
+   "rules": [
+    {
+     "before": "((x+5)%5)",
+     "after": "((x+0)%5)",
+     "rule": "divandmod.py:98",
+     "branch": "(x+c)//d -> (x+c%d)//d + c//d ; (x+c)%d -> (x+c%d)%d  (split the multiple of d o"
+    },
+    {
+     "before": "(x+0)",
+     "after": "x",
+     "rule": "symbolic.py:126",
+     "branch": "x+0 / x^0 / x|0 -> x"
+    }
+   ]
+  },
+  {
+   "before": "((x*4+2)//2)",
+   "after": "(x*2+1)",
+   "vmin": "1",
+   "vmax": "201",
+   "rules": [
+    {
+     "before": "((x*4+2)//2)",
+     "after": "((x*4+0)//2+1)",
+     "rule": "divandmod.py:98",
+     "branch": "(x+c)//d -> (x+c%d)//d + c//d ; (x+c)%d -> (x+c%d)%d  (split the multiple of d o"
+    },
+    {
+     "before": "(x*4+0)",
+     "after": "(x*4)",
+     "rule": "symbolic.py:126",
+     "branch": "x+0 / x^0 / x|0 -> x"
+    },
+    {
+     "before": "(x*4//2)",
+     "after": "(x*2+0)",
+     "rule": "divandmod.py:103",
+     "branch_line": 36,
+     "branch": "exact division"
+    },
+    {
+     "before": "(x*2+0)",
+     "after": "(x*2)",
+     "rule": "symbolic.py:126",
+     "branch": "x+0 / x^0 / x|0 -> x"
+    }
+   ]
+  }
+ ],
+ "steppers": [
+  {
+   "in": [
+    12
+   ],
+   "out": [
+    3,
+    4
+   ],
+   "raw": [
+    "((0+r1*1+r0*4)%12)"
+   ],
+   "simplified": [
+    "(r0*4+r1)"
+   ],
+   "log": [
+    {
+     "before": "(r1*1)",
+     "after": "r1",
+     "rule": "symbolic.py:128",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "4"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n2",
+        "CONST",
+        "1"
+       ],
+       [
+        "n3",
+        "MUL",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "4"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r1"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "x*1 -> x"
+    },
+    {
+     "before": "(0+r1)",
+     "after": "r1",
+     "rule": "symbolic.py:126",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ],
+       [
+        "n1",
+        "CONST",
+        "4"
+       ],
+       [
+        "n2",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n3",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n0",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "4"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r1"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "x+0 / x^0 / x|0 -> x"
+    },
+    {
+     "before": "(r1+r0*4)",
+     "after": "(r0*4+r1)",
+     "rule": "symbolic.py:237",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "4"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n2",
+        "CONST",
+        "3"
+       ],
+       [
+        "n3",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n4",
+        "MUL",
+        null
+       ],
+       [
+        "n5",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n3",
+        "n4",
+        0
+       ],
+       [
+        "n0",
+        "n4",
+        1
+       ],
+       [
+        "n1",
+        "n5",
+        0
+       ],
+       [
+        "n4",
+        "n5",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "3"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "CONST",
+        "4"
+       ],
+       [
+        "n3",
+        "MUL",
+        null
+       ],
+       [
+        "n4",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n5",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ],
+       [
+        "n3",
+        "n5",
+        0
+       ],
+       [
+        "n4",
+        "n5",
+        1
+       ]
+      ]
+     },
+     "branch": "COMMUTATIVE flipping (only for index)"
+    },
+    {
+     "before": "((r0*4+r1)%12)",
+     "after": "(r0*4+r1+0*12*-1)",
+     "rule": "divandmod.py:103",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "3"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "CONST",
+        "4"
+       ],
+       [
+        "n3",
+        "MUL",
+        null
+       ],
+       [
+        "n4",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n5",
+        "ADD",
+        null
+       ],
+       [
+        "n6",
+        "CONST",
+        "12"
+       ],
+       [
+        "n7",
+        "MOD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ],
+       [
+        "n3",
+        "n5",
+        0
+       ],
+       [
+        "n4",
+        "n5",
+        1
+       ],
+       [
+        "n5",
+        "n7",
+        0
+       ],
+       [
+        "n6",
+        "n7",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "3"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "CONST",
+        "4"
+       ],
+       [
+        "n3",
+        "MUL",
+        null
+       ],
+       [
+        "n4",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n5",
+        "ADD",
+        null
+       ],
+       [
+        "n6",
+        "CONST",
+        "0"
+       ],
+       [
+        "n7",
+        "CONST",
+        "12"
+       ],
+       [
+        "n8",
+        "MUL",
+        null
+       ],
+       [
+        "n9",
+        "CONST",
+        "-1"
+       ],
+       [
+        "n10",
+        "MUL",
+        null
+       ],
+       [
+        "n11",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ],
+       [
+        "n3",
+        "n5",
+        0
+       ],
+       [
+        "n4",
+        "n5",
+        1
+       ],
+       [
+        "n6",
+        "n8",
+        0
+       ],
+       [
+        "n7",
+        "n8",
+        1
+       ],
+       [
+        "n8",
+        "n10",
+        0
+       ],
+       [
+        "n9",
+        "n10",
+        1
+       ],
+       [
+        "n5",
+        "n11",
+        0
+       ],
+       [
+        "n10",
+        "n11",
+        1
+       ]
+      ]
+     },
+     "branch_line": 13,
+     "branch": "x//y is constant"
+    },
+    {
+     "before": "(0*12)",
+     "after": "0",
+     "rule": "symbolic.py:165",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ],
+       [
+        "n1",
+        "CONST",
+        "12"
+       ],
+       [
+        "n2",
+        "MUL",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n0",
+        "n2",
+        0
+       ],
+       [
+        "n1",
+        "n2",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "fold_const_alu"
+    },
+    {
+     "before": "(0*-1)",
+     "after": "0",
+     "rule": "symbolic.py:165",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ],
+       [
+        "n1",
+        "CONST",
+        "-1"
+       ],
+       [
+        "n2",
+        "MUL",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n0",
+        "n2",
+        0
+       ],
+       [
+        "n1",
+        "n2",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "fold_const_alu"
+    },
+    {
+     "before": "(r0*4+r1+0)",
+     "after": "(r0*4+r1)",
+     "rule": "symbolic.py:126",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "3"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "CONST",
+        "4"
+       ],
+       [
+        "n3",
+        "MUL",
+        null
+       ],
+       [
+        "n4",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n5",
+        "ADD",
+        null
+       ],
+       [
+        "n6",
+        "CONST",
+        "0"
+       ],
+       [
+        "n7",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ],
+       [
+        "n3",
+        "n5",
+        0
+       ],
+       [
+        "n4",
+        "n5",
+        1
+       ],
+       [
+        "n5",
+        "n7",
+        0
+       ],
+       [
+        "n6",
+        "n7",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "3"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "CONST",
+        "4"
+       ],
+       [
+        "n3",
+        "MUL",
+        null
+       ],
+       [
+        "n4",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n5",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ],
+       [
+        "n3",
+        "n5",
+        0
+       ],
+       [
+        "n4",
+        "n5",
+        1
+       ]
+      ]
+     },
+     "branch": "x+0 / x^0 / x|0 -> x"
+    }
+   ],
+   "nodes_raw": 13,
+   "nodes_simplified": 7
+  },
+  {
+   "in": [
+    3,
+    4
+   ],
+   "out": [
+    12
+   ],
+   "raw": [
+    "((0+r0*1)//4%3)",
+    "((0+r0*1)%4)"
+   ],
+   "simplified": [
+    "(r0//4)",
+    "(r0%4)"
+   ],
+   "log": [
+    {
+     "before": "(r0*1)",
+     "after": "r0",
+     "rule": "symbolic.py:128",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "12"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "CONST",
+        "1"
+       ],
+       [
+        "n3",
+        "MUL",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "12"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "x*1 -> x"
+    },
+    {
+     "before": "(0+r0)",
+     "after": "r0",
+     "rule": "symbolic.py:126",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ],
+       [
+        "n1",
+        "CONST",
+        "12"
+       ],
+       [
+        "n2",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n3",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n0",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "12"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "x+0 / x^0 / x|0 -> x"
+    },
+    {
+     "before": "(r0//4%3)",
+     "after": "(r0//4+0*3*-1)",
+     "rule": "divandmod.py:103",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "12"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "CONST",
+        "4"
+       ],
+       [
+        "n3",
+        "DIV",
+        null
+       ],
+       [
+        "n4",
+        "CONST",
+        "3"
+       ],
+       [
+        "n5",
+        "MOD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ],
+       [
+        "n3",
+        "n5",
+        0
+       ],
+       [
+        "n4",
+        "n5",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "12"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "CONST",
+        "4"
+       ],
+       [
+        "n3",
+        "DIV",
+        null
+       ],
+       [
+        "n4",
+        "CONST",
+        "0"
+       ],
+       [
+        "n5",
+        "CONST",
+        "3"
+       ],
+       [
+        "n6",
+        "MUL",
+        null
+       ],
+       [
+        "n7",
+        "CONST",
+        "-1"
+       ],
+       [
+        "n8",
+        "MUL",
+        null
+       ],
+       [
+        "n9",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ],
+       [
+        "n4",
+        "n6",
+        0
+       ],
+       [
+        "n5",
+        "n6",
+        1
+       ],
+       [
+        "n6",
+        "n8",
+        0
+       ],
+       [
+        "n7",
+        "n8",
+        1
+       ],
+       [
+        "n3",
+        "n9",
+        0
+       ],
+       [
+        "n8",
+        "n9",
+        1
+       ]
+      ]
+     },
+     "branch_line": 13,
+     "branch": "x//y is constant"
+    },
+    {
+     "before": "(0*3)",
+     "after": "0",
+     "rule": "symbolic.py:165",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ],
+       [
+        "n1",
+        "CONST",
+        "3"
+       ],
+       [
+        "n2",
+        "MUL",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n0",
+        "n2",
+        0
+       ],
+       [
+        "n1",
+        "n2",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "fold_const_alu"
+    },
+    {
+     "before": "(0*-1)",
+     "after": "0",
+     "rule": "symbolic.py:165",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ],
+       [
+        "n1",
+        "CONST",
+        "-1"
+       ],
+       [
+        "n2",
+        "MUL",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n0",
+        "n2",
+        0
+       ],
+       [
+        "n1",
+        "n2",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "fold_const_alu"
+    },
+    {
+     "before": "(r0//4+0)",
+     "after": "(r0//4)",
+     "rule": "symbolic.py:126",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "12"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "CONST",
+        "4"
+       ],
+       [
+        "n3",
+        "DIV",
+        null
+       ],
+       [
+        "n4",
+        "CONST",
+        "0"
+       ],
+       [
+        "n5",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ],
+       [
+        "n3",
+        "n5",
+        0
+       ],
+       [
+        "n4",
+        "n5",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "12"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "CONST",
+        "4"
+       ],
+       [
+        "n3",
+        "DIV",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ]
+      ]
+     },
+     "branch": "x+0 / x^0 / x|0 -> x"
+    }
+   ],
+   "nodes_raw": 12,
+   "nodes_simplified": 6
+  },
+  {
+   "in": [
+    3,
+    4
+   ],
+   "out": [
+    2,
+    6
+   ],
+   "raw": [
+    "((0+r1*1+r0*6)//4%3)",
+    "((0+r1*1+r0*6)%4)"
+   ],
+   "simplified": [
+    "((r1//2+r0)//2+r0)",
+    "((r0*2+r1)%4)"
+   ],
+   "log": [
+    {
+     "before": "(r1*1)",
+     "after": "r1",
+     "rule": "symbolic.py:128",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "6"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n2",
+        "CONST",
+        "1"
+       ],
+       [
+        "n3",
+        "MUL",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "6"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r1"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "x*1 -> x"
+    },
+    {
+     "before": "(0+r1)",
+     "after": "r1",
+     "rule": "symbolic.py:126",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ],
+       [
+        "n1",
+        "CONST",
+        "6"
+       ],
+       [
+        "n2",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n3",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n0",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "6"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r1"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "x+0 / x^0 / x|0 -> x"
+    },
+    {
+     "before": "(r1+r0*6)",
+     "after": "(r0*6+r1)",
+     "rule": "symbolic.py:237",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "6"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n2",
+        "CONST",
+        "2"
+       ],
+       [
+        "n3",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n4",
+        "MUL",
+        null
+       ],
+       [
+        "n5",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n3",
+        "n4",
+        0
+       ],
+       [
+        "n0",
+        "n4",
+        1
+       ],
+       [
+        "n1",
+        "n5",
+        0
+       ],
+       [
+        "n4",
+        "n5",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "2"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "CONST",
+        "6"
+       ],
+       [
+        "n3",
+        "MUL",
+        null
+       ],
+       [
+        "n4",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n5",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ],
+       [
+        "n3",
+        "n5",
+        0
+       ],
+       [
+        "n4",
+        "n5",
+        1
+       ]
+      ]
+     },
+     "branch": "COMMUTATIVE flipping (only for index)"
+    },
+    {
+     "before": "((r0*6+r1)//4)",
+     "after": "((0+r0*1*2+r1+0)//4+(0+r0*1*1))",
+     "rule": "divandmod.py:103",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "2"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "CONST",
+        "6"
+       ],
+       [
+        "n3",
+        "MUL",
+        null
+       ],
+       [
+        "n4",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n5",
+        "ADD",
+        null
+       ],
+       [
+        "n6",
+        "CONST",
+        "4"
+       ],
+       [
+        "n7",
+        "DIV",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ],
+       [
+        "n3",
+        "n5",
+        0
+       ],
+       [
+        "n4",
+        "n5",
+        1
+       ],
+       [
+        "n5",
+        "n7",
+        0
+       ],
+       [
+        "n6",
+        "n7",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ],
+       [
+        "n1",
+        "CONST",
+        "2"
+       ],
+       [
+        "n2",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n3",
+        "CONST",
+        "1"
+       ],
+       [
+        "n4",
+        "MUL",
+        null
+       ],
+       [
+        "n5",
+        "MUL",
+        null
+       ],
+       [
+        "n6",
+        "ADD",
+        null
+       ],
+       [
+        "n7",
+        "CONST",
+        "6"
+       ],
+       [
+        "n8",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n9",
+        "ADD",
+        null
+       ],
+       [
+        "n10",
+        "ADD",
+        null
+       ],
+       [
+        "n11",
+        "CONST",
+        "4"
+       ],
+       [
+        "n12",
+        "DIV",
+        null
+       ],
+       [
+        "n13",
+        "MUL",
+        null
+       ],
+       [
+        "n14",
+        "ADD",
+        null
+       ],
+       [
+        "n15",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n2",
+        "n4",
+        0
+       ],
+       [
+        "n3",
+        "n4",
+        1
+       ],
+       [
+        "n4",
+        "n5",
+        0
+       ],
+       [
+        "n1",
+        "n5",
+        1
+       ],
+       [
+        "n0",
+        "n6",
+        0
+       ],
+       [
+        "n5",
+        "n6",
+        1
+       ],
+       [
+        "n6",
+        "n9",
+        0
+       ],
+       [
+        "n8",
+        "n9",
+        1
+       ],
+       [
+        "n9",
+        "n10",
+        0
+       ],
+       [
+        "n0",
+        "n10",
+        1
+       ],
+       [
+        "n10",
+        "n12",
+        0
+       ],
+       [
+        "n11",
+        "n12",
+        1
+       ],
+       [
+        "n4",
+        "n13",
+        0
+       ],
+       [
+        "n3",
+        "n13",
+        1
+       ],
+       [
+        "n0",
+        "n14",
+        0
+       ],
+       [
+        "n13",
+        "n14",
+        1
+       ],
+       [
+        "n12",
+        "n15",
+        0
+       ],
+       [
+        "n14",
+        "n15",
+        1
+       ]
+      ]
+     },
+     "branch_line": 91,
+     "branch": "factor_remainder"
+    },
+    {
+     "before": "(r0*1)",
+     "after": "r0",
+     "rule": "symbolic.py:128",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "2"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "CONST",
+        "1"
+       ],
+       [
+        "n3",
+        "MUL",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "2"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "x*1 -> x"
+    },
+    {
+     "before": "(0+r0*2)",
+     "after": "(r0*2)",
+     "rule": "symbolic.py:126",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ],
+       [
+        "n1",
+        "CONST",
+        "2"
+       ],
+       [
+        "n2",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n3",
+        "MUL",
+        null
+       ],
+       [
+        "n4",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n2",
+        "n3",
+        0
+       ],
+       [
+        "n1",
+        "n3",
+        1
+       ],
+       [
+        "n0",
+        "n4",
+        0
+       ],
+       [
+        "n3",
+        "n4",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "2"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "MUL",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n2",
+        0
+       ],
+       [
+        "n0",
+        "n2",
+        1
+       ]
+      ]
+     },
+     "branch": "x+0 / x^0 / x|0 -> x"
+    },
+    {
+     "before": "(r0*2+r1+0)",
+     "after": "(r0*2+r1)",
+     "rule": "symbolic.py:126",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "2"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "MUL",
+        null
+       ],
+       [
+        "n3",
+        "CONST",
+        "6"
+       ],
+       [
+        "n4",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n5",
+        "ADD",
+        null
+       ],
+       [
+        "n6",
+        "CONST",
+        "0"
+       ],
+       [
+        "n7",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n2",
+        0
+       ],
+       [
+        "n0",
+        "n2",
+        1
+       ],
+       [
+        "n2",
+        "n5",
+        0
+       ],
+       [
+        "n4",
+        "n5",
+        1
+       ],
+       [
+        "n5",
+        "n7",
+        0
+       ],
+       [
+        "n6",
+        "n7",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "2"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "MUL",
+        null
+       ],
+       [
+        "n3",
+        "CONST",
+        "6"
+       ],
+       [
+        "n4",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n5",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n2",
+        0
+       ],
+       [
+        "n0",
+        "n2",
+        1
+       ],
+       [
+        "n2",
+        "n5",
+        0
+       ],
+       [
+        "n4",
+        "n5",
+        1
+       ]
+      ]
+     },
+     "branch": "x+0 / x^0 / x|0 -> x"
+    },
+    {
+     "before": "((r0*2+r1)//4)",
+     "after": "(((0+r1+0)//2+(0+r0*1))//2)",
+     "rule": "divandmod.py:103",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "2"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "MUL",
+        null
+       ],
+       [
+        "n3",
+        "CONST",
+        "6"
+       ],
+       [
+        "n4",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n5",
+        "ADD",
+        null
+       ],
+       [
+        "n6",
+        "CONST",
+        "4"
+       ],
+       [
+        "n7",
+        "DIV",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n2",
+        0
+       ],
+       [
+        "n0",
+        "n2",
+        1
+       ],
+       [
+        "n2",
+        "n5",
+        0
+       ],
+       [
+        "n4",
+        "n5",
+        1
+       ],
+       [
+        "n5",
+        "n7",
+        0
+       ],
+       [
+        "n6",
+        "n7",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ],
+       [
+        "n1",
+        "CONST",
+        "6"
+       ],
+       [
+        "n2",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n3",
+        "ADD",
+        null
+       ],
+       [
+        "n4",
+        "ADD",
+        null
+       ],
+       [
+        "n5",
+        "CONST",
+        "2"
+       ],
+       [
+        "n6",
+        "DIV",
+        null
+       ],
+       [
+        "n7",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n8",
+        "CONST",
+        "1"
+       ],
+       [
+        "n9",
+        "MUL",
+        null
+       ],
+       [
+        "n10",
+        "ADD",
+        null
+       ],
+       [
+        "n11",
+        "ADD",
+        null
+       ],
+       [
+        "n12",
+        "DIV",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n0",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ],
+       [
+        "n3",
+        "n4",
+        0
+       ],
+       [
+        "n0",
+        "n4",
+        1
+       ],
+       [
+        "n4",
+        "n6",
+        0
+       ],
+       [
+        "n5",
+        "n6",
+        1
+       ],
+       [
+        "n7",
+        "n9",
+        0
+       ],
+       [
+        "n8",
+        "n9",
+        1
+       ],
+       [
+        "n0",
+        "n10",
+        0
+       ],
+       [
+        "n9",
+        "n10",
+        1
+       ],
+       [
+        "n6",
+        "n11",
+        0
+       ],
+       [
+        "n10",
+        "n11",
+        1
+       ],
+       [
+        "n11",
+        "n12",
+        0
+       ],
+       [
+        "n5",
+        "n12",
+        1
+       ]
+      ]
+     },
+     "branch_line": 65,
+     "branch": "nest_by_factor"
+    },
+    {
+     "before": "(r1+0)",
+     "after": "r1",
+     "rule": "symbolic.py:126",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "6"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n2",
+        "CONST",
+        "0"
+       ],
+       [
+        "n3",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "6"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r1"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "x+0 / x^0 / x|0 -> x"
+    },
+    {
+     "before": "(0+r0)",
+     "after": "r0",
+     "rule": "symbolic.py:126",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ],
+       [
+        "n1",
+        "CONST",
+        "2"
+       ],
+       [
+        "n2",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n3",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n0",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "2"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "x+0 / x^0 / x|0 -> x"
+    },
+    {
+     "before": "(((r1//2+r0)//2+r0)%3)",
+     "after": "((r1//2+r0)//2+r0+0*3*-1)",
+     "rule": "divandmod.py:103",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "6"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n2",
+        "CONST",
+        "2"
+       ],
+       [
+        "n3",
+        "DIV",
+        null
+       ],
+       [
+        "n4",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n5",
+        "ADD",
+        null
+       ],
+       [
+        "n6",
+        "DIV",
+        null
+       ],
+       [
+        "n7",
+        "ADD",
+        null
+       ],
+       [
+        "n8",
+        "CONST",
+        "3"
+       ],
+       [
+        "n9",
+        "MOD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ],
+       [
+        "n3",
+        "n5",
+        0
+       ],
+       [
+        "n4",
+        "n5",
+        1
+       ],
+       [
+        "n5",
+        "n6",
+        0
+       ],
+       [
+        "n2",
+        "n6",
+        1
+       ],
+       [
+        "n6",
+        "n7",
+        0
+       ],
+       [
+        "n4",
+        "n7",
+        1
+       ],
+       [
+        "n7",
+        "n9",
+        0
+       ],
+       [
+        "n8",
+        "n9",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "6"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n2",
+        "CONST",
+        "2"
+       ],
+       [
+        "n3",
+        "DIV",
+        null
+       ],
+       [
+        "n4",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n5",
+        "ADD",
+        null
+       ],
+       [
+        "n6",
+        "DIV",
+        null
+       ],
+       [
+        "n7",
+        "ADD",
+        null
+       ],
+       [
+        "n8",
+        "CONST",
+        "0"
+       ],
+       [
+        "n9",
+        "CONST",
+        "3"
+       ],
+       [
+        "n10",
+        "MUL",
+        null
+       ],
+       [
+        "n11",
+        "CONST",
+        "-1"
+       ],
+       [
+        "n12",
+        "MUL",
+        null
+       ],
+       [
+        "n13",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ],
+       [
+        "n3",
+        "n5",
+        0
+       ],
+       [
+        "n4",
+        "n5",
+        1
+       ],
+       [
+        "n5",
+        "n6",
+        0
+       ],
+       [
+        "n2",
+        "n6",
+        1
+       ],
+       [
+        "n6",
+        "n7",
+        0
+       ],
+       [
+        "n4",
+        "n7",
+        1
+       ],
+       [
+        "n8",
+        "n10",
+        0
+       ],
+       [
+        "n9",
+        "n10",
+        1
+       ],
+       [
+        "n10",
+        "n12",
+        0
+       ],
+       [
+        "n11",
+        "n12",
+        1
+       ],
+       [
+        "n7",
+        "n13",
+        0
+       ],
+       [
+        "n12",
+        "n13",
+        1
+       ]
+      ]
+     },
+     "branch_line": 13,
+     "branch": "x//y is constant"
+    },
+    {
+     "before": "(0*3)",
+     "after": "0",
+     "rule": "symbolic.py:165",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ],
+       [
+        "n1",
+        "CONST",
+        "3"
+       ],
+       [
+        "n2",
+        "MUL",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n0",
+        "n2",
+        0
+       ],
+       [
+        "n1",
+        "n2",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "fold_const_alu"
+    },
+    {
+     "before": "(0*-1)",
+     "after": "0",
+     "rule": "symbolic.py:165",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ],
+       [
+        "n1",
+        "CONST",
+        "-1"
+       ],
+       [
+        "n2",
+        "MUL",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n0",
+        "n2",
+        0
+       ],
+       [
+        "n1",
+        "n2",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "fold_const_alu"
+    },
+    {
+     "before": "((r1//2+r0)//2+r0+0)",
+     "after": "((r1//2+r0)//2+r0)",
+     "rule": "symbolic.py:126",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "6"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n2",
+        "CONST",
+        "2"
+       ],
+       [
+        "n3",
+        "DIV",
+        null
+       ],
+       [
+        "n4",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n5",
+        "ADD",
+        null
+       ],
+       [
+        "n6",
+        "DIV",
+        null
+       ],
+       [
+        "n7",
+        "ADD",
+        null
+       ],
+       [
+        "n8",
+        "CONST",
+        "0"
+       ],
+       [
+        "n9",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ],
+       [
+        "n3",
+        "n5",
+        0
+       ],
+       [
+        "n4",
+        "n5",
+        1
+       ],
+       [
+        "n5",
+        "n6",
+        0
+       ],
+       [
+        "n2",
+        "n6",
+        1
+       ],
+       [
+        "n6",
+        "n7",
+        0
+       ],
+       [
+        "n4",
+        "n7",
+        1
+       ],
+       [
+        "n7",
+        "n9",
+        0
+       ],
+       [
+        "n8",
+        "n9",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "6"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n2",
+        "CONST",
+        "2"
+       ],
+       [
+        "n3",
+        "DIV",
+        null
+       ],
+       [
+        "n4",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n5",
+        "ADD",
+        null
+       ],
+       [
+        "n6",
+        "DIV",
+        null
+       ],
+       [
+        "n7",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ],
+       [
+        "n3",
+        "n5",
+        0
+       ],
+       [
+        "n4",
+        "n5",
+        1
+       ],
+       [
+        "n5",
+        "n6",
+        0
+       ],
+       [
+        "n2",
+        "n6",
+        1
+       ],
+       [
+        "n6",
+        "n7",
+        0
+       ],
+       [
+        "n4",
+        "n7",
+        1
+       ]
+      ]
+     },
+     "branch": "x+0 / x^0 / x|0 -> x"
+    },
+    {
+     "before": "((r0*6+r1)%4)",
+     "after": "((0+r0*1*2+r1+0)%4)",
+     "rule": "divandmod.py:103",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "2"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "CONST",
+        "6"
+       ],
+       [
+        "n3",
+        "MUL",
+        null
+       ],
+       [
+        "n4",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n5",
+        "ADD",
+        null
+       ],
+       [
+        "n6",
+        "CONST",
+        "4"
+       ],
+       [
+        "n7",
+        "MOD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ],
+       [
+        "n3",
+        "n5",
+        0
+       ],
+       [
+        "n4",
+        "n5",
+        1
+       ],
+       [
+        "n5",
+        "n7",
+        0
+       ],
+       [
+        "n6",
+        "n7",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ],
+       [
+        "n1",
+        "CONST",
+        "2"
+       ],
+       [
+        "n2",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n3",
+        "CONST",
+        "1"
+       ],
+       [
+        "n4",
+        "MUL",
+        null
+       ],
+       [
+        "n5",
+        "MUL",
+        null
+       ],
+       [
+        "n6",
+        "ADD",
+        null
+       ],
+       [
+        "n7",
+        "CONST",
+        "6"
+       ],
+       [
+        "n8",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n9",
+        "ADD",
+        null
+       ],
+       [
+        "n10",
+        "ADD",
+        null
+       ],
+       [
+        "n11",
+        "CONST",
+        "4"
+       ],
+       [
+        "n12",
+        "MOD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n2",
+        "n4",
+        0
+       ],
+       [
+        "n3",
+        "n4",
+        1
+       ],
+       [
+        "n4",
+        "n5",
+        0
+       ],
+       [
+        "n1",
+        "n5",
+        1
+       ],
+       [
+        "n0",
+        "n6",
+        0
+       ],
+       [
+        "n5",
+        "n6",
+        1
+       ],
+       [
+        "n6",
+        "n9",
+        0
+       ],
+       [
+        "n8",
+        "n9",
+        1
+       ],
+       [
+        "n9",
+        "n10",
+        0
+       ],
+       [
+        "n0",
+        "n10",
+        1
+       ],
+       [
+        "n10",
+        "n12",
+        0
+       ],
+       [
+        "n11",
+        "n12",
+        1
+       ]
+      ]
+     },
+     "branch_line": 91,
+     "branch": "factor_remainder"
+    }
+   ],
+   "nodes_raw": 16,
+   "nodes_simplified": 13
+  },
+  {
+   "in": [
+    2,
+    3,
+    4
+   ],
+   "out": [
+    6,
+    4
+   ],
+   "raw": [
+    "((0+r1*1+r0*4)//4//3%2)",
+    "((0+r1*1+r0*4)//4%3)",
+    "((0+r1*1+r0*4)%4)"
+   ],
+   "simplified": [
+    "(r0//3)",
+    "(r0%3)",
+    "r1"
+   ],
+   "log": [
+    {
+     "before": "(r1*1)",
+     "after": "r1",
+     "rule": "symbolic.py:128",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "4"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n2",
+        "CONST",
+        "1"
+       ],
+       [
+        "n3",
+        "MUL",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "4"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r1"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "x*1 -> x"
+    },
+    {
+     "before": "(0+r1)",
+     "after": "r1",
+     "rule": "symbolic.py:126",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ],
+       [
+        "n1",
+        "CONST",
+        "4"
+       ],
+       [
+        "n2",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n3",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n0",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "4"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r1"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "x+0 / x^0 / x|0 -> x"
+    },
+    {
+     "before": "(r1+r0*4)",
+     "after": "(r0*4+r1)",
+     "rule": "symbolic.py:237",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "4"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n2",
+        "CONST",
+        "6"
+       ],
+       [
+        "n3",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n4",
+        "MUL",
+        null
+       ],
+       [
+        "n5",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n3",
+        "n4",
+        0
+       ],
+       [
+        "n0",
+        "n4",
+        1
+       ],
+       [
+        "n1",
+        "n5",
+        0
+       ],
+       [
+        "n4",
+        "n5",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "6"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "CONST",
+        "4"
+       ],
+       [
+        "n3",
+        "MUL",
+        null
+       ],
+       [
+        "n4",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n5",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ],
+       [
+        "n3",
+        "n5",
+        0
+       ],
+       [
+        "n4",
+        "n5",
+        1
+       ]
+      ]
+     },
+     "branch": "COMMUTATIVE flipping (only for index)"
+    },
+    {
+     "before": "((r0*4+r1)//4)",
+     "after": "(0+1*(r0*1)+0*r1+0+0)",
+     "rule": "divandmod.py:103",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "6"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "CONST",
+        "4"
+       ],
+       [
+        "n3",
+        "MUL",
+        null
+       ],
+       [
+        "n4",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n5",
+        "ADD",
+        null
+       ],
+       [
+        "n6",
+        "DIV",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ],
+       [
+        "n3",
+        "n5",
+        0
+       ],
+       [
+        "n4",
+        "n5",
+        1
+       ],
+       [
+        "n5",
+        "n6",
+        0
+       ],
+       [
+        "n2",
+        "n6",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ],
+       [
+        "n1",
+        "CONST",
+        "1"
+       ],
+       [
+        "n2",
+        "CONST",
+        "6"
+       ],
+       [
+        "n3",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n4",
+        "MUL",
+        null
+       ],
+       [
+        "n5",
+        "MUL",
+        null
+       ],
+       [
+        "n6",
+        "ADD",
+        null
+       ],
+       [
+        "n7",
+        "CONST",
+        "4"
+       ],
+       [
+        "n8",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n9",
+        "MUL",
+        null
+       ],
+       [
+        "n10",
+        "ADD",
+        null
+       ],
+       [
+        "n11",
+        "ADD",
+        null
+       ],
+       [
+        "n12",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n3",
+        "n4",
+        0
+       ],
+       [
+        "n1",
+        "n4",
+        1
+       ],
+       [
+        "n1",
+        "n5",
+        0
+       ],
+       [
+        "n4",
+        "n5",
+        1
+       ],
+       [
+        "n0",
+        "n6",
+        0
+       ],
+       [
+        "n5",
+        "n6",
+        1
+       ],
+       [
+        "n0",
+        "n9",
+        0
+       ],
+       [
+        "n8",
+        "n9",
+        1
+       ],
+       [
+        "n6",
+        "n10",
+        0
+       ],
+       [
+        "n9",
+        "n10",
+        1
+       ],
+       [
+        "n10",
+        "n11",
+        0
+       ],
+       [
+        "n0",
+        "n11",
+        1
+       ],
+       [
+        "n11",
+        "n12",
+        0
+       ],
+       [
+        "n0",
+        "n12",
+        1
+       ]
+      ]
+     },
+     "branch_line": 49,
+     "branch": "fold_divmod_congruence"
+    },
+    {
+     "before": "(r0*1)",
+     "after": "r0",
+     "rule": "symbolic.py:128",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "6"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "CONST",
+        "1"
+       ],
+       [
+        "n3",
+        "MUL",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "6"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "x*1 -> x"
+    },
+    {
+     "before": "(1*r0)",
+     "after": "r0",
+     "rule": "symbolic.py:128",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "1"
+       ],
+       [
+        "n1",
+        "CONST",
+        "6"
+       ],
+       [
+        "n2",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n3",
+        "MUL",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n0",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "6"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "x*1 -> x"
+    },
+    {
+     "before": "(0+r0)",
+     "after": "r0",
+     "rule": "symbolic.py:126",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ],
+       [
+        "n1",
+        "CONST",
+        "6"
+       ],
+       [
+        "n2",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n3",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n0",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "6"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "x+0 / x^0 / x|0 -> x"
+    },
+    {
+     "before": "(0*r1)",
+     "after": "0",
+     "rule": "symbolic.py:185",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ],
+       [
+        "n1",
+        "CONST",
+        "4"
+       ],
+       [
+        "n2",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n3",
+        "MUL",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n0",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "x*0 -> 0 or 0*x -> 0"
+    },
+    {
+     "before": "(r0+0)",
+     "after": "r0",
+     "rule": "symbolic.py:126",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "6"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "CONST",
+        "0"
+       ],
+       [
+        "n3",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "6"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "x+0 / x^0 / x|0 -> x"
+    },
+    {
+     "before": "(r0//3%2)",
+     "after": "(r0//3+0*2*-1)",
+     "rule": "divandmod.py:103",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "6"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "CONST",
+        "3"
+       ],
+       [
+        "n3",
+        "DIV",
+        null
+       ],
+       [
+        "n4",
+        "CONST",
+        "2"
+       ],
+       [
+        "n5",
+        "MOD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ],
+       [
+        "n3",
+        "n5",
+        0
+       ],
+       [
+        "n4",
+        "n5",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "6"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "CONST",
+        "3"
+       ],
+       [
+        "n3",
+        "DIV",
+        null
+       ],
+       [
+        "n4",
+        "CONST",
+        "0"
+       ],
+       [
+        "n5",
+        "CONST",
+        "2"
+       ],
+       [
+        "n6",
+        "MUL",
+        null
+       ],
+       [
+        "n7",
+        "CONST",
+        "-1"
+       ],
+       [
+        "n8",
+        "MUL",
+        null
+       ],
+       [
+        "n9",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ],
+       [
+        "n4",
+        "n6",
+        0
+       ],
+       [
+        "n5",
+        "n6",
+        1
+       ],
+       [
+        "n6",
+        "n8",
+        0
+       ],
+       [
+        "n7",
+        "n8",
+        1
+       ],
+       [
+        "n3",
+        "n9",
+        0
+       ],
+       [
+        "n8",
+        "n9",
+        1
+       ]
+      ]
+     },
+     "branch_line": 13,
+     "branch": "x//y is constant"
+    },
+    {
+     "before": "(0*2)",
+     "after": "0",
+     "rule": "symbolic.py:165",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ],
+       [
+        "n1",
+        "CONST",
+        "2"
+       ],
+       [
+        "n2",
+        "MUL",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n0",
+        "n2",
+        0
+       ],
+       [
+        "n1",
+        "n2",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "fold_const_alu"
+    },
+    {
+     "before": "(0*-1)",
+     "after": "0",
+     "rule": "symbolic.py:165",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ],
+       [
+        "n1",
+        "CONST",
+        "-1"
+       ],
+       [
+        "n2",
+        "MUL",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n0",
+        "n2",
+        0
+       ],
+       [
+        "n1",
+        "n2",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "fold_const_alu"
+    },
+    {
+     "before": "(r0//3+0)",
+     "after": "(r0//3)",
+     "rule": "symbolic.py:126",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "6"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "CONST",
+        "3"
+       ],
+       [
+        "n3",
+        "DIV",
+        null
+       ],
+       [
+        "n4",
+        "CONST",
+        "0"
+       ],
+       [
+        "n5",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ],
+       [
+        "n3",
+        "n5",
+        0
+       ],
+       [
+        "n4",
+        "n5",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "6"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "CONST",
+        "3"
+       ],
+       [
+        "n3",
+        "DIV",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ]
+      ]
+     },
+     "branch": "x+0 / x^0 / x|0 -> x"
+    },
+    {
+     "before": "((r0*4+r1)%4)",
+     "after": "(0+0*(r0*1)+1*r1+0+0*-1)",
+     "rule": "divandmod.py:103",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "6"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "CONST",
+        "4"
+       ],
+       [
+        "n3",
+        "MUL",
+        null
+       ],
+       [
+        "n4",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n5",
+        "ADD",
+        null
+       ],
+       [
+        "n6",
+        "MOD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ],
+       [
+        "n3",
+        "n5",
+        0
+       ],
+       [
+        "n4",
+        "n5",
+        1
+       ],
+       [
+        "n5",
+        "n6",
+        0
+       ],
+       [
+        "n2",
+        "n6",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ],
+       [
+        "n1",
+        "CONST",
+        "6"
+       ],
+       [
+        "n2",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n3",
+        "CONST",
+        "1"
+       ],
+       [
+        "n4",
+        "MUL",
+        null
+       ],
+       [
+        "n5",
+        "MUL",
+        null
+       ],
+       [
+        "n6",
+        "ADD",
+        null
+       ],
+       [
+        "n7",
+        "CONST",
+        "4"
+       ],
+       [
+        "n8",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n9",
+        "MUL",
+        null
+       ],
+       [
+        "n10",
+        "ADD",
+        null
+       ],
+       [
+        "n11",
+        "ADD",
+        null
+       ],
+       [
+        "n12",
+        "CONST",
+        "-1"
+       ],
+       [
+        "n13",
+        "MUL",
+        null
+       ],
+       [
+        "n14",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n2",
+        "n4",
+        0
+       ],
+       [
+        "n3",
+        "n4",
+        1
+       ],
+       [
+        "n0",
+        "n5",
+        0
+       ],
+       [
+        "n4",
+        "n5",
+        1
+       ],
+       [
+        "n0",
+        "n6",
+        0
+       ],
+       [
+        "n5",
+        "n6",
+        1
+       ],
+       [
+        "n3",
+        "n9",
+        0
+       ],
+       [
+        "n8",
+        "n9",
+        1
+       ],
+       [
+        "n6",
+        "n10",
+        0
+       ],
+       [
+        "n9",
+        "n10",
+        1
+       ],
+       [
+        "n10",
+        "n11",
+        0
+       ],
+       [
+        "n0",
+        "n11",
+        1
+       ],
+       [
+        "n0",
+        "n13",
+        0
+       ],
+       [
+        "n12",
+        "n13",
+        1
+       ],
+       [
+        "n11",
+        "n14",
+        0
+       ],
+       [
+        "n13",
+        "n14",
+        1
+       ]
+      ]
+     },
+     "branch_line": 48,
+     "branch": "fold_divmod_congruence"
+    },
+    {
+     "before": "(0*r0)",
+     "after": "0",
+     "rule": "symbolic.py:185",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ],
+       [
+        "n1",
+        "CONST",
+        "6"
+       ],
+       [
+        "n2",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n3",
+        "MUL",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n0",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "x*0 -> 0 or 0*x -> 0"
+    },
+    {
+     "before": "(0+0)",
+     "after": "0",
+     "rule": "symbolic.py:126",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ],
+       [
+        "n1",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n0",
+        "n1",
+        0
+       ],
+       [
+        "n0",
+        "n1",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "x+0 / x^0 / x|0 -> x"
+    },
+    {
+     "before": "(1*r1)",
+     "after": "r1",
+     "rule": "symbolic.py:128",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "1"
+       ],
+       [
+        "n1",
+        "CONST",
+        "4"
+       ],
+       [
+        "n2",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n3",
+        "MUL",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n0",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "4"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r1"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "x*1 -> x"
+    },
+    {
+     "before": "(r1+0)",
+     "after": "r1",
+     "rule": "symbolic.py:126",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "4"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n2",
+        "CONST",
+        "0"
+       ],
+       [
+        "n3",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "4"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r1"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "x+0 / x^0 / x|0 -> x"
+    }
+   ],
+   "nodes_raw": 18,
+   "nodes_simplified": 8
+  },
+  {
+   "in": [
+    4,
+    6
+   ],
+   "out": [
+    2,
+    2,
+    6
+   ],
+   "raw": [
+    "((0+r2*1+r1*6+r0*12)//6%4)",
+    "((0+r2*1+r1*6+r0*12)%6)"
+   ],
+   "simplified": [
+    "(r0*2+r1)",
+    "r2"
+   ],
+   "log": [
+    {
+     "before": "(r2*1)",
+     "after": "r2",
+     "rule": "symbolic.py:128",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "6"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r2"
+       ],
+       [
+        "n2",
+        "CONST",
+        "1"
+       ],
+       [
+        "n3",
+        "MUL",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "6"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r2"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "x*1 -> x"
+    },
+    {
+     "before": "(0+r2)",
+     "after": "r2",
+     "rule": "symbolic.py:126",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ],
+       [
+        "n1",
+        "CONST",
+        "6"
+       ],
+       [
+        "n2",
+        "RANGE",
+        "r2"
+       ],
+       [
+        "n3",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n0",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "6"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r2"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "x+0 / x^0 / x|0 -> x"
+    },
+    {
+     "before": "(r2+r1*6)",
+     "after": "(r1*6+r2)",
+     "rule": "symbolic.py:237",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "6"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r2"
+       ],
+       [
+        "n2",
+        "CONST",
+        "2"
+       ],
+       [
+        "n3",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n4",
+        "MUL",
+        null
+       ],
+       [
+        "n5",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n3",
+        "n4",
+        0
+       ],
+       [
+        "n0",
+        "n4",
+        1
+       ],
+       [
+        "n1",
+        "n5",
+        0
+       ],
+       [
+        "n4",
+        "n5",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "2"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n2",
+        "CONST",
+        "6"
+       ],
+       [
+        "n3",
+        "MUL",
+        null
+       ],
+       [
+        "n4",
+        "RANGE",
+        "r2"
+       ],
+       [
+        "n5",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ],
+       [
+        "n3",
+        "n5",
+        0
+       ],
+       [
+        "n4",
+        "n5",
+        1
+       ]
+      ]
+     },
+     "branch": "COMMUTATIVE flipping (only for index)"
+    },
+    {
+     "before": "((r1*6+r2+r0*12)//6)",
+     "after": "(0+1*(r1*1)+0*r2+2*(r0*1)+0+0)",
+     "rule": "divandmod.py:103",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "2"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n2",
+        "CONST",
+        "6"
+       ],
+       [
+        "n3",
+        "MUL",
+        null
+       ],
+       [
+        "n4",
+        "RANGE",
+        "r2"
+       ],
+       [
+        "n5",
+        "ADD",
+        null
+       ],
+       [
+        "n6",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n7",
+        "CONST",
+        "12"
+       ],
+       [
+        "n8",
+        "MUL",
+        null
+       ],
+       [
+        "n9",
+        "ADD",
+        null
+       ],
+       [
+        "n10",
+        "DIV",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ],
+       [
+        "n3",
+        "n5",
+        0
+       ],
+       [
+        "n4",
+        "n5",
+        1
+       ],
+       [
+        "n6",
+        "n8",
+        0
+       ],
+       [
+        "n7",
+        "n8",
+        1
+       ],
+       [
+        "n5",
+        "n9",
+        0
+       ],
+       [
+        "n8",
+        "n9",
+        1
+       ],
+       [
+        "n9",
+        "n10",
+        0
+       ],
+       [
+        "n2",
+        "n10",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ],
+       [
+        "n1",
+        "CONST",
+        "1"
+       ],
+       [
+        "n2",
+        "CONST",
+        "2"
+       ],
+       [
+        "n3",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n4",
+        "MUL",
+        null
+       ],
+       [
+        "n5",
+        "MUL",
+        null
+       ],
+       [
+        "n6",
+        "ADD",
+        null
+       ],
+       [
+        "n7",
+        "CONST",
+        "6"
+       ],
+       [
+        "n8",
+        "RANGE",
+        "r2"
+       ],
+       [
+        "n9",
+        "MUL",
+        null
+       ],
+       [
+        "n10",
+        "ADD",
+        null
+       ],
+       [
+        "n11",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n12",
+        "MUL",
+        null
+       ],
+       [
+        "n13",
+        "MUL",
+        null
+       ],
+       [
+        "n14",
+        "ADD",
+        null
+       ],
+       [
+        "n15",
+        "ADD",
+        null
+       ],
+       [
+        "n16",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n3",
+        "n4",
+        0
+       ],
+       [
+        "n1",
+        "n4",
+        1
+       ],
+       [
+        "n1",
+        "n5",
+        0
+       ],
+       [
+        "n4",
+        "n5",
+        1
+       ],
+       [
+        "n0",
+        "n6",
+        0
+       ],
+       [
+        "n5",
+        "n6",
+        1
+       ],
+       [
+        "n0",
+        "n9",
+        0
+       ],
+       [
+        "n8",
+        "n9",
+        1
+       ],
+       [
+        "n6",
+        "n10",
+        0
+       ],
+       [
+        "n9",
+        "n10",
+        1
+       ],
+       [
+        "n11",
+        "n12",
+        0
+       ],
+       [
+        "n1",
+        "n12",
+        1
+       ],
+       [
+        "n2",
+        "n13",
+        0
+       ],
+       [
+        "n12",
+        "n13",
+        1
+       ],
+       [
+        "n10",
+        "n14",
+        0
+       ],
+       [
+        "n13",
+        "n14",
+        1
+       ],
+       [
+        "n14",
+        "n15",
+        0
+       ],
+       [
+        "n0",
+        "n15",
+        1
+       ],
+       [
+        "n15",
+        "n16",
+        0
+       ],
+       [
+        "n0",
+        "n16",
+        1
+       ]
+      ]
+     },
+     "branch_line": 49,
+     "branch": "fold_divmod_congruence"
+    },
+    {
+     "before": "(r1*1)",
+     "after": "r1",
+     "rule": "symbolic.py:128",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "2"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n2",
+        "CONST",
+        "1"
+       ],
+       [
+        "n3",
+        "MUL",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "2"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r1"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "x*1 -> x"
+    },
+    {
+     "before": "(1*r1)",
+     "after": "r1",
+     "rule": "symbolic.py:128",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "1"
+       ],
+       [
+        "n1",
+        "CONST",
+        "2"
+       ],
+       [
+        "n2",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n3",
+        "MUL",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n0",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "2"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r1"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "x*1 -> x"
+    },
+    {
+     "before": "(0+r1)",
+     "after": "r1",
+     "rule": "symbolic.py:126",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ],
+       [
+        "n1",
+        "CONST",
+        "2"
+       ],
+       [
+        "n2",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n3",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n0",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "2"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r1"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "x+0 / x^0 / x|0 -> x"
+    },
+    {
+     "before": "(0*r2)",
+     "after": "0",
+     "rule": "symbolic.py:185",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ],
+       [
+        "n1",
+        "CONST",
+        "6"
+       ],
+       [
+        "n2",
+        "RANGE",
+        "r2"
+       ],
+       [
+        "n3",
+        "MUL",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n0",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "x*0 -> 0 or 0*x -> 0"
+    },
+    {
+     "before": "(r1+0)",
+     "after": "r1",
+     "rule": "symbolic.py:126",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "2"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n2",
+        "CONST",
+        "0"
+       ],
+       [
+        "n3",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "2"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r1"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "x+0 / x^0 / x|0 -> x"
+    },
+    {
+     "before": "(r0*1)",
+     "after": "r0",
+     "rule": "symbolic.py:128",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "2"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "CONST",
+        "1"
+       ],
+       [
+        "n3",
+        "MUL",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "2"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "x*1 -> x"
+    },
+    {
+     "before": "(2*r0)",
+     "after": "(r0*2)",
+     "rule": "symbolic.py:237",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "2"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "MUL",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n0",
+        "n2",
+        0
+       ],
+       [
+        "n1",
+        "n2",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "2"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "MUL",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n2",
+        0
+       ],
+       [
+        "n0",
+        "n2",
+        1
+       ]
+      ]
+     },
+     "branch": "COMMUTATIVE flipping (only for index)"
+    },
+    {
+     "before": "(r1+r0*2)",
+     "after": "(r0*2+r1)",
+     "rule": "symbolic.py:237",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "2"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n2",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n3",
+        "MUL",
+        null
+       ],
+       [
+        "n4",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n2",
+        "n3",
+        0
+       ],
+       [
+        "n0",
+        "n3",
+        1
+       ],
+       [
+        "n1",
+        "n4",
+        0
+       ],
+       [
+        "n3",
+        "n4",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "2"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "MUL",
+        null
+       ],
+       [
+        "n3",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n4",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n2",
+        0
+       ],
+       [
+        "n0",
+        "n2",
+        1
+       ],
+       [
+        "n2",
+        "n4",
+        0
+       ],
+       [
+        "n3",
+        "n4",
+        1
+       ]
+      ]
+     },
+     "branch": "COMMUTATIVE flipping (only for index)"
+    },
+    {
+     "before": "(r0*2+r1+0)",
+     "after": "(r0*2+r1)",
+     "rule": "symbolic.py:126",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "2"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "MUL",
+        null
+       ],
+       [
+        "n3",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n4",
+        "ADD",
+        null
+       ],
+       [
+        "n5",
+        "CONST",
+        "0"
+       ],
+       [
+        "n6",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n2",
+        0
+       ],
+       [
+        "n0",
+        "n2",
+        1
+       ],
+       [
+        "n2",
+        "n4",
+        0
+       ],
+       [
+        "n3",
+        "n4",
+        1
+       ],
+       [
+        "n4",
+        "n6",
+        0
+       ],
+       [
+        "n5",
+        "n6",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "2"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "MUL",
+        null
+       ],
+       [
+        "n3",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n4",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n2",
+        0
+       ],
+       [
+        "n0",
+        "n2",
+        1
+       ],
+       [
+        "n2",
+        "n4",
+        0
+       ],
+       [
+        "n3",
+        "n4",
+        1
+       ]
+      ]
+     },
+     "branch": "x+0 / x^0 / x|0 -> x"
+    },
+    {
+     "before": "((r0*2+r1)%4)",
+     "after": "(r0*2+r1+0*4*-1)",
+     "rule": "divandmod.py:103",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "2"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "MUL",
+        null
+       ],
+       [
+        "n3",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n4",
+        "ADD",
+        null
+       ],
+       [
+        "n5",
+        "CONST",
+        "4"
+       ],
+       [
+        "n6",
+        "MOD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n2",
+        0
+       ],
+       [
+        "n0",
+        "n2",
+        1
+       ],
+       [
+        "n2",
+        "n4",
+        0
+       ],
+       [
+        "n3",
+        "n4",
+        1
+       ],
+       [
+        "n4",
+        "n6",
+        0
+       ],
+       [
+        "n5",
+        "n6",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "2"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n2",
+        "MUL",
+        null
+       ],
+       [
+        "n3",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n4",
+        "ADD",
+        null
+       ],
+       [
+        "n5",
+        "CONST",
+        "0"
+       ],
+       [
+        "n6",
+        "CONST",
+        "4"
+       ],
+       [
+        "n7",
+        "MUL",
+        null
+       ],
+       [
+        "n8",
+        "CONST",
+        "-1"
+       ],
+       [
+        "n9",
+        "MUL",
+        null
+       ],
+       [
+        "n10",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n2",
+        0
+       ],
+       [
+        "n0",
+        "n2",
+        1
+       ],
+       [
+        "n2",
+        "n4",
+        0
+       ],
+       [
+        "n3",
+        "n4",
+        1
+       ],
+       [
+        "n5",
+        "n7",
+        0
+       ],
+       [
+        "n6",
+        "n7",
+        1
+       ],
+       [
+        "n7",
+        "n9",
+        0
+       ],
+       [
+        "n8",
+        "n9",
+        1
+       ],
+       [
+        "n4",
+        "n10",
+        0
+       ],
+       [
+        "n9",
+        "n10",
+        1
+       ]
+      ]
+     },
+     "branch_line": 13,
+     "branch": "x//y is constant"
+    },
+    {
+     "before": "(0*4)",
+     "after": "0",
+     "rule": "symbolic.py:165",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ],
+       [
+        "n1",
+        "CONST",
+        "4"
+       ],
+       [
+        "n2",
+        "MUL",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n0",
+        "n2",
+        0
+       ],
+       [
+        "n1",
+        "n2",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "fold_const_alu"
+    },
+    {
+     "before": "(0*-1)",
+     "after": "0",
+     "rule": "symbolic.py:165",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ],
+       [
+        "n1",
+        "CONST",
+        "-1"
+       ],
+       [
+        "n2",
+        "MUL",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n0",
+        "n2",
+        0
+       ],
+       [
+        "n1",
+        "n2",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "fold_const_alu"
+    },
+    {
+     "before": "((r1*6+r2+r0*12)%6)",
+     "after": "(0+0*(r1*1)+1*r2+0*(r0*1)+0+0*-1)",
+     "rule": "divandmod.py:103",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "2"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n2",
+        "CONST",
+        "6"
+       ],
+       [
+        "n3",
+        "MUL",
+        null
+       ],
+       [
+        "n4",
+        "RANGE",
+        "r2"
+       ],
+       [
+        "n5",
+        "ADD",
+        null
+       ],
+       [
+        "n6",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n7",
+        "CONST",
+        "12"
+       ],
+       [
+        "n8",
+        "MUL",
+        null
+       ],
+       [
+        "n9",
+        "ADD",
+        null
+       ],
+       [
+        "n10",
+        "MOD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ],
+       [
+        "n3",
+        "n5",
+        0
+       ],
+       [
+        "n4",
+        "n5",
+        1
+       ],
+       [
+        "n6",
+        "n8",
+        0
+       ],
+       [
+        "n7",
+        "n8",
+        1
+       ],
+       [
+        "n5",
+        "n9",
+        0
+       ],
+       [
+        "n8",
+        "n9",
+        1
+       ],
+       [
+        "n9",
+        "n10",
+        0
+       ],
+       [
+        "n2",
+        "n10",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ],
+       [
+        "n1",
+        "CONST",
+        "2"
+       ],
+       [
+        "n2",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n3",
+        "CONST",
+        "1"
+       ],
+       [
+        "n4",
+        "MUL",
+        null
+       ],
+       [
+        "n5",
+        "MUL",
+        null
+       ],
+       [
+        "n6",
+        "ADD",
+        null
+       ],
+       [
+        "n7",
+        "CONST",
+        "6"
+       ],
+       [
+        "n8",
+        "RANGE",
+        "r2"
+       ],
+       [
+        "n9",
+        "MUL",
+        null
+       ],
+       [
+        "n10",
+        "ADD",
+        null
+       ],
+       [
+        "n11",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n12",
+        "MUL",
+        null
+       ],
+       [
+        "n13",
+        "MUL",
+        null
+       ],
+       [
+        "n14",
+        "ADD",
+        null
+       ],
+       [
+        "n15",
+        "ADD",
+        null
+       ],
+       [
+        "n16",
+        "CONST",
+        "-1"
+       ],
+       [
+        "n17",
+        "MUL",
+        null
+       ],
+       [
+        "n18",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n2",
+        "n4",
+        0
+       ],
+       [
+        "n3",
+        "n4",
+        1
+       ],
+       [
+        "n0",
+        "n5",
+        0
+       ],
+       [
+        "n4",
+        "n5",
+        1
+       ],
+       [
+        "n0",
+        "n6",
+        0
+       ],
+       [
+        "n5",
+        "n6",
+        1
+       ],
+       [
+        "n3",
+        "n9",
+        0
+       ],
+       [
+        "n8",
+        "n9",
+        1
+       ],
+       [
+        "n6",
+        "n10",
+        0
+       ],
+       [
+        "n9",
+        "n10",
+        1
+       ],
+       [
+        "n11",
+        "n12",
+        0
+       ],
+       [
+        "n3",
+        "n12",
+        1
+       ],
+       [
+        "n0",
+        "n13",
+        0
+       ],
+       [
+        "n12",
+        "n13",
+        1
+       ],
+       [
+        "n10",
+        "n14",
+        0
+       ],
+       [
+        "n13",
+        "n14",
+        1
+       ],
+       [
+        "n14",
+        "n15",
+        0
+       ],
+       [
+        "n0",
+        "n15",
+        1
+       ],
+       [
+        "n0",
+        "n17",
+        0
+       ],
+       [
+        "n16",
+        "n17",
+        1
+       ],
+       [
+        "n15",
+        "n18",
+        0
+       ],
+       [
+        "n17",
+        "n18",
+        1
+       ]
+      ]
+     },
+     "branch_line": 48,
+     "branch": "fold_divmod_congruence"
+    },
+    {
+     "before": "(0*r1)",
+     "after": "0",
+     "rule": "symbolic.py:185",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ],
+       [
+        "n1",
+        "CONST",
+        "2"
+       ],
+       [
+        "n2",
+        "RANGE",
+        "r1"
+       ],
+       [
+        "n3",
+        "MUL",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n0",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "x*0 -> 0 or 0*x -> 0"
+    },
+    {
+     "before": "(0+0)",
+     "after": "0",
+     "rule": "symbolic.py:126",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ],
+       [
+        "n1",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n0",
+        "n1",
+        0
+       ],
+       [
+        "n0",
+        "n1",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "x+0 / x^0 / x|0 -> x"
+    },
+    {
+     "before": "(1*r2)",
+     "after": "r2",
+     "rule": "symbolic.py:128",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "1"
+       ],
+       [
+        "n1",
+        "CONST",
+        "6"
+       ],
+       [
+        "n2",
+        "RANGE",
+        "r2"
+       ],
+       [
+        "n3",
+        "MUL",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n0",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "6"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r2"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "x*1 -> x"
+    },
+    {
+     "before": "(0*r0)",
+     "after": "0",
+     "rule": "symbolic.py:185",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ],
+       [
+        "n1",
+        "CONST",
+        "2"
+       ],
+       [
+        "n2",
+        "RANGE",
+        "r0"
+       ],
+       [
+        "n3",
+        "MUL",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n0",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "0"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "x*0 -> 0 or 0*x -> 0"
+    },
+    {
+     "before": "(r2+0)",
+     "after": "r2",
+     "rule": "symbolic.py:126",
+     "g0": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "6"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r2"
+       ],
+       [
+        "n2",
+        "CONST",
+        "0"
+       ],
+       [
+        "n3",
+        "ADD",
+        null
+       ]
+      ],
+      "edges": [
+       [
+        "n1",
+        "n3",
+        0
+       ],
+       [
+        "n2",
+        "n3",
+        1
+       ]
+      ]
+     },
+     "g1": {
+      "nodes": [
+       [
+        "n0",
+        "CONST",
+        "6"
+       ],
+       [
+        "n1",
+        "RANGE",
+        "r2"
+       ]
+      ],
+      "edges": []
+     },
+     "branch": "x+0 / x^0 / x|0 -> x"
+    }
+   ],
+   "nodes_raw": 19,
+   "nodes_simplified": 8
+  }
+ ],
+ "intervals": [
+  {
+   "expr": "a+b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": 0,
+   "vmax": 20
+  },
+  {
+   "expr": "a-b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": -10,
+   "vmax": 10
+  },
+  {
+   "expr": "a*b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": 0,
+   "vmax": 100
+  },
+  {
+   "expr": "a//b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": "-inf",
+   "vmax": "inf"
+  },
+  {
+   "expr": "a%b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": "-inf",
+   "vmax": "inf"
+  },
+  {
+   "expr": "max(a,b)",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": 0,
+   "vmax": 10
+  },
+  {
+   "expr": "a<b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": false,
+   "vmax": true
+  },
+  {
+   "expr": "(a*4+b)//4",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": 0,
+   "vmax": 12
+  },
+  {
+   "expr": "(a*4+b)%4",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": 0,
+   "vmax": 3
+  },
+  {
+   "expr": "a*-3+b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": -30,
+   "vmax": 10
+  },
+  {
+   "expr": "(a<b).where(a,b)",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": 0,
+   "vmax": 10
+  },
+  {
+   "expr": "a+b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": 1,
+   "vmax": 14
+  },
+  {
+   "expr": "a-b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": -4,
+   "vmax": 9
+  },
+  {
+   "expr": "a*b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": 0,
+   "vmax": 40
+  },
+  {
+   "expr": "a//b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": 0,
+   "vmax": 10
+  },
+  {
+   "expr": "a%b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": 0,
+   "vmax": 3
+  },
+  {
+   "expr": "max(a,b)",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": 1,
+   "vmax": 10
+  },
+  {
+   "expr": "a<b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": false,
+   "vmax": true
+  },
+  {
+   "expr": "(a*4+b)//4",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": 0,
+   "vmax": 11
+  },
+  {
+   "expr": "(a*4+b)%4",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": 0,
+   "vmax": 3
+  },
+  {
+   "expr": "a*-3+b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": -29,
+   "vmax": 4
+  },
+  {
+   "expr": "(a<b).where(a,b)",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": 0,
+   "vmax": 4
+  },
+  {
+   "expr": "a+b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": -3,
+   "vmax": 13
+  },
+  {
+   "expr": "a-b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": -3,
+   "vmax": 13
+  },
+  {
+   "expr": "a*b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": -30,
+   "vmax": 30
+  },
+  {
+   "expr": "a//b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": "-inf",
+   "vmax": "inf"
+  },
+  {
+   "expr": "a%b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": "-inf",
+   "vmax": "inf"
+  },
+  {
+   "expr": "max(a,b)",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": 0,
+   "vmax": 10
+  },
+  {
+   "expr": "a<b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": false,
+   "vmax": true
+  },
+  {
+   "expr": "(a*4+b)//4",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": -1,
+   "vmax": 10
+  },
+  {
+   "expr": "(a*4+b)%4",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": 0,
+   "vmax": 3
+  },
+  {
+   "expr": "a*-3+b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": -33,
+   "vmax": 3
+  },
+  {
+   "expr": "(a<b).where(a,b)",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": -3,
+   "vmax": 3
+  },
+  {
+   "expr": "a+b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": 2,
+   "vmax": 12
+  },
+  {
+   "expr": "a-b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": -2,
+   "vmax": 8
+  },
+  {
+   "expr": "a*b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": 0,
+   "vmax": 20
+  },
+  {
+   "expr": "a//b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": 0,
+   "vmax": 5
+  },
+  {
+   "expr": "a%b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": 0,
+   "vmax": 1
+  },
+  {
+   "expr": "max(a,b)",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": 2,
+   "vmax": 10
+  },
+  {
+   "expr": "a<b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": false,
+   "vmax": true
+  },
+  {
+   "expr": "(a*4+b)//4",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": 0,
+   "vmax": 10
+  },
+  {
+   "expr": "(a*4+b)%4",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": 0,
+   "vmax": 3
+  },
+  {
+   "expr": "a*-3+b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": -28,
+   "vmax": 2
+  },
+  {
+   "expr": "(a<b).where(a,b)",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": 0,
+   "vmax": 2
+  },
+  {
+   "expr": "a+b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": -6,
+   "vmax": 9
+  },
+  {
+   "expr": "a-b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": 1,
+   "vmax": 16
+  },
+  {
+   "expr": "a*b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": -60,
+   "vmax": 0
+  },
+  {
+   "expr": "a//b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": -10,
+   "vmax": 0
+  },
+  {
+   "expr": "a%b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": -5,
+   "vmax": 0
+  },
+  {
+   "expr": "max(a,b)",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": 0,
+   "vmax": 10
+  },
+  {
+   "expr": "a<b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": false,
+   "vmax": false
+  },
+  {
+   "expr": "(a*4+b)//4",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": -2,
+   "vmax": 9
+  },
+  {
+   "expr": "(a*4+b)%4",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": 0,
+   "vmax": 3
+  },
+  {
+   "expr": "a*-3+b",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": -36,
+   "vmax": -1
+  },
+  {
+   "expr": "(a<b).where(a,b)",
+   "a": [
+    0,
+    10
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": -6,
+   "vmax": -1
+  },
+  {
+   "expr": "a+b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": -5,
+   "vmax": 15
+  },
+  {
+   "expr": "a-b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": -15,
+   "vmax": 5
+  },
+  {
+   "expr": "a*b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": -50,
+   "vmax": 50
+  },
+  {
+   "expr": "a//b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": "-inf",
+   "vmax": "inf"
+  },
+  {
+   "expr": "a%b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": "-inf",
+   "vmax": "inf"
+  },
+  {
+   "expr": "max(a,b)",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": 0,
+   "vmax": 10
+  },
+  {
+   "expr": "a<b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": false,
+   "vmax": true
+  },
+  {
+   "expr": "(a*4+b)//4",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": -5,
+   "vmax": 7
+  },
+  {
+   "expr": "(a*4+b)%4",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": 0,
+   "vmax": 3
+  },
+  {
+   "expr": "a*-3+b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": -15,
+   "vmax": 25
+  },
+  {
+   "expr": "(a<b).where(a,b)",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": -5,
+   "vmax": 5
+  },
+  {
+   "expr": "a+b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": -4,
+   "vmax": 9
+  },
+  {
+   "expr": "a-b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": -9,
+   "vmax": 4
+  },
+  {
+   "expr": "a*b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": -20,
+   "vmax": 20
+  },
+  {
+   "expr": "a//b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": -5,
+   "vmax": 5
+  },
+  {
+   "expr": "a%b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": 0,
+   "vmax": 3
+  },
+  {
+   "expr": "max(a,b)",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": 1,
+   "vmax": 5
+  },
+  {
+   "expr": "a<b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": false,
+   "vmax": true
+  },
+  {
+   "expr": "(a*4+b)//4",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": -5,
+   "vmax": 6
+  },
+  {
+   "expr": "(a*4+b)%4",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": 0,
+   "vmax": 3
+  },
+  {
+   "expr": "a*-3+b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": -14,
+   "vmax": 19
+  },
+  {
+   "expr": "(a<b).where(a,b)",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": -5,
+   "vmax": 4
+  },
+  {
+   "expr": "a+b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": -8,
+   "vmax": 8
+  },
+  {
+   "expr": "a-b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": -8,
+   "vmax": 8
+  },
+  {
+   "expr": "a*b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": -15,
+   "vmax": 15
+  },
+  {
+   "expr": "a//b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": "-inf",
+   "vmax": "inf"
+  },
+  {
+   "expr": "a%b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": "-inf",
+   "vmax": "inf"
+  },
+  {
+   "expr": "max(a,b)",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": -3,
+   "vmax": 5
+  },
+  {
+   "expr": "a<b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": false,
+   "vmax": true
+  },
+  {
+   "expr": "(a*4+b)//4",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": -6,
+   "vmax": 5
+  },
+  {
+   "expr": "(a*4+b)%4",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": 0,
+   "vmax": 3
+  },
+  {
+   "expr": "a*-3+b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": -18,
+   "vmax": 18
+  },
+  {
+   "expr": "(a<b).where(a,b)",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": -5,
+   "vmax": 3
+  },
+  {
+   "expr": "a+b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": -3,
+   "vmax": 7
+  },
+  {
+   "expr": "a-b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": -7,
+   "vmax": 3
+  },
+  {
+   "expr": "a*b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": -10,
+   "vmax": 10
+  },
+  {
+   "expr": "a//b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": -3,
+   "vmax": 2
+  },
+  {
+   "expr": "a%b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": 0,
+   "vmax": 1
+  },
+  {
+   "expr": "max(a,b)",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": 2,
+   "vmax": 5
+  },
+  {
+   "expr": "a<b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": false,
+   "vmax": true
+  },
+  {
+   "expr": "(a*4+b)//4",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": -5,
+   "vmax": 5
+  },
+  {
+   "expr": "(a*4+b)%4",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": 0,
+   "vmax": 3
+  },
+  {
+   "expr": "a*-3+b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": -13,
+   "vmax": 17
+  },
+  {
+   "expr": "(a<b).where(a,b)",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": -5,
+   "vmax": 2
+  },
+  {
+   "expr": "a+b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": -11,
+   "vmax": 4
+  },
+  {
+   "expr": "a-b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": -4,
+   "vmax": 11
+  },
+  {
+   "expr": "a*b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": -30,
+   "vmax": 30
+  },
+  {
+   "expr": "a//b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": -5,
+   "vmax": 5
+  },
+  {
+   "expr": "a%b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": -5,
+   "vmax": 0
+  },
+  {
+   "expr": "max(a,b)",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": -5,
+   "vmax": 5
+  },
+  {
+   "expr": "a<b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": false,
+   "vmax": true
+  },
+  {
+   "expr": "(a*4+b)//4",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": -7,
+   "vmax": 4
+  },
+  {
+   "expr": "(a*4+b)%4",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": 0,
+   "vmax": 3
+  },
+  {
+   "expr": "a*-3+b",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": -21,
+   "vmax": 14
+  },
+  {
+   "expr": "(a<b).where(a,b)",
+   "a": [
+    -5,
+    5
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": -6,
+   "vmax": -1
+  },
+  {
+   "expr": "a+b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": 3,
+   "vmax": 17
+  },
+  {
+   "expr": "a-b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": -7,
+   "vmax": 7
+  },
+  {
+   "expr": "a*b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": 0,
+   "vmax": 70
+  },
+  {
+   "expr": "a//b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": "-inf",
+   "vmax": "inf"
+  },
+  {
+   "expr": "a%b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": "-inf",
+   "vmax": "inf"
+  },
+  {
+   "expr": "max(a,b)",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": 3,
+   "vmax": 10
+  },
+  {
+   "expr": "a<b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": false,
+   "vmax": true
+  },
+  {
+   "expr": "(a*4+b)//4",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": 3,
+   "vmax": 9
+  },
+  {
+   "expr": "(a*4+b)%4",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": 0,
+   "vmax": 3
+  },
+  {
+   "expr": "a*-3+b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": -21,
+   "vmax": 1
+  },
+  {
+   "expr": "(a<b).where(a,b)",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": 0,
+   "vmax": 7
+  },
+  {
+   "expr": "a+b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": 4,
+   "vmax": 11
+  },
+  {
+   "expr": "a-b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": -1,
+   "vmax": 6
+  },
+  {
+   "expr": "a*b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": 3,
+   "vmax": 28
+  },
+  {
+   "expr": "a//b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": 0,
+   "vmax": 7
+  },
+  {
+   "expr": "a%b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": 0,
+   "vmax": 3
+  },
+  {
+   "expr": "max(a,b)",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": 3,
+   "vmax": 7
+  },
+  {
+   "expr": "a<b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": false,
+   "vmax": true
+  },
+  {
+   "expr": "(a*4+b)//4",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": 3,
+   "vmax": 8
+  },
+  {
+   "expr": "(a*4+b)%4",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": 0,
+   "vmax": 3
+  },
+  {
+   "expr": "a*-3+b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": -20,
+   "vmax": -5
+  },
+  {
+   "expr": "(a<b).where(a,b)",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": 1,
+   "vmax": 4
+  },
+  {
+   "expr": "a+b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": 0,
+   "vmax": 10
+  },
+  {
+   "expr": "a-b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": 0,
+   "vmax": 10
+  },
+  {
+   "expr": "a*b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": -21,
+   "vmax": 21
+  },
+  {
+   "expr": "a//b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": "-inf",
+   "vmax": "inf"
+  },
+  {
+   "expr": "a%b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": "-inf",
+   "vmax": "inf"
+  },
+  {
+   "expr": "max(a,b)",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": 3,
+   "vmax": 7
+  },
+  {
+   "expr": "a<b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": false,
+   "vmax": false
+  },
+  {
+   "expr": "(a*4+b)//4",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": 2,
+   "vmax": 7
+  },
+  {
+   "expr": "(a*4+b)%4",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": 0,
+   "vmax": 3
+  },
+  {
+   "expr": "a*-3+b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": -24,
+   "vmax": -6
+  },
+  {
+   "expr": "(a<b).where(a,b)",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": -3,
+   "vmax": 3
+  },
+  {
+   "expr": "a+b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": 5,
+   "vmax": 9
+  },
+  {
+   "expr": "a-b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": 1,
+   "vmax": 5
+  },
+  {
+   "expr": "a*b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": 6,
+   "vmax": 14
+  },
+  {
+   "expr": "a//b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": 1,
+   "vmax": 3
+  },
+  {
+   "expr": "a%b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": 0,
+   "vmax": 1
+  },
+  {
+   "expr": "max(a,b)",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": 3,
+   "vmax": 7
+  },
+  {
+   "expr": "a<b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": false,
+   "vmax": false
+  },
+  {
+   "expr": "(a*4+b)//4",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": 3,
+   "vmax": 7
+  },
+  {
+   "expr": "(a*4+b)%4",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": 0,
+   "vmax": 3
+  },
+  {
+   "expr": "a*-3+b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": -19,
+   "vmax": -7
+  },
+  {
+   "expr": "(a<b).where(a,b)",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": 2,
+   "vmax": 2
+  },
+  {
+   "expr": "a+b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": -3,
+   "vmax": 6
+  },
+  {
+   "expr": "a-b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": 4,
+   "vmax": 13
+  },
+  {
+   "expr": "a*b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": -42,
+   "vmax": -3
+  },
+  {
+   "expr": "a//b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": -7,
+   "vmax": -1
+  },
+  {
+   "expr": "a%b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": -5,
+   "vmax": 0
+  },
+  {
+   "expr": "max(a,b)",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": 3,
+   "vmax": 7
+  },
+  {
+   "expr": "a<b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": false,
+   "vmax": false
+  },
+  {
+   "expr": "(a*4+b)//4",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": 1,
+   "vmax": 6
+  },
+  {
+   "expr": "(a*4+b)%4",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": 0,
+   "vmax": 3
+  },
+  {
+   "expr": "a*-3+b",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": -27,
+   "vmax": -10
+  },
+  {
+   "expr": "(a<b).where(a,b)",
+   "a": [
+    3,
+    7
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": -6,
+   "vmax": -1
+  },
+  {
+   "expr": "a+b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": -8,
+   "vmax": 8
+  },
+  {
+   "expr": "a-b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": -18,
+   "vmax": -2
+  },
+  {
+   "expr": "a*b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": -80,
+   "vmax": 0
+  },
+  {
+   "expr": "a//b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": "-inf",
+   "vmax": "inf"
+  },
+  {
+   "expr": "a%b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": "-inf",
+   "vmax": "inf"
+  },
+  {
+   "expr": "max(a,b)",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": 0,
+   "vmax": 10
+  },
+  {
+   "expr": "a<b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": true,
+   "vmax": true
+  },
+  {
+   "expr": "(a*4+b)//4",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": -8,
+   "vmax": 0
+  },
+  {
+   "expr": "(a*4+b)%4",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": 0,
+   "vmax": 3
+  },
+  {
+   "expr": "a*-3+b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": 6,
+   "vmax": 34
+  },
+  {
+   "expr": "(a<b).where(a,b)",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    0,
+    10
+   ],
+   "vmin": -8,
+   "vmax": -2
+  },
+  {
+   "expr": "a+b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": -7,
+   "vmax": 2
+  },
+  {
+   "expr": "a-b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": -12,
+   "vmax": -3
+  },
+  {
+   "expr": "a*b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": -32,
+   "vmax": -2
+  },
+  {
+   "expr": "a//b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": -8,
+   "vmax": -1
+  },
+  {
+   "expr": "a%b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": 0,
+   "vmax": 3
+  },
+  {
+   "expr": "max(a,b)",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": 1,
+   "vmax": 4
+  },
+  {
+   "expr": "a<b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": true,
+   "vmax": true
+  },
+  {
+   "expr": "(a*4+b)//4",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": -8,
+   "vmax": -1
+  },
+  {
+   "expr": "(a*4+b)%4",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": 0,
+   "vmax": 3
+  },
+  {
+   "expr": "a*-3+b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": 7,
+   "vmax": 28
+  },
+  {
+   "expr": "(a<b).where(a,b)",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    1,
+    4
+   ],
+   "vmin": -8,
+   "vmax": -2
+  },
+  {
+   "expr": "a+b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": -11,
+   "vmax": 1
+  },
+  {
+   "expr": "a-b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": -11,
+   "vmax": 1
+  },
+  {
+   "expr": "a*b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": -24,
+   "vmax": 24
+  },
+  {
+   "expr": "a//b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": "-inf",
+   "vmax": "inf"
+  },
+  {
+   "expr": "a%b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": "-inf",
+   "vmax": "inf"
+  },
+  {
+   "expr": "max(a,b)",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": -3,
+   "vmax": 3
+  },
+  {
+   "expr": "a<b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": false,
+   "vmax": true
+  },
+  {
+   "expr": "(a*4+b)//4",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": -9,
+   "vmax": -2
+  },
+  {
+   "expr": "(a*4+b)%4",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": 0,
+   "vmax": 3
+  },
+  {
+   "expr": "a*-3+b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": 3,
+   "vmax": 27
+  },
+  {
+   "expr": "(a<b).where(a,b)",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    -3,
+    3
+   ],
+   "vmin": -8,
+   "vmax": -2
+  },
+  {
+   "expr": "a+b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": -6,
+   "vmax": 0
+  },
+  {
+   "expr": "a-b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": -10,
+   "vmax": -4
+  },
+  {
+   "expr": "a*b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": -16,
+   "vmax": -4
+  },
+  {
+   "expr": "a//b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": -4,
+   "vmax": -1
+  },
+  {
+   "expr": "a%b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": 0,
+   "vmax": 1
+  },
+  {
+   "expr": "max(a,b)",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": 2,
+   "vmax": 2
+  },
+  {
+   "expr": "a<b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": true,
+   "vmax": true
+  },
+  {
+   "expr": "(a*4+b)//4",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": -8,
+   "vmax": -2
+  },
+  {
+   "expr": "(a*4+b)%4",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": 0,
+   "vmax": 3
+  },
+  {
+   "expr": "a*-3+b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": 8,
+   "vmax": 26
+  },
+  {
+   "expr": "(a<b).where(a,b)",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    2,
+    2
+   ],
+   "vmin": -8,
+   "vmax": -2
+  },
+  {
+   "expr": "a+b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": -14,
+   "vmax": -3
+  },
+  {
+   "expr": "a-b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": -7,
+   "vmax": 4
+  },
+  {
+   "expr": "a*b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": 2,
+   "vmax": 48
+  },
+  {
+   "expr": "a//b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": 0,
+   "vmax": 8
+  },
+  {
+   "expr": "a%b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": -5,
+   "vmax": 0
+  },
+  {
+   "expr": "max(a,b)",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": -6,
+   "vmax": -1
+  },
+  {
+   "expr": "a<b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": false,
+   "vmax": true
+  },
+  {
+   "expr": "(a*4+b)//4",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": -10,
+   "vmax": -3
+  },
+  {
+   "expr": "(a*4+b)%4",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": 0,
+   "vmax": 3
+  },
+  {
+   "expr": "a*-3+b",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": 0,
+   "vmax": 23
+  },
+  {
+   "expr": "(a<b).where(a,b)",
+   "a": [
+    -8,
+    -2
+   ],
+   "b": [
+    -6,
+    -1
+   ],
+   "vmin": -8,
+   "vmax": -2
+  }
+ ]
+}

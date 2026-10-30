@@ -1,0 +1,1040 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>11. Fusion &amp; splitting into kernels — tinygrad internals</title>
+<link rel="stylesheet" href="../assets/vendor/hljs-dark.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/vendor/highlight.min.js"></script>
+<script src="../assets/vendor/dagre.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/chapters.js"></script>
+<script src="../assets/guide.js"></script>
+<style>
+.ch11-klegend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12.5px; color: var(--dim); margin: 6px 0; }
+.ch11-klegend span::before { content: ""; display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; background: var(--c); }
+.ch11-chip { display: inline-block; font-family: var(--mono); font-size: 12px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg3); margin: 2px 4px 2px 0; }
+.ch11-chip.keep { border-color: var(--green); color: var(--green); }
+.ch11-chip.gone { border-color: var(--red); color: var(--red); text-decoration: line-through; }
+.ch11-why { background: var(--bg3); border-radius: 6px; padding: 8px 12px; font-size: 14.5px; margin: 8px 0; }
+.ch11-casebtns button { margin: 2px; font-size: 13px; }
+.ch11-casebtns button .n { font-family: var(--mono); color: var(--yellow); margin-left: 6px; }
+.ch11-casebtns button.active .n { color: #000; }
+.ch11-code pre { max-height: 360px; }
+.ch11-game { text-align: center; }
+.ch11-game .prog { font-family: var(--mono); font-size: 20px; color: var(--yellow); margin: 14px 0; }
+.ch11-game .opts button { font-size: 18px; min-width: 56px; margin: 4px; }
+.ch11-game .res { min-height: 3.4em; font-size: 14.5px; margin-top: 10px; }
+.ch11-score { font-family: var(--mono); color: var(--dim); }
+.ch11-cost { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 10px; margin: 10px 0; }
+.ch11-cost div { background: var(--bg3); border-radius: 8px; padding: 8px 10px; text-align: center; }
+.ch11-cost b { display: block; font-size: 22px; font-family: var(--mono); color: var(--yellow); }
+.ch11-cost small { color: var(--dim); font-size: 12px; }
+.ch11-sim { display: grid; grid-template-columns: 320px 1fr; gap: 16px; }
+@media (max-width: 1000px) { .ch11-sim { grid-template-columns: 1fr; } }
+.ch11-sim pre { font-size: 12.5px; }
+.ch11-sim .ln { display: block; padding: 0 4px; border-radius: 3px; }
+.ch11-sim .ln.on { background: rgba(244,211,69,.22); outline: 1px solid var(--yellow); }
+.ch11-verdict { font-size: 18px; font-weight: 700; margin: 8px 0; }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="sidebar" id="sidebar"></nav>
+<main>
+  <h1><span class="chnum">CHAPTER 11</span>Fusion &amp; splitting into kernels</h1>
+  <p class="lede"><a href="10-rangeify.html">Chapter 10</a> ended with a graph full of <code>STAGE</code> (BUFFERIZE) candidates.
+  This chapter answers the question you actually care about: <b>how many kernels, and which ops go into which one?</b> You'll see the
+  cost function that throws cheap candidates away (<code>pm_remove_bufferize</code>), the per-kernel buffer limit
+  (<code>pm_limit_bufs</code>), how survivors become <code>ALLOC</code> + <code>STORE</code> (<code>bufferize_to_store</code>), and how
+  <code>split_kernels</code> cuts the graph into <code>SINK</code>s wrapped in <code>CALL</code>s. Then a catalogue of 13 real programs
+  with their kernels and C code, a game, and a graph you can cut yourself.</p>
+
+  <!-- ===================================================================================== -->
+  <h2 id="intuition"><span class="sec">11.1</span> Intuition: a kernel is a loop nest that ends in a store</h2>
+  <p>After rangeify, the graph is "one giant loop program": every value is written in terms of loop variables. A <b>kernel</b> is a
+  piece of it that a GPU can launch on its own: one loop nest whose body ends by <b>writing to memory</b>. So the cut points are
+  exactly the places where a value is written to a buffer and later read back:</p>
+  <ul>
+    <li>every <code>STORE</code> (your outputs, <code>contiguous()</code>, <code>assign</code>, copies) — always;</li>
+    <li>every <code>STAGE</code> that <em>survives</em> — a candidate from the realize map that wasn't cheaper to recompute.</li>
+  </ul>
+  <p>Everything between two cut points is <b>fused</b>: it runs inside the loop of the kernel that reads it, possibly more than once
+  (recomputation is the price of fusion).</p>
+
+  <div class="callout analogy"><span class="title">Analogy</span>A kitchen. Each kernel is a cook at a station who produces one
+  tray (a buffer). A cook may prepare intermediate ingredients herself, right when she needs them (fusion) — even if the cook next to
+  her prepares the same ingredient again (recomputation). Only when an intermediate is <em>expensive</em> (it involves a long
+  reduction), or needed <em>whole</em> before anyone can use a bit of it (a row max before subtracting it), does it go on its own tray
+  in the fridge (a buffer) — and that costs a fridge trip (a memory round-trip) and a new cook (a kernel launch).</div>
+
+  <div class="callout aha"><span class="title">The key idea</span><b>Kernels = STOREs + surviving STAGEs.</b> Chapter 10 proposes
+  candidates conservatively; <code>pm_remove_bufferize</code> removes the ones that are cheap to recompute; the survivors are turned into
+  stores into fresh <code>ALLOC</code> buffers; finally every <code>STORE</code>/<code>END</code> that closes all its loops is cut out as
+  one kernel. Count the stores, you've counted the kernels.</div>
+
+  <!-- ===================================================================================== -->
+  <h2 id="passes"><span class="sec">11.2</span> The second half of get_kernel_graph</h2>
+  <p><a class="src" data-path="tinygrad/schedule/rangeify.py" data-line="339">get_kernel_graph</a> is the whole of
+  Chapters 10 and 11 in 25 lines:</p>
+<pre><code class="language-python">@rewrite_group(new_ctx=False)
+def get_kernel_graph(tsink:UOp) -> UOp:
+  # convert movement ops to ranges
+  tsink = run_rangeify(tsink, bool(DEBUG_RANGEIFY))                                    # Chapter 10
+
+  # cleanups for speed and runability
+  tsink = graph_rewrite(tsink, symbolic+pm_reduce_simplify+pm_const_buffer_folding+pm_remove_bufferize,
+                        name="symbolic+reduce_collapse+debuf")                          # 11.3 / 11.4
+  next_range = max((x.axis_id[0] for x in tsink.toposort() if x.op is Ops.RANGE), default=-1) + 1
+  tsink = graph_rewrite(tsink, pm_limit_bufs, ctx=LimitBufsContext(range_idx=itertools.count(next_range)), name="limit buffers")  # 11.5
+  if VIZ: graph_rewrite(tsink, PatternMatcher([]), name="View Rangeify")
+
+  # bufferize -> store
+  slots = [x.arg.slot for x in tsink.toposort() if x.op is Ops.ALLOC]
+  paramarg_start: int = max([-1]+slots) + 1
+  tsink = graph_rewrite(tsink, pm_add_buffers, ctx=itertools.count(paramarg_start), bottom_up=True, name="stage to store")   # 11.6
+  tsink = graph_rewrite(tsink, pm_no_indexing_calls, name="remove indexing from call args")
+  tsink = graph_rewrite(tsink, split_kernels, bottom_up=True, name="split kernels")        # 11.7
+  tsink = graph_rewrite(tsink, pm_no_views, name="remove views from the kernel graph")
+  if VIZ: graph_rewrite(tsink, PatternMatcher([]), name="View Kernel Graph")
+  if SPEC: type_verify(tsink, spec_kernel_graph)
+  return tsink</code></pre>
+  <table>
+    <tr><th>pass name</th><th>input</th><th>output</th></tr>
+    <tr><td><code>symbolic+reduce_collapse+debuf</code></td><td>rangeified graph with all candidate STAGEs</td><td>same, minus cheap STAGEs (recomputed inline), simplified index math</td></tr>
+    <tr><td><code>limit buffers</code></td><td>…</td><td>extra STAGEs where a kernel would touch too many buffers or has a read/write hazard</td></tr>
+    <tr><td><code>stage to store</code></td><td>STAGEs</td><td><code>AFTER(ALLOC, END(STORE(INDEX(ALLOC, idx), value), ranges))</code></td></tr>
+    <tr><td><code>remove indexing from call args</code></td><td>CALL srcs wrapped in INDEX/SHRINK</td><td>plain buffers as CALL args</td></tr>
+    <tr><td><code>split kernels</code></td><td>closed STORE/END subgraphs</td><td><code>CALL(SINK(KernelInfo), *buffers)</code>, one per kernel, chained by AFTERs</td></tr>
+    <tr><td><code>remove views from the kernel graph</code></td><td>RESHAPE/SHRINK on buffers</td><td>bare buffers</td></tr>
+  </table>
+
+  <!-- ===================================================================================== -->
+  <h2 id="remove"><span class="sec">11.3</span> pm_remove_bufferize: when is recomputing cheaper than storing?</h2>
+  <p>The pattern is <code>INDEX(STAGE(src, *ranges), *idx)</code> — "a consumer reads a candidate buffer at position <code>idx</code>".
+  Removing the STAGE means: substitute the consumer's <code>idx</code> for the STAGE's own <code>ranges</code> inside <code>src</code>,
+  i.e. compute <code>src</code> right there, at the position the consumer needs. The decision is
+  <a class="src" data-path="tinygrad/schedule/rangeify.py" data-line="48">remove_bufferize</a>:</p>
+<pre><code class="language-python">def remove_bufferize(src:UOp, buf:UOp, idx:UOp):
+  # if it's user contiguous, we never remove it
+  if not buf.arg.removable: return None
+
+  # *** here is where we compute the cost ***
+  # if we return None, the bufferize is kept
+  accessed_buffers: list[UOp] = []
+  reduces: list[UOp] = []
+  def red_gate(x:UOp):
+    if x.op is Ops.AFTER:
+      accessed_buffers.append(x.buf_uop); return False
+    if (x.op is Ops.STAGE and x.arg.addrspace == AddrSpace.GLOBAL) or x.op is Ops.MSTACK:
+      accessed_buffers.append(x); return False
+    if x.op is Ops.STORE: return False          # don't look inside stores
+    if x.op is Ops.PARAM: accessed_buffers.append(x)
+    if x.op is Ops.REDUCE: reduces.append(x)
+    return True
+  src.toposort(gate=red_gate)
+  accessed_buffers = dedup(accessed_buffers)
+
+  # if this is generated from multiple buffers, don't remove this buffer
+  if len(accessed_buffers) > 3: return None
+
+  # if any reduces access a buffer, don't remove this buffer
+  buffer_in_reduce = False
+  def buf_gate(x:UOp):
+    nonlocal buffer_in_reduce
+    if x.op in {Ops.PARAM, Ops.STAGE, Ops.AFTER}: buffer_in_reduce = True
+    return not buffer_in_reduce
+  UOp.sink(*[x.src[0] for x in reduces]).toposort(gate=buf_gate)
+  if buffer_in_reduce: return None
+
+  # if it makes it here, the bufferize is removed
+  replaced = {k:v for k,v in zip(buf.src[1:], idx.src[1:]) if k.op is not Ops.CONST and not (v.op is Ops.CONST and v.val is Invalid)}
+  return src.substitute(replaced, extra_pm=pm_gate_substitute)</code></pre>
+  <p>So the cost model is three crisp rules, not a FLOP estimate:</p>
+  <ol>
+    <li><b>Never remove a user's <code>contiguous()</code></b> (<code>removable=False</code>). (In practice <code>.contiguous()</code> already
+    became a STORE in <code>prepare_rangeify</code>, and STOREs are never STAGEs, so they never even reach this rule; <code>removable=False</code>
+    covers ALWAYS_CONTIGUOUS sources and <code>non_removable</code> custom-kernel inputs.)</li>
+    <li><b>Keep if the value reads more than 3 buffers.</b> Recomputing means re-reading every buffer at every use; past 3 inputs the
+    memory traffic of recomputation is likely worse than one store + one load.</li>
+    <li><b>Keep if any REDUCE inside it reads a buffer.</b> A reduce costs a whole loop per element; recomputing it per consumer element
+    would multiply the work by the size of the consumer's loop. Reductions over pure index math (e.g. <code>arange</code>'s cumsum trick)
+    are fine to recompute.</li>
+  </ol>
+  <p>Otherwise the STAGE is removed. Note the costs it does <em>not</em> count: how many ALU ops <code>src</code> has (elementwise is
+  considered free next to memory), and how many consumers read it.</p>
+
+  <div class="demo" id="demo-sim">
+    <div class="demo-title">remove_bufferize decision simulator</div>
+    <div class="demo-desc">Set the properties of a candidate's <code>src</code> and watch which line of the real function decides. This is
+    a literal transcription of the three checks above.</div>
+    <div class="ch11-sim">
+      <div>
+        <div class="controls"><label><input type="checkbox" id="sim-rem" checked> <code>buf.arg.removable</code></label></div>
+        <div class="controls"><label>distinct buffers read by src: <b id="sim-nv">1</b></label><input type="range" id="sim-n" min="0" max="6" value="1"></div>
+        <div class="controls"><label><input type="checkbox" id="sim-red"> src contains a REDUCE that reads a buffer</label></div>
+        <div class="controls"><label><input type="checkbox" id="sim-red2"> src contains a REDUCE over pure index math only</label></div>
+        <div class="ch11-verdict" id="sim-verdict"></div>
+        <div id="sim-expl" style="font-size:14px;color:var(--dim)"></div>
+      </div>
+      <pre id="sim-code"></pre>
+    </div>
+  </div>
+
+  <div class="codecap"><b>examples/11_remove_bufferize.py</b> — run with <code>DEV=CPU python3 examples/11_remove_bufferize.py</code></div>
+<pre><code class="language-python">&quot;&quot;&quot;examples/11_remove_bufferize.py — realize CANDIDATES vs. kernels that survive pm_remove_bufferize
+
+Run:  DEV=CPU python3 examples/11_remove_bufferize.py
+
+run_rangeify proposes STAGE (= BUFFERIZE) nodes; the pass &quot;symbolic+reduce_collapse+debuf&quot; (get_kernel_graph in
+tinygrad/schedule/rangeify.py) then runs pm_remove_bufferize, whose cost function remove_bufferize() decides for each
+INDEX(STAGE(src, ranges...), idx...) whether to keep the buffer or substitute idx for ranges inside src (= recompute).
+The rules (rangeify.py remove_bufferize):
+  * STAGE created from user .contiguous()/STORE is never removable (BufferizeOpts.removable=False / it is a STORE)
+  * if src reads more than 3 buffers                          -&gt; keep (re-reading 4+ buffers per use is too costly)
+  * if any REDUCE inside src reads a buffer                    -&gt; keep (never recompute a reduction)
+  * otherwise                                                 -&gt; remove: recompute src at every use
+&quot;&quot;&quot;
+import importlib.util, pathlib
+from tinygrad import Tensor
+from tinygrad.uop.ops import Ops
+
+spec = importlib.util.spec_from_file_location(&quot;cap&quot;, pathlib.Path(__file__).parent / &quot;10_sched_capture.py&quot;)
+cap = importlib.util.module_from_spec(spec); spec.loader.exec_module(cap)
+
+def report(title, out):
+  log, linear, compiled = cap.schedule(out, run=False)
+  cands = [u for u in log[&quot;realize_map&quot;] if u.op is not Ops.STORE]
+  n_before = sum(1 for u in cap.pass_by_name(log, &quot;apply rangeify&quot;)[2].toposort() if u.op is Ops.STAGE)
+  n_after = sum(1 for u in cap.pass_by_name(log, &quot;symbolic+reduce_collapse+debuf&quot;)[2].toposort() if u.op is Ops.STAGE)
+  print(f&quot;{title:46s} candidates={[f&#x27;{u.op.name}{u.shape}&#x27; for u in cands]}&quot;)
+  print(f&quot;{&#x27;&#x27;:46s} STAGEs: {n_before} after &#x27;apply rangeify&#x27; -&gt; {n_after} after &#x27;symbolic+reduce_collapse+debuf&#x27;  =&gt; {len(linear.src)} kernel(s)&quot;)
+
+report(&quot;y=x+1; y + y.T&quot;, (lambda y: y + y.T)(Tensor.empty(4, 4) + 1))
+report(&quot;y=x*3; y.sum(0) + y.max(0)&quot;, (lambda y: y.sum(0) + y.max(0))(Tensor.empty(8, 4) * 3))
+report(&quot;softmax&quot;, Tensor.empty(4, 8).softmax(-1))
+print(&quot;\n-- the &#x27;&gt; 3 buffers&#x27; rule: y = (sum of k inputs)*3, then y.sum(0) + y.max(0)&quot;)
+for k in range(1, 6):
+  ins = [Tensor.empty(8, 4) for _ in range(k)]
+  y = ins[0]
+  for t in ins[1:]: y = y + t
+  y = y * 3
+  report(f&quot;k={k} input buffers&quot;, y.sum(0) + y.max(0))
+print(&quot;\n-- the &#x27;reduce reads a buffer&#x27; rule: the candidate contains a REDUCE&quot;)
+x = Tensor.empty(8, 4)
+y = x.sum(1, keepdim=True) * 2            # (8,1): broadcast back below -&gt; candidate, contains a reduce over x
+report(&quot;y = x.sum(1)*2;  x - y&quot;, x - y)</code></pre>
+<pre class="output"><code>y=x+1; y + y.T                                 candidates=[&#x27;ADD(4, 4)&#x27;]
+                                               STAGEs: 1 after &#x27;apply rangeify&#x27; -&gt; 0 after &#x27;symbolic+reduce_collapse+debuf&#x27;  =&gt; 1 kernel(s)
+y=x*3; y.sum(0) + y.max(0)                     candidates=[&#x27;MUL(8, 4)&#x27;]
+                                               STAGEs: 1 after &#x27;apply rangeify&#x27; -&gt; 0 after &#x27;symbolic+reduce_collapse+debuf&#x27;  =&gt; 1 kernel(s)
+softmax                                        candidates=[&#x27;REDUCE(4,)&#x27;, &#x27;EXP2(4, 8)&#x27;, &#x27;REDUCE(4,)&#x27;, &#x27;RESHAPE(4, 8)&#x27;]
+                                               STAGEs: 4 after &#x27;apply rangeify&#x27; -&gt; 2 after &#x27;symbolic+reduce_collapse+debuf&#x27;  =&gt; 3 kernel(s)
+
+-- the &#x27;&gt; 3 buffers&#x27; rule: y = (sum of k inputs)*3, then y.sum(0) + y.max(0)
+k=1 input buffers                              candidates=[&#x27;MUL(8, 4)&#x27;]
+                                               STAGEs: 1 after &#x27;apply rangeify&#x27; -&gt; 0 after &#x27;symbolic+reduce_collapse+debuf&#x27;  =&gt; 1 kernel(s)
+k=2 input buffers                              candidates=[&#x27;MUL(8, 4)&#x27;]
+                                               STAGEs: 1 after &#x27;apply rangeify&#x27; -&gt; 0 after &#x27;symbolic+reduce_collapse+debuf&#x27;  =&gt; 1 kernel(s)
+k=3 input buffers                              candidates=[&#x27;MUL(8, 4)&#x27;]
+                                               STAGEs: 1 after &#x27;apply rangeify&#x27; -&gt; 0 after &#x27;symbolic+reduce_collapse+debuf&#x27;  =&gt; 1 kernel(s)
+k=4 input buffers                              candidates=[&#x27;MUL(8, 4)&#x27;]
+                                               STAGEs: 1 after &#x27;apply rangeify&#x27; -&gt; 1 after &#x27;symbolic+reduce_collapse+debuf&#x27;  =&gt; 2 kernel(s)
+k=5 input buffers                              candidates=[&#x27;MUL(8, 4)&#x27;]
+                                               STAGEs: 1 after &#x27;apply rangeify&#x27; -&gt; 1 after &#x27;symbolic+reduce_collapse+debuf&#x27;  =&gt; 2 kernel(s)
+
+-- the &#x27;reduce reads a buffer&#x27; rule: the candidate contains a REDUCE
+y = x.sum(1)*2;  x - y                         candidates=[&#x27;MUL(8, 1)&#x27;, &#x27;RESHAPE(8, 4)&#x27;]
+                                               STAGEs: 2 after &#x27;apply rangeify&#x27; -&gt; 1 after &#x27;symbolic+reduce_collapse+debuf&#x27;  =&gt; 2 kernel(s)</code></pre>
+  <p>Read that output against the rules. <code>y + y.T</code> and <code>y.sum(0) + y.max(0)</code>: 1 buffer, no reduce inside → the
+  candidate is removed, one kernel. The <code>k</code> sweep shows rule 2 switching on exactly at 4 input buffers (1 kernel → 2).
+  Softmax: 4 candidates, the two REDUCEs read a buffer (rule 3: kept), the EXP2 and the input RESHAPE are cheap (removed) → 2 STAGEs + 1
+  STORE = 3 kernels. In the last case, <code>y = x.sum(1)*2</code> is kept (a reduce reading a buffer) while the input RESHAPE is
+  removed.</p>
+
+  <div class="quiz" data-answer="1">
+    <div class="q">A candidate <code>z = (a*b + c).exp()</code> (three input buffers, no reduce) is read by two consumers at different positions. What does <code>pm_remove_bufferize</code> do?</div>
+    <button class="opt">Keeps it: two consumers always force a buffer.</button>
+    <button class="opt">Removes it: 3 buffers is not more than 3 and there's no reduce, so z is recomputed in each consumer.</button>
+    <button class="opt">Keeps it: exp is expensive.</button>
+    <div class="explain">The threshold is <code>len(accessed_buffers) &gt; 3</code>. ALU cost (exp) is not part of the model. Two consumers is why it became a <em>candidate</em> in Chapter 10, not a reason to keep it.</div>
+  </div>
+
+  <!-- ===================================================================================== -->
+  <h2 id="other"><span class="sec">11.4</span> The other cleanups in the same pass</h2>
+  <p>The pass <code>symbolic+reduce_collapse+debuf</code> runs four matchers together, to a fixed point:</p>
+  <ul>
+    <li><code>symbolic</code> — the index simplifier from <a href="06-symbolic.html">Chapter 6</a>, now that substitutions created new expressions.</li>
+    <li><a class="src" data-path="tinygrad/codegen/simplify.py" data-line="145">pm_reduce_simplify</a> — <em>"remove REDUCE without loads (generic
+    arange opt / indexing)"</em>: an ADD-reduce over pure index math is collapsed into a closed form by <code>reduce_collapse</code> (the
+    "reduce_collapse" sub-rewrites in the trace), and <code>pm_reduce_unparented</code> drops reduce ranges the value doesn't depend on.</li>
+    <li><a class="src" data-path="tinygrad/schedule/rangeify.py" data-line="110">pm_const_buffer_folding</a>:
+      <code>cleanup_dead_axes</code> (a STAGE axis whose range isn't used by the value — an EXPAND upstream — is shrunk to size 1 and re-expanded),
+      <code>remove_noop_bufferize</code> (<code>INDEX(STAGE(x, r…), r…)</code> with the same ranges is just <code>x</code>),
+      "no buffers for a const", "indexing a const is the const", and reading an AFTER whose stores are all <code>Invalid</code> gives <code>Invalid</code>.</li>
+    <li><a class="src" data-path="tinygrad/schedule/rangeify.py" data-line="126">pm_remove_bufferize</a> — the cost function above, plus
+      "STORE to self is NOOP" and "END on NOOP is NOOP".</li>
+  </ul>
+
+  <!-- ===================================================================================== -->
+  <h2 id="limit"><span class="sec">11.5</span> pm_limit_bufs: a cap on buffers per kernel</h2>
+  <p>Some backends limit the number of buffer arguments a kernel may take (WebGPU: 8 bindings). <a class="src" data-path="tinygrad/schedule/rangeify.py" data-line="176">_limit_bufs</a>
+  runs on every binary/ternary op, counts the set of buffers (<code>STAGE</code>, <code>AFTER</code>, <code>PARAM</code>, <code>MSELECT</code>, <code>MSTACK</code>) reachable below it
+  (memoized in <code>LimitBufsContext.buf_cache</code>), and if it exceeds <code>MAX_BUFS - 1</code> (one slot is reserved for the output) it inserts a fresh
+  STAGE on each elementwise source via <code>stage()</code>, with new <code>WEAK</code> ranges. The limit is <code>MAX_KERNEL_BUFFERS</code> or
+  <code>DEVICE_MAX_BUFS = {"WEBGPU": 8}</code>; on CPU it is 0 = off.</p>
+<pre><code class="language-python">def _limit_bufs(ctx:LimitBufsContext, root:UOp):
+  if (device:=root.device) is None: return None # no device, index related calculations
+  device = device if isinstance(device, str) else device[0].split(":")[0]
+  if not (MAX_BUFS:=MAX_KERNEL_BUFFERS.value or DEVICE_MAX_BUFS.get(device, 0)): return None
+  ...
+  if len(bufs) > MAX_BUFS - 1: # NOTE: this -1 is for the output buffer
+    return root.replace(src=tuple(stage(ctx, s) if s.op in GroupOp.Elementwise and s.device is not None else s for s in root.src))</code></pre>
+  <p>The same matcher has a second job: <a class="src" data-path="tinygrad/schedule/rangeify.py" data-line="190">fix_store_hazard</a>. If a STORE into buffer B
+  has a value that loads from B at a <em>different</em> index than the one being written, the value is staged into a temporary first, so the
+  kernel never reads an element it already overwrote. (The realize-map rule <code>realize_store_after_src</code> from Chapter 10 catches the
+  same problem earlier for whole assigns.)</p>
+
+  <!-- ===================================================================================== -->
+  <h2 id="store"><span class="sec">11.6</span> bufferize_to_store: STAGE becomes ALLOC + STORE</h2>
+  <p>A surviving STAGE is still an abstract "materialize this". <a class="src" data-path="tinygrad/schedule/rangeify.py" data-line="205">bufferize_to_store</a>
+  (pass <code>stage to store</code>, bottom-up) makes it concrete:</p>
+<pre><code class="language-python">def bufferize_to_store(ctx:itertools.count, x:UOp, idx:UOp):
+  size = prod(x.shape)
+  dtype = x.commit_dtype()   # a BUFFER is never weak
+  rngs = sorted(idx.ranges, key=lambda x: x.arg)
+  ...
+  if x.arg.addrspace == AddrSpace.GLOBAL:
+    buf = UOp.alloc((size,), dtype, slot=next(ctx), device=x.arg.device)
+    do_store = buf.index(idx).store(x.src[0].cast(dtype)).end(*rngs)
+    return buf.after(do_store).cast(x.dtype)</code></pre>
+  <p>Before it runs, <code>pm_flatten_bufferize</code> collapses a multi-range STAGE into a single flat index (a RESHAPE in reverse), so
+  <code>idx</code> is one expression. The result: a fresh <code>ALLOC</code> (a call-local, not-yet-real buffer with a slot number), an
+  <code>INDEX</code>+<code>STORE</code> of the value, an <code>END</code> that closes the STAGE's ranges, and an <code>AFTER</code> that
+  says "readers see the ALLOC only after that store". The consumer's existing <code>INDEX</code> now indexes the AFTER. If the STAGE wraps an
+  existing AFTER (an <code>assign</code>), no new buffer is made: the existing stores just get their ENDs.</p>
+
+  <div class="codecap"><b>examples/11_kernel_split.py</b> — run with <code>DEV=CPU python3 examples/11_kernel_split.py</code></div>
+<pre><code class="language-python">&quot;&quot;&quot;examples/11_kernel_split.py — from STAGE to STORE to CALL: the last three passes of get_kernel_graph
+
+Run:  DEV=CPU python3 examples/11_kernel_split.py
+
+Program: out = x - x.mean(1, keepdim=True) on a (4, 4) tensor -&gt; 2 kernels (row means, then subtract).
+We print the graph after
+  1. &quot;symbolic+reduce_collapse+debuf&quot;: the surviving STAGE (the row mean) is still a value node
+  2. &quot;stage to store&quot;: bufferize_to_store turned it into AFTER(ALLOC, END(STORE(INDEX(ALLOC, r), value), r))
+  3. &quot;split kernels&quot;: split_store wrapped every closed STORE/END into SINK(KernelInfo).call(*buffers)
+&quot;&quot;&quot;
+import importlib.util, pathlib
+from tinygrad import Tensor
+from tinygrad.uop.ops import Ops
+
+spec = importlib.util.spec_from_file_location(&quot;cap&quot;, pathlib.Path(__file__).parent / &quot;10_sched_capture.py&quot;)
+cap = importlib.util.module_from_spec(spec); spec.loader.exec_module(cap)
+
+x = Tensor.empty(4, 4)
+log, linear, compiled = cap.schedule(x - x.mean(1, keepdim=True), run=False)
+for name in [&quot;symbolic+reduce_collapse+debuf&quot;, &quot;stage to store&quot;, &quot;split kernels&quot;]:
+  g = cap.pass_by_name(log, name)[2]
+  ops = {}
+  for u in g.toposort(): ops[u.op.name] = ops.get(u.op.name, 0) + 1
+  print(f&quot;======== after &#x27;{name}&#x27;   ({len(g.toposort())} UOps; STAGE={ops.get(&#x27;STAGE&#x27;,0)} ALLOC={ops.get(&#x27;ALLOC&#x27;,0)} &quot;
+        f&quot;STORE={ops.get(&#x27;STORE&#x27;,0)} END={ops.get(&#x27;END&#x27;,0)} CALL={ops.get(&#x27;CALL&#x27;,0)})&quot;)
+  print(g)
+print(f&quot;======== create_schedule: {linear.op.name} of {len(linear.src)} CALLs&quot;)
+for i, call in enumerate(linear.src):
+  print(f&quot;  CALL {i}: body {call.body.op.name}, args: &quot; + &quot;, &quot;.join(f&quot;{s.op.name}({s.max_numel()} x {s.dtype})&quot; for s in call.src[1:]))</code></pre>
+<pre class="output"><code>======== after &#x27;symbolic+reduce_collapse+debuf&#x27;   (27 UOps; STAGE=1 ALLOC=0 STORE=1 END=1 CALL=0)
+UOp(Ops.SINK, arg=None, src=(
+  UOp(Ops.AFTER, arg=None, src=(
+    x1:=UOp(Ops.PARAM, arg=ParamArg(0, dtypes.f32, device=&#x27;CPU&#x27;), src=(
+      x2:=UOp(Ops.CONST, arg=16, src=()),)),
+    UOp(Ops.END, arg=None, src=(
+      UOp(Ops.STORE, arg=None, src=(
+        UOp(Ops.INDEX, arg=None, src=(
+          x1,
+          x6:=UOp(Ops.ADD, arg=None, src=(
+            UOp(Ops.MUL, arg=None, src=(
+              x8:=UOp(Ops.RANGE, arg=(AxisType.WEAK, 0), src=(
+                x9:=UOp(Ops.CONST, arg=4, src=()),)),
+              x9,)),
+            x10:=UOp(Ops.RANGE, arg=(AxisType.WEAK, 1), src=(
+              x9,)),)),)),
+        UOp(Ops.ADD, arg=None, src=(
+          UOp(Ops.INDEX, arg=None, src=(
+            x13:=UOp(Ops.PARAM, arg=ParamArg(1, dtypes.f32, device=&#x27;CPU&#x27;), src=(
+              x2,)),
+            x6,)),
+          UOp(Ops.MUL, arg=None, src=(
+            UOp(Ops.INDEX, arg=None, src=(
+              UOp(Ops.STAGE, arg=BufferizeOpts(device=&#x27;CPU&#x27;, addrspace=AddrSpace.GLOBAL, removable=True), src=(
+                UOp(Ops.MUL, arg=None, src=(
+                  UOp(Ops.REDUCE, arg=(Ops.ADD, 0), src=(
+                    UOp(Ops.INDEX, arg=None, src=(
+                      x13,
+                      UOp(Ops.ADD, arg=None, src=(
+                        UOp(Ops.MUL, arg=None, src=(
+                          x22:=UOp(Ops.RANGE, arg=(AxisType.WEAK, 2), src=(
+                            x9,)),
+                          x9,)),
+                        x23:=UOp(Ops.RANGE, arg=(AxisType.WEAK, 3), src=(
+                          x9,)),)),)),
+                    x23,)),
+                  UOp(Ops.CONST, arg=ConstFloat(0.25), src=()),)),
+                x22,)),
+              x8,)),
+            UOp(Ops.CONST, arg=ConstFloat(-1.0), src=()),)),)),)),
+      x8,
+      x10,)),)),))
+======== after &#x27;stage to store&#x27;   (31 UOps; STAGE=0 ALLOC=1 STORE=2 END=2 CALL=0)
+UOp(Ops.SINK, arg=None, src=(
+  UOp(Ops.AFTER, arg=None, src=(
+    x1:=UOp(Ops.PARAM, arg=ParamArg(0, dtypes.f32, device=&#x27;CPU&#x27;), src=(
+      x2:=UOp(Ops.CONST, arg=16, src=()),)),
+    UOp(Ops.END, arg=None, src=(
+      UOp(Ops.STORE, arg=None, src=(
+        UOp(Ops.INDEX, arg=None, src=(
+          x1,
+          x6:=UOp(Ops.ADD, arg=None, src=(
+            UOp(Ops.MUL, arg=None, src=(
+              x8:=UOp(Ops.RANGE, arg=(AxisType.WEAK, 0), src=(
+                x9:=UOp(Ops.CONST, arg=4, src=()),)),
+              x9,)),
+            x10:=UOp(Ops.RANGE, arg=(AxisType.WEAK, 1), src=(
+              x9,)),)),)),
+        UOp(Ops.ADD, arg=None, src=(
+          UOp(Ops.INDEX, arg=None, src=(
+            x13:=UOp(Ops.PARAM, arg=ParamArg(1, dtypes.f32, device=&#x27;CPU&#x27;), src=(
+              x2,)),
+            x6,)),
+          UOp(Ops.MUL, arg=None, src=(
+            UOp(Ops.INDEX, arg=None, src=(
+              UOp(Ops.AFTER, arg=None, src=(
+                x17:=UOp(Ops.ALLOC, arg=ParamArg(0, dtypes.f32, device=&#x27;CPU&#x27;), src=(
+                  x9,)),
+                UOp(Ops.END, arg=None, src=(
+                  UOp(Ops.STORE, arg=None, src=(
+                    UOp(Ops.INDEX, arg=None, src=(
+                      x17,
+                      x21:=UOp(Ops.RANGE, arg=(AxisType.WEAK, 2), src=(
+                        x9,)),)),
+                    UOp(Ops.MUL, arg=None, src=(
+                      UOp(Ops.REDUCE, arg=(Ops.ADD, 0), src=(
+                        UOp(Ops.INDEX, arg=None, src=(
+                          x13,
+                          UOp(Ops.ADD, arg=None, src=(
+                            UOp(Ops.MUL, arg=None, src=(
+                              x21,
+                              x9,)),
+                            x27:=UOp(Ops.RANGE, arg=(AxisType.WEAK, 3), src=(
+                              x9,)),)),)),
+                        x27,)),
+                      UOp(Ops.CONST, arg=ConstFloat(0.25), src=()),)),)),
+                  x21,)),)),
+              x8,)),
+            UOp(Ops.CONST, arg=ConstFloat(-1.0), src=()),)),)),)),
+      x8,
+      x10,)),)),))
+======== after &#x27;split kernels&#x27;   (10 UOps; STAGE=0 ALLOC=1 STORE=0 END=0 CALL=2)
+UOp(Ops.SINK, arg=None, src=(
+  UOp(Ops.AFTER, arg=None, src=(
+    x1:=UOp(Ops.PARAM, arg=ParamArg(0, dtypes.f32, device=&#x27;CPU&#x27;), src=(
+      x2:=UOp(Ops.CONST, arg=16, src=()),)),
+    UOp(Ops.CALL, arg=CallInfo(None, None, False, False), src=(
+      UOp(Ops.SINK, arg=KernelInfo(name=&#x27;test&#x27;, applied_opts=(), opts_to_apply=None, estimates=None, beam=0, optimized=False), src=(
+        UOp(Ops.END, arg=None, src=(
+          UOp(Ops.STORE, arg=None, src=(
+            UOp(Ops.INDEX, arg=None, src=(
+              x1,
+              x8:=UOp(Ops.ADD, arg=None, src=(
+                UOp(Ops.MUL, arg=None, src=(
+                  x10:=UOp(Ops.RANGE, arg=(AxisType.WEAK, 0), src=(
+                    x11:=UOp(Ops.CONST, arg=4, src=()),)),
+                  x11,)),
+                x12:=UOp(Ops.RANGE, arg=(AxisType.WEAK, 1), src=(
+                  x11,)),)),)),
+            UOp(Ops.ADD, arg=None, src=(
+              UOp(Ops.INDEX, arg=None, src=(
+                x15:=UOp(Ops.PARAM, arg=ParamArg(1, dtypes.f32, device=&#x27;CPU&#x27;), src=(
+                  x2,)),
+                x8,)),
+              UOp(Ops.MUL, arg=None, src=(
+                UOp(Ops.INDEX, arg=None, src=(
+                  UOp(Ops.PARAM, arg=ParamArg(2, dtypes.f32, device=&#x27;CPU&#x27;), src=(
+                    x11,)),
+                  x10,)),
+                UOp(Ops.CONST, arg=ConstFloat(-1.0), src=()),)),)),)),
+          x10,
+          x12,)),)),
+      x1,
+      x15,
+      UOp(Ops.AFTER, arg=None, src=(
+        x21:=UOp(Ops.ALLOC, arg=ParamArg(0, dtypes.f32, device=&#x27;CPU&#x27;), src=(
+          x11,)),
+        UOp(Ops.CALL, arg=CallInfo(None, None, False, False), src=(
+          UOp(Ops.SINK, arg=KernelInfo(name=&#x27;test&#x27;, applied_opts=(), opts_to_apply=None, estimates=None, beam=0, optimized=False), src=(
+            UOp(Ops.END, arg=None, src=(
+              UOp(Ops.STORE, arg=None, src=(
+                UOp(Ops.INDEX, arg=None, src=(
+                  UOp(Ops.PARAM, arg=ParamArg(0, dtypes.f32, device=&#x27;CPU&#x27;), src=(
+                    x11,)),
+                  x12,)),
+                UOp(Ops.MUL, arg=None, src=(
+                  UOp(Ops.REDUCE, arg=(Ops.ADD, 0), src=(
+                    UOp(Ops.INDEX, arg=None, src=(
+                      x15,
+                      UOp(Ops.ADD, arg=None, src=(
+                        UOp(Ops.MUL, arg=None, src=(
+                          x12,
+                          x11,)),
+                        x10,)),)),
+                    x10,)),
+                  UOp(Ops.CONST, arg=ConstFloat(0.25), src=()),)),)),
+              x12,)),)),
+          x21,
+          x15,)),)),)),)),))
+======== create_schedule: LINEAR of 2 CALLs
+  CALL 0: body SINK, args: BITCAST(4 x dtypes.f32), BUFFER(16 x dtypes.f32)
+  CALL 1: body SINK, args: BUFFER(16 x dtypes.f32), BUFFER(16 x dtypes.f32), BITCAST(4 x dtypes.f32)</code></pre>
+  <p>Follow the row-mean through the three snapshots: <code>STAGE(MUL(REDUCE(...), 0.25), r2)</code> →
+  <code>AFTER(ALLOC slot 0, END(STORE(INDEX(ALLOC, r2), MUL(...)), r2))</code> → a separate <code>CALL</code> whose body stores into its own
+  <code>PARAM 0</code>, and which appears as the <em>third argument</em> of the output kernel's CALL (wrapped in the AFTER that orders them).</p>
+
+  <!-- ===================================================================================== -->
+  <h2 id="split"><span class="sec">11.7</span> split_kernels: cutting out SINKs and wrapping them in CALLs</h2>
+<pre><code class="language-python">def split_store(x:UOp) -> UOp|None:
+  # if we have any open ranges here, we don't split. open DEVICE ranges are fine, they are bound per device at launch
+  if any(r.axis_type is not AxisType.DEVICE for r in x.ranges): return None
+
+  # local kernel rewrite
+  lctx = LocalAddBufferContext()
+  ret = graph_rewrite(x, to_define_global+pm_flatten_range, ctx=lctx, name="kernel split", bottom_up=True)
+  ret = ret.substitute({b:debuf(i, b) for i,b in enumerate(lctx.map)}, walk=True)
+  ret = graph_rewrite(ret, pm_renumber_range, ctx={a:i for i,a in enumerate(lctx.ranges)}, walk=True)
+
+  # create the Kernel. NOTE: buffers can be on different devices here now, they are compiled to SDMA copies later by schedule
+  return ret.sink(arg=KernelInfo()).call(*lctx.map.values())
+
+split_kernels = PatternMatcher([
+  (UPat((Ops.STORE, Ops.END), name="x"), split_store),
+])</code></pre>
+  <p><a class="src" data-path="tinygrad/schedule/rangeify.py" data-line="321">split_store</a> fires on every <code>STORE</code>/<code>END</code>
+  whose <code>.ranges</code> (the open ranges below it) is empty — i.e. a complete loop nest. Bottom-up order means inner kernels are cut first;
+  the outer kernel then sees them only as <code>AFTER(buffer, CALL)</code> leaves. Inside:</p>
+  <ul>
+    <li><b>"kernel split"</b> (<code>to_define_global</code>): walks the kernel body; every <code>BUFFER</code>/<code>ALLOC</code>/<code>PARAM</code>/<code>MSTACK</code>/<code>MSELECT</code>
+    becomes an entry of <code>lctx.map</code> (and the walk stops there — <code>BottomUpGate</code>); an <code>AFTER</code> is replaced by its buffer, remembering
+    the AFTER as the CALL argument (that's how the dependency on the producing kernel is kept); <code>check_buf_states</code> raises
+    <em>"cycle detected while indexing"</em> if one kernel would read two different states of the same buffer.</li>
+    <li><b>debuf</b>: buffer number <code>i</code> becomes <code>PARAM(i)</code> reshaped to its shape — kernel-local, positional. Slot 0 is whatever
+    was found first, usually the output.</li>
+    <li><b>pm_renumber_range</b> (the unnamed rewrite in the pass list): ranges renumbered from 0 in order of appearance, so two identical
+    kernels anywhere in any program have identical ASTs → same compile-cache key.</li>
+    <li>The body becomes <code>SINK(arg=KernelInfo())</code> — the kernel AST of <a href="13-kernel-ast.html">Chapter 13</a> — and is
+    <code>.call(*buffers)</code>'d.</li>
+  </ul>
+  <p>Finally <code>pm_no_views</code> strips RESHAPE/SHRINK sitting directly on buffers: in the kernel graph, a buffer is just storage.</p>
+
+  <div class="callout note">Why CALL? A <code>CALL(body, *args)</code> is the same op used for <code>@function</code> calls and the whole
+  schedule (<code>CALL(LINEAR(...))</code>, Chapter 12). A kernel is a function from buffers to buffers; making it a CALL means the scheduler,
+  the JIT and the runtime handle "a kernel", "a copy" and "a nested schedule" uniformly.</div>
+
+  <!-- ===================================================================================== -->
+  <h2 id="catalogue"><span class="sec">11.8</span> Fusion case studies: 13 real programs</h2>
+  <p>Theory is cheap; let's run things. Every program below was scheduled for real (<code>examples/11_make_data.py</code>). For each one
+  you get the tensor graph that rangeify received, colored by the kernel each node ends up in, the realize-map candidates and their fate,
+  and the generated C code (with <code>NOOPT=1</code>, so the code reads as the plain loop nest). First the quick summary via
+  <code>DEBUG=2</code>, which prints one line per executed CALL:</p>
+
+  <div class="codecap"><b>examples/11_fusion_catalogue.py</b> — run with <code>DEV=CPU NOOPT=1 DEBUG=2 python3 examples/11_fusion_catalogue.py 2&gt;/dev/null</code></div>
+<pre><code class="language-python">&quot;&quot;&quot;examples/11_fusion_catalogue.py — how many kernels does each program become, and why?
+
+Run:  DEV=CPU NOOPT=1 DEBUG=2 python3 examples/11_fusion_catalogue.py 2&gt;/dev/null
+
+NOOPT=1 disables the kernel optimizer (no upcast/unroll), so kernel names read as the plain loop nest:
+E_16 = elementwise over 16, r_4_8 = 4 outputs each reducing 8 elements, etc. DEBUG=2 prints one &#x27;***&#x27; line per
+executed CALL: device, running kernel count, name, number of buffer args.
+&quot;&quot;&quot;
+from tinygrad import Tensor
+from tinygrad.helpers import Context
+
+def case(title, make, **ctx):
+  print(f&quot;\n### {title}&quot;)
+  with Context(**ctx):
+    make().realize()
+
+case(&quot;elementwise chain: (a*2 + b).relu()&quot;, lambda: (Tensor.empty(16) * 2 + Tensor.empty(16)).relu())
+case(&quot;elementwise + reduce: (a*b).sum(1)&quot;, lambda: (Tensor.empty(4, 8) * Tensor.empty(4, 8)).sum(1))
+case(&quot;softmax(-1) on (4, 8)&quot;, lambda: Tensor.empty(4, 8).softmax(-1))
+case(&quot;matmul + bias + relu&quot;, lambda: (Tensor.empty(4, 8) @ Tensor.empty(8, 3) + Tensor.empty(3)).relu())
+case(&quot;x - x.mean(1, keepdim=True)&quot;, lambda: (lambda x: x - x.mean(1, keepdim=True))(Tensor.empty(4, 4)))
+case(&quot;x - x.mean()   (full reduce)&quot;, lambda: (lambda x: x - x.mean())(Tensor.empty(4, 4)))
+case(&quot;(a + 1).contiguous() * 2&quot;, lambda: (Tensor.empty(16) + 1).contiguous() * 2)
+case(&quot;y = a*3; y.sum(0) + y.max(0)&quot;, lambda: (lambda y: y.sum(0) + y.max(0))(Tensor.empty(8, 4) * 3))
+c = Tensor.empty(8).realize()
+case(&quot;c.assign(c*2 + 1)&quot;, lambda: c.assign(c * 2 + 1))
+case(&quot;c.assign(c.flip(0) + 1)   (reads other positions of c)&quot;, lambda: c.assign(c.flip(0) + 1))
+case(&quot;COPY: ((a on CPU:1) + 1).to(&#x27;CPU&#x27;) * 2&quot;, lambda: (Tensor.empty(8, device=&quot;CPU:1&quot;) + 1).to(&quot;CPU&quot;) * 2)
+case(&quot;Tensor.empty(65536).sum()   (split_reduceop)&quot;, lambda: Tensor.empty(65536).sum())
+ts = [Tensor.empty(16) for _ in range(6)]
+case(&quot;sum of 6 inputs with MAX_KERNEL_BUFFERS=4&quot;, lambda: ts[0] + ts[1] + ts[2] + ts[3] + ts[4] + ts[5], MAX_KERNEL_BUFFERS=4)</code></pre>
+<pre class="output"><code>
+### elementwise chain: (a*2 + b).relu()
+opened device CPU from pid:29495
+*** CPU        1 E_16                                           arg  3 mem   0.00 GB tm     19.26us/     0.02ms (      0 GFLOPS    0|0      GB/s)
+
+### elementwise + reduce: (a*b).sum(1)
+*** CPU        2 r_4_8                                          arg  3 mem   0.00 GB tm     15.50us/     0.03ms (      0 GFLOPS    0|0      GB/s)
+
+### softmax(-1) on (4, 8)
+scheduled     3 kernels in    25.01 ms | CACHE MISS 45507e3f |     220 uops in cache | /home/user/workspace/tinygrad-guide/examples/11_fusion_catalogue.py:15
+*** CPU        3 r_4_8                                          arg  2 mem   0.00 GB tm     13.54us/     0.05ms (      0 GFLOPS    0|0      GB/s)
+*** CPU        4 r_4_8                                          arg  3 mem   0.00 GB tm     23.05us/     0.07ms (      0 GFLOPS    0|0      GB/s)
+*** CPU        5 E_4_8                                          arg  4 mem   0.00 GB tm     18.30us/     0.09ms (      0 GFLOPS    0|0      GB/s)
+
+### matmul + bias + relu
+*** CPU        6 r_4_3_8                                        arg  4 mem   0.00 GB tm     15.69us/     0.11ms (      0 GFLOPS    0|0      GB/s)
+
+### x - x.mean(1, keepdim=True)
+scheduled     2 kernels in     7.58 ms | CACHE MISS 556ba3a5 |     506 uops in cache | /home/user/workspace/tinygrad-guide/examples/11_fusion_catalogue.py:15
+*** CPU        7 r_4_4                                          arg  2 mem   0.00 GB tm     32.57us/     0.14ms (      0 GFLOPS    0|0      GB/s)
+*** CPU        8 E_4_4                                          arg  3 mem   0.00 GB tm      8.54us/     0.15ms (      0 GFLOPS    0|0      GB/s)
+
+### x - x.mean()   (full reduce)
+*** CPU        9 r_16_16                                        arg  2 mem   0.00 GB tm      6.23us/     0.15ms (      0 GFLOPS    0|0      GB/s)
+
+### (a + 1).contiguous() * 2
+scheduled     2 kernels in     5.14 ms | CACHE MISS d0cce439 |     587 uops in cache | /home/user/workspace/tinygrad-guide/examples/11_fusion_catalogue.py:15
+*** CPU       10 E_16                                           arg  2 mem   0.00 GB tm      7.17us/     0.16ms (      0 GFLOPS    0|0      GB/s)
+*** CPU       11 E_16                                           arg  2 mem   0.00 GB tm      5.72us/     0.17ms (      0 GFLOPS    0|0      GB/s)
+
+### y = a*3; y.sum(0) + y.max(0)
+*** CPU       12 r_4_8_8                                        arg  2 mem   0.00 GB tm      7.19us/     0.17ms (      0 GFLOPS    0|0      GB/s)
+
+### c.assign(c*2 + 1)
+*** CPU       13 E_8                                            arg  1 mem   0.00 GB tm     10.20us/     0.18ms (      0 GFLOPS    0|0      GB/s)
+
+### c.assign(c.flip(0) + 1)   (reads other positions of c)
+scheduled     2 kernels in    20.27 ms | CACHE MISS 965d9fc9 |     807 uops in cache | /home/user/workspace/tinygrad-guide/examples/11_fusion_catalogue.py:15
+*** CPU       14 E_8                                            arg  2 mem   0.00 GB tm     19.72us/     0.20ms (      0 GFLOPS    0|0      GB/s)
+*** CPU       15 E_8                                            arg  2 mem   0.00 GB tm      5.84us/     0.21ms (      0 GFLOPS    0|0      GB/s)
+
+### COPY: ((a on CPU:1) + 1).to(&#x27;CPU&#x27;) * 2
+scheduled     3 kernels in     7.34 ms | CACHE MISS a4fbcfd1 |     834 uops in cache | /home/user/workspace/tinygrad-guide/examples/11_fusion_catalogue.py:15
+opened device CPU:1 from pid:29495
+*** CPU:1     16 E_8                                            arg  2 mem   0.00 GB tm     27.00us/     0.24ms (      0 GFLOPS    0|0      GB/s)
+*** CPU:1     17 copy       32 B,     CPU &lt;- CPU:1              arg  2 mem   0.00 GB tm   1347.06us/     1.58ms (      0 GFLOPS    0|0      GB/s)
+*** CPU       18 E_8                                            arg  2 mem   0.00 GB tm     21.08us/     1.60ms (      0 GFLOPS    0|0      GB/s)
+
+### Tensor.empty(65536).sum()   (split_reduceop)
+scheduled     2 kernels in     5.73 ms | CACHE MISS b06d9e0f |     890 uops in cache | /home/user/workspace/tinygrad-guide/examples/11_fusion_catalogue.py:15
+*** CPU       19 r_256_256                                      arg  2 mem   0.00 GB tm    182.42us/     1.79ms (      0 GFLOPS    1|1      GB/s)
+*** CPU       20 r_256                                          arg  2 mem   0.00 GB tm      7.49us/     1.79ms (      0 GFLOPS    0|0      GB/s)
+
+### sum of 6 inputs with MAX_KERNEL_BUFFERS=4
+scheduled     3 kernels in     8.67 ms | CACHE MISS c5618d1a |     977 uops in cache | /home/user/workspace/tinygrad-guide/examples/11_fusion_catalogue.py:15
+*** CPU       21 E_16                                           arg  4 mem   0.00 GB tm     19.58us/     1.81ms (      0 GFLOPS    0|0      GB/s)
+*** CPU       22 E_16                                           arg  4 mem   0.00 GB tm     27.89us/     1.84ms (      0 GFLOPS    0|0      GB/s)
+*** CPU       23 E_16                                           arg  3 mem   0.00 GB tm     11.54us/     1.85ms (      0 GFLOPS    0|0      GB/s)</code></pre>
+  <p>(Kernel names: <code>E_</code> = elementwise, <code>r_</code> = has a reduction, followed by the loop sizes. A <code>scheduled N kernels … CACHE MISS</code>
+  line appears only for schedules with more than one kernel at <code>DEBUG=1</code>; Chapter 12 explains the cache.)</p>
+
+  <div class="demo" id="demo-cases">
+    <div class="demo-title">Fusion case-study explorer</div>
+    <div class="demo-desc">Pick a program. Nodes are colored by the kernel that computes them (K0, K1, … in execution order).
+    <span style="color:#ff7eb6">Pink</span> = the node is recomputed in several kernels. Hover a node for details. Realize candidates are listed
+    with their fate. The C code tabs are the real generated kernels; clicking a tab highlights that kernel's nodes.</div>
+    <div class="ch11-casebtns" id="casebtns"></div>
+    <pre id="casecode" style="margin:8px 0"></pre>
+    <div class="ch11-why" id="casewhy"></div>
+    <div id="casecands"></div>
+    <div class="ch11-klegend" id="caselegend"></div>
+    <div class="row">
+      <div class="col" style="flex:1 1 460px"><div id="casegraph"></div></div>
+      <div class="col ch11-code" style="flex:1 1 380px" id="casekern"></div>
+    </div>
+  </div>
+
+  <h3>What each case teaches</h3>
+  <table>
+    <tr><th>program</th><th>kernels</th><th>the rule at work</th></tr>
+    <tr><td>elementwise chain</td><td>1</td><td>No candidates at all: every op inherits the STORE's ranges.</td></tr>
+    <tr><td>elementwise + reduce</td><td>1</td><td>A REDUCE never forces its <em>input</em> out; the multiply runs inside the reduce loop.</td></tr>
+    <tr><td>softmax</td><td>3</td><td>Two broadcast-back reduces (kept, rule 3) + output. <code>exp</code> recomputed in the last kernel.</td></tr>
+    <tr><td>matmul + bias + relu</td><td>1</td><td>Matmul = broadcast-multiply + REDUCE; bias and relu are applied to the reduce result before the store.</td></tr>
+    <tr><td>x − x.mean(1)</td><td>2</td><td>The row mean is broadcast back → realized.</td></tr>
+    <tr><td>x − x.mean()</td><td>1</td><td>A scalar result has no axes to realize; the reduce is fused (and on a GPU, recomputed per work-group: §11.10).</td></tr>
+    <tr><td>contiguous()</td><td>2</td><td>An explicit STORE is a hard boundary.</td></tr>
+    <tr><td>tensor used twice</td><td>1</td><td>Candidate (two disagreeing consumers) removed: cheap to recompute.</td></tr>
+    <tr><td>assign</td><td>1</td><td>In-place: the kernel reads and writes the same buffer (1 arg).</td></tr>
+    <tr><td>assign with hazard</td><td>2</td><td>The source reads the destination at other positions → realized into a temporary first.</td></tr>
+    <tr><td>COPY</td><td>3</td><td>Compute on CPU:1, a bulk copy CALL (not a compiled kernel), compute on CPU.</td></tr>
+    <tr><td>big sum</td><td>2</td><td><code>split_reduceop</code> turns one long serial reduce into 256 parallel partial sums + a final sum.</td></tr>
+    <tr><td>MAX_KERNEL_BUFFERS=4</td><td>3</td><td><code>pm_limit_bufs</code> splits a 6-input add into kernels of ≤ 3 inputs + 1 output.</td></tr>
+  </table>
+
+  <details class="deep-dive"><summary>Deep dive: split_reduceop, the 2-stage reduce</summary>
+  <p><a class="src" data-path="tinygrad/schedule/prepare.py" data-line="93">split_reduceop</a> runs in <code>earliest rewrites</code>, <em>before</em> rangeify. A
+  reduce of <code>Tensor.empty(65536).sum()</code> into one output would be one thread looping 65536 times — terrible on a GPU. If the reduced input has
+  at least <code>REDUCEOP_SPLIT_THRESHOLD</code> (32768) elements, it looks for a reduced axis divisible by some <code>d</code> between 256 and 8 (capped
+  so the intermediate has at most <code>2**REDUCEOP_SPLIT_SIZE</code> (2²²) elements) that isn't an expanded axis, and rewrites</p>
+<pre><code class="language-python">splitted = x.unflatten(dim_to_split, (divisor, -1)).permute(... split axis moved to the end ...)
+return splitted._rop(op, reduce_axes).contiguous()._rop(op, (len(reduce.shape),))</code></pre>
+  <p>The <code>.contiguous()</code> in the middle is what makes it two kernels. <code>Tensor.empty(1024,1024).sum()</code> becomes
+  <code>r_256_4096</code> + <code>r_256</code>; <code>.sum(0)</code> of the same tensor already has 1024 outputs and isn't split. Disable with <code>SPLIT_REDUCEOP=0</code>.</p>
+  </details>
+
+  <!-- ===================================================================================== -->
+  <h2 id="cut"><span class="sec">11.9</span> Cut the graph yourself</h2>
+  <p>The scheduler's choice is one point in a space of possible partitions. Here you make the choice. Click any non-buffer node to
+  toggle it between <b>fused</b> (recomputed by whoever reads it) and <b>materialized</b> (its own kernel writing a buffer). The partition is
+  computed with the same rule the catalogue uses — a kernel is rooted at a STORE or materialized node, and contains everything reachable below
+  it until another root or a buffer. The cost panel is a <em>toy</em> model (element-wise counts, 4 bytes per element) to make the trade-off
+  tangible; tinygrad itself doesn't estimate this, it uses the three rules of §11.3.</p>
+  <div class="demo" id="demo-cut">
+    <div class="demo-title">Interactive cut-the-graph</div>
+    <div class="demo-desc">Click nodes to materialize/fuse. Try making softmax 1 kernel (impossible: a broadcast-back reduce <em>must</em> be
+    materialized for correctness — the demo warns you), or materializing everything.</div>
+    <div class="controls" id="cutsel"></div>
+    <div class="controls"><button id="cut-tg" class="primary">tinygrad's choice</button><button id="cut-none">fuse everything</button><button id="cut-all">materialize all candidates</button></div>
+    <div class="ch11-cost" id="cutcost"></div>
+    <div id="cutwarn" style="color:var(--red);font-size:14px;min-height:1.3em"></div>
+    <div class="ch11-klegend" id="cutlegend"></div>
+    <div id="cutgraph"></div>
+  </div>
+
+  <!-- ===================================================================================== -->
+  <h2 id="tradeoff"><span class="sec">11.10</span> The price of fusion: recomputation</h2>
+  <p>Fusion saves memory round-trips and kernel launches, but not for free. <code>x - x.mean()</code> is a single kernel because the mean is a
+  scalar. On a CPU that's great: the codegen notices the reduce loop doesn't depend on the output loop and emits it once, before. On a GPU, the
+  output loop is spread across work-groups — and each work-group has to compute the mean for itself:</p>
+  <div class="codecap"><b>examples/11_recompute_tradeoff.py</b> — run with <code>DEV=CPU python3 examples/11_recompute_tradeoff.py</code></div>
+<pre><code class="language-python">&quot;&quot;&quot;examples/11_recompute_tradeoff.py — fusion is a trade: one kernel for x - x.mean() means redundant work on a GPU
+
+Run:  DEV=CPU python3 examples/11_recompute_tradeoff.py
+
+x.mean() of a (16, 16) tensor has shape (): it has no axes, so run_rangeify has nothing to realize and the REDUCE
+is fused into the output kernel. We render that single kernel twice from the SAME kernel AST:
+  * for the CPU (clang): the reduce loop does not depend on the output loop, so it is emitted once, before it
+  * for OpenCL (no GPU needed, we only render source): the output loop becomes 256 work-groups (gidx0) and EVERY
+    work-group recomputes the full 256-element sum (with a 16-wide local GROUP reduction).
+&quot;&quot;&quot;
+from tinygrad import Tensor
+from tinygrad.uop.ops import Ops
+from tinygrad.codegen import to_program
+from tinygrad.helpers import Target
+from tinygrad.renderer.cstyle import OpenCLRenderer
+from tinygrad.device import Device
+
+x = Tensor.empty(16, 16)
+linear, _ = (x - x.mean()).linear_with_vars()
+print(f&quot;{len(linear.src)} kernel(s) scheduled&quot;)
+ast = linear.src[0].body
+for title, renderer in [(&quot;CPU (clang)&quot;, Device[&quot;CPU&quot;].renderer), (&quot;OpenCL&quot;, OpenCLRenderer(Target(&quot;CL&quot;)))]:
+  prg = to_program(ast, renderer)
+  src = [u.arg for u in prg.toposort() if u.op is Ops.SOURCE][0]
+  print(f&quot;===== {title}\n{src}&quot;)</code></pre>
+<pre class="output"><code>1 kernel(s) scheduled
+===== CPU (clang)
+typedef float float4 __attribute__((aligned(4),ext_vector_type(4)));
+struct r_256_64_4_args { float* arg0; float* arg1; };
+void r_256_64_4(const struct r_256_64_4_args* args) {
+  float* data0_256 = args-&gt;arg0;
+  float* data1_256 = args-&gt;arg1;
+  float buf0[1];
+  *(buf0+0) = 0.0f;
+  for (int Lidx0 = 0; Lidx0 &lt; 64; Lidx0++) {
+    float4 val0 = (*((float4*)((data1_256+(Lidx0&lt;&lt;2)))));
+    *(buf0+0) = ((*(buf0+0))+val0[0]+val0[1]+val0[2]+val0[3]);
+  }
+  for (int Lidx2 = 0; Lidx2 &lt; 256; Lidx2++) {
+    float val1 = (*(data1_256+Lidx2));
+    *(data0_256+Lidx2) = (val1+((*(buf0+0))*-0.00390625f));
+  }
+}
+
+===== OpenCL
+__kernel void r_256_16_16(__global float* data0_256, __global float* data1_256) {
+  float buf0[1];
+  float buf1[1];
+  __attribute__ ((aligned (16))) __local float buf2[16];
+  int lidx0 = get_local_id(0); /* 16 */
+  *(buf0+0) = 0.0f;
+  for (int Lidx0 = 0; Lidx0 &lt; 16; Lidx0++) {
+    float val0 = (*(data1_256+((lidx0&lt;&lt;4)+Lidx0)));
+    *(buf0+0) = ((*(buf0+0))+val0);
+  }
+  *(buf2+lidx0) = (*(buf0+0));
+  barrier(CLK_LOCAL_MEM_FENCE);
+  *(buf1+0) = 0.0f;
+  for (int Lidx103 = 0; Lidx103 &lt; 16; Lidx103++) {
+    float val1 = (*(buf2+Lidx103));
+    *(buf1+0) = ((*(buf1+0))+val1);
+  }
+  int gidx0 = get_group_id(0); /* 256 */
+  float val2 = (*(data1_256+gidx0));
+  if ((lidx0==0)) {
+    *(data0_256+gidx0) = (val2+((*(buf1+0))*-0.00390625f));
+  }
+}</code></pre>
+  <p>256 work-groups × a 256-element reduction each = 65536 loads where 256 would do. For a 16×16 tensor nobody cares; tinygrad's
+  heuristics are tuned for the common case and simple enough to predict. If you need the other trade-off, say so:
+  <code>m = x.mean().contiguous()</code> forces the split.</p>
+
+  <!-- ===================================================================================== -->
+  <h2 id="game"><span class="sec">11.11</span> Predict the kernel count</h2>
+  <div class="demo" id="demo-game">
+    <div class="demo-title">How many kernels?</div>
+    <div class="demo-desc">16 real programs, scheduled on CPU with <code>NOOPT=1</code>. Use the rules: STOREs + reduces broadcast back +
+    expensive multi-consumer values + split big reduces. Answers are what tinygrad actually produced.</div>
+    <div class="ch11-game">
+      <div class="ch11-score" id="gscore"></div>
+      <div class="prog" id="gprog"></div>
+      <div class="opts" id="gopts"></div>
+      <div class="res" id="gres"></div>
+      <button id="gnext" class="primary">next program ▶</button>
+    </div>
+  </div>
+
+  <!-- ===================================================================================== -->
+  <h2 id="hammer"><span class="sec">11.12</span> Hammer it again: one program, three ways</h2>
+  <p>Take softmax on (4, 8) and say why it is 3 kernels three times over.</p>
+  <ol>
+    <li><b>As math.</b> \(\text{out}_{ij} = e^{x_{ij}-m_i} / s_i\) with \(m_i = \max_j x_{ij}\) and \(s_i = \sum_j e^{x_{ij}-m_i}\). To produce
+    <em>any</em> \(\text{out}_{ij}\) you need the full \(s_i\), which needs the full \(m_i\). Two complete reductions per row must finish before the
+    output loop, and each one feeds a <em>broadcast</em>. (The third kernel is the output.)</li>
+    <li><b>As rangeify.</b> Both REDUCEs collect ending ranges from the broadcasting MUL/ADD → candidates. EXP2 has two consumers at different
+    ranges → candidate. The input RESHAPE has two consumers → candidate.</li>
+    <li><b>As remove_bufferize.</b> The two REDUCE candidates contain a reduce that reads a buffer → kept. EXP2 and RESHAPE read ≤ 3 buffers, no
+    reduce → removed (EXP2 is recomputed in kernels 1 and 2: open the softmax case above and hover the pink nodes).</li>
+  </ol>
+  <p>And the C code confirms it: kernel 0 is a max over 8, kernel 1 an exp-sum over 8 that reads kernel 0's buffer, kernel 2 recomputes
+  <code>exp2((x - max)*log2(e))</code> and multiplies by the reciprocal of the sum.</p>
+
+  <div class="quiz" data-answer="2">
+    <div class="q">Why is <code>x.sum(1).sum()</code> one kernel, while <code>x / x.sum(1, keepdim=True)</code> is two?</div>
+    <button class="opt">Because nested sums are rewritten into one sum by the symbolic simplifier before rangeify.</button>
+    <button class="opt">Because <code>keepdim=True</code> always forces a realize.</button>
+    <button class="opt">The inner sum's result is consumed by another reduce <em>without</em> a broadcast: its output ranges are just the outer reduce's range. In the division, the row sum is broadcast back over the row (ending ranges) and must be complete first.</button>
+    <div class="explain">Ending ranges come from broadcasting consumers. A reduce feeding a reduce has no broadcast in between, so it fuses into one loop nest (<code>r_8_4</code>).</div>
+  </div>
+
+  <div class="quiz" data-answer="0">
+    <div class="q">After <code>split kernels</code>, how does the output kernel's CALL know it must run after the kernel that computes the row means?</div>
+    <button class="opt">The row-mean buffer appears in its argument list as <code>AFTER(ALLOC, CALL(...))</code>: the AFTER carries the producing CALL.</button>
+    <button class="opt">Kernels are numbered and run in numerical order.</button>
+    <button class="opt">It doesn't: the runtime synchronizes after every kernel anyway.</button>
+    <div class="explain">Dependencies live in the graph as AFTERs. Chapter 12's <code>create_schedule</code> turns them into an order.</div>
+  </div>
+
+  <div class="quiz" data-answer="3">
+    <div class="q">What turns a surviving <code>STAGE</code> into something a kernel can write to?</div>
+    <button class="opt"><code>split_store</code> allocates a BUFFER.</button>
+    <button class="opt"><code>pm_remove_bufferize</code>.</button>
+    <button class="opt">The memory planner.</button>
+    <button class="opt"><code>bufferize_to_store</code>: a new <code>ALLOC</code> with a slot, <code>STORE(INDEX(alloc, idx), value)</code>, <code>END</code> over the ranges, wrapped in <code>AFTER</code>.</button>
+    <div class="explain">ALLOC is "storage to be allocated later". It only becomes a real BUFFER in Chapter 12 (<code>resolve_linear_call</code> → <code>create_new_buffer</code>).</div>
+  </div>
+
+  <div class="quiz" data-answer="1">
+    <div class="q">You have 6 input tensors added together on WebGPU (8 bindings max). What happens?</div>
+    <button class="opt">Compilation fails.</button>
+    <button class="opt">Nothing special: 6 inputs + 1 output = 7 ≤ 8, so one kernel. With more inputs <code>pm_limit_bufs</code> would insert STAGEs.</button>
+    <button class="opt">It's always split into one kernel per add.</button>
+    <div class="explain">The check is <code>len(bufs) &gt; MAX_BUFS - 1</code>. On CPU you can simulate a smaller limit with <code>MAX_KERNEL_BUFFERS=4</code>, as in the catalogue.</div>
+  </div>
+
+  <div class="summary-box"><h3>Chapter summary</h3><ul>
+    <li><b>Input</b>: the rangeified graph with candidate STAGEs. <b>Output</b>: a kernel graph — <code>CALL(SINK(KernelInfo), *buffers)</code> nodes linked by <code>AFTER(buffer, CALL)</code>.</li>
+    <li><code>pm_remove_bufferize</code> keeps a candidate iff it's non-removable, reads &gt; 3 buffers, or contains a reduce that reads a buffer. Everything else is recomputed at each use.</li>
+    <li><code>pm_limit_bufs</code> caps buffers per kernel (WebGPU / <code>MAX_KERNEL_BUFFERS</code>) and fixes store hazards.</li>
+    <li><code>bufferize_to_store</code>: STAGE → <code>AFTER(ALLOC, END(STORE(INDEX(ALLOC, idx), value), ranges))</code>.</li>
+    <li><code>split_kernels</code> cuts each fully-closed STORE/END into a kernel: buffers → positional PARAMs, ranges renumbered, <code>SINK(KernelInfo).call(*buffers)</code>.</li>
+    <li>Kernel count = STOREs (outputs, contiguous, assign, copies, split reduces) + surviving STAGEs (broadcast-back reduces, expensive multi-use values, hazards, buffer limits).</li>
+  </ul></div>
+</main>
+</div>
+<script>
+(async function () {
+  const G = window.Guide, el = G.el;
+  const KC = ["#58C4DD", "#F0AC5F", "#83C167", "#9A72AC", "#5CD0B3", "#F4D345", "#CD853F"];
+  const MULTI = "#ff7eb6";
+  const hl = (s, lang) => hljs.highlight(s, { language: lang }).value;
+
+  // ---------------------------------------------------------------- simulator
+  const SIM_LINES = [
+    "def remove_bufferize(src, buf, idx):",
+    "  if not buf.arg.removable: return None        # keep",
+    "  ...collect accessed_buffers, reduces...",
+    "  if len(accessed_buffers) > 3: return None    # keep",
+    "  ...walk below every REDUCE...",
+    "  if buffer_in_reduce: return None              # keep",
+    "  # if it makes it here, the bufferize is removed",
+    "  return src.substitute(replaced, ...)          # remove",
+  ];
+  const simCode = G.$("#sim-code");
+  SIM_LINES.forEach((l) => simCode.append(el("span", { class: "ln", html: hl(l, "python") })));
+  function sim() {
+    const rem = G.$("#sim-rem").checked, n = +G.$("#sim-n").value, red = G.$("#sim-red").checked, red2 = G.$("#sim-red2").checked;
+    G.$("#sim-nv").textContent = n;
+    let line, keep, why;
+    if (!rem) { line = 1; keep = true; why = "Non-removable STAGE (ALWAYS_CONTIGUOUS source or a custom-kernel input marked non_removable)."; }
+    else if (n > 3) { line = 3; keep = true; why = `src reads ${n} distinct buffers (> 3): recomputing it at every use would re-read all of them.`; }
+    else if (red) { line = 5; keep = true; why = "A REDUCE inside src reads a buffer: recomputing it per consumer element would repeat a whole reduction loop."; }
+    else { line = 7; keep = false; why = `≤ 3 buffers` + (red2 ? ", and the reduce inside only does index math (like arange/cumsum), which is fine to recompute" : " and no buffer-reading reduce") + ": substitute the consumer's index into src and recompute it — one less kernel."; }
+    G.$$(".ln", simCode).forEach((e, i) => e.classList.toggle("on", i === line));
+    G.$("#sim-verdict").innerHTML = keep ? `<span style="color:var(--green)">KEEP the buffer (return None)</span>` : `<span style="color:var(--red)">REMOVE the buffer → fused</span>`;
+    G.$("#sim-expl").textContent = why;
+  }
+  ["#sim-rem", "#sim-n", "#sim-red", "#sim-red2"].forEach((s) => G.$(s).addEventListener("input", sim));
+  sim();
+
+  // ---------------------------------------------------------------- case explorer
+  const cases = (await G.loadJSON("../data/ch11_cases.json")).cases;
+  function colorGraph(g, kOf) {
+    const out = JSON.parse(JSON.stringify(g));
+    for (const n of out.nodes) {
+      const ks = kOf(n);
+      if (["PARAM", "BUFFER", "ALLOC"].includes(n.op)) { n.sub = (n.arg || "") ; continue; }
+      if (!ks || !ks.length) continue;
+      n.color = ks.length > 1 ? MULTI : KC[ks[0] % KC.length];
+      n.sub = (n.arg ? n.arg + " · " : "") + ks.map((k) => "K" + k).join("+");
+    }
+    return out;
+  }
+  function legend(box, n, extra) {
+    box.innerHTML = "";
+    for (let k = 0; k < n; k++) box.append(el("span", { style: `--c:${KC[k % KC.length]}` }, `K${k}`));
+    box.append(el("span", { style: `--c:${MULTI}` }, "recomputed in several kernels"));
+    if (extra) box.append(el("span", {}, extra));
+  }
+  function showCase(i) {
+    const C = cases[i];
+    G.$$("#casebtns button").forEach((b, j) => b.classList.toggle("active", i === j));
+    G.$("#casecode").innerHTML = ""; G.$("#casecode").append(el("code", { html: hl(C.code, "python") }));
+    G.$("#casewhy").innerHTML = `<b>${C.n_kernels} kernel${C.n_kernels > 1 ? "s" : ""}.</b> ` + G.escape(C.why) +
+      (C.n_roots !== C.n_kernels ? ` <i style="color:var(--dim)">(Coloring shows the graph before pm_limit_bufs inserted its extra splits, so it shows 1 kernel.)</i>` : "");
+    const cb = G.$("#casecands"); cb.innerHTML = "";
+    cb.append(el("span", { style: "font-size:13px;color:var(--dim);margin-right:6px" }, "realize-map candidates (besides STOREs):"));
+    if (!C.candidates.length) cb.append(el("span", { class: "ch11-chip" }, "none"));
+    C.candidates.forEach((c) => cb.append(el("span", { class: "ch11-chip " + (c.survived ? "keep" : "gone"), title: c.survived ? "kept by pm_remove_bufferize" : "removed: recomputed" }, `${c.op}${c.shape}`)));
+    legend(G.$("#caselegend"), Math.max(C.n_roots, 1));
+    const ctl = G.uopGraph("#casegraph", colorGraph(C.graph, (n) => n.k), { height: 560, compact: true, legend: false });
+    const kb = G.$("#casekern"); kb.innerHTML = "";
+    const tabs = el("div", { class: "tabbar" }); const panes = [];
+    C.kernels.forEach((k, j) => {
+      const b = el("button", { onclick: () => sel(j) }, `K${j} ${k.name}`);
+      tabs.append(b);
+      panes.push(el("div", {}, el("div", { class: "codecap" }, `${k.nbufs} buffer arg(s), output ${k.out_numel} element(s)`), el("pre", {}, el("code", { html: hl(k.src, "c") }))));
+    });
+    kb.append(tabs); panes.forEach((p) => kb.append(p));
+    function sel(j, quiet) {
+      panes.forEach((p, q) => p.style.display = q === j ? "block" : "none");
+      G.$$("button", tabs).forEach((b, q) => b.classList.toggle("active", q === j));
+      if (!quiet && C.n_roots === C.n_kernels) ctl.highlight(C.graph.nodes.filter((n) => n.k && n.k.includes(j) && !["PARAM", "BUFFER", "ALLOC"].includes(n.op)).map((n) => n.id));
+    }
+    sel(0, true);
+  }
+  cases.forEach((C, i) => G.$("#casebtns").append(el("button", { onclick: () => showCase(i) }, C.title, el("span", { class: "n" }, C.n_kernels))));
+  showCase(2);
+
+  // ---------------------------------------------------------------- cut the graph
+  const CUT_KEYS = ["softmax", "xmean1", "twice", "mm", "ewred"];
+  const cutCases = CUT_KEYS.map((k) => cases.find((c) => c.key === k));
+  let cutI = 0, chosen = new Set(), cutCtl = null;
+  const isBuf = (n) => ["PARAM", "BUFFER", "ALLOC"].includes(n.op);
+  const numel = (s) => { const m = (s || "").match(/\d+/g); return m ? m.map(Number).reduce((a, b) => a * b, 1) : 1; };
+  function partition(C) {
+    const g = C.graph, srcs = new Map(g.nodes.map((n) => [n.id, []])), byId = new Map(g.nodes.map((n) => [n.id, n]));
+    g.edges.forEach(([s, d]) => srcs.get(d) && srcs.get(d).push(s));
+    const stores = g.nodes.filter((n) => n.op === "STORE").map((n) => n.id);
+    const roots = [...g.nodes.filter((n) => chosen.has(n.id)).map((n) => n.id), ...stores];
+    const rootSet = new Set(roots), member = new Map(), deps = new Map(roots.map((r) => [r, new Set()]));
+    function walk(r, id, top) {
+      if (!top && rootSet.has(id)) { deps.get(r).add(id); return; }
+      const n = byId.get(id);
+      if (n.op === "AFTER") { for (const s of srcs.get(id)) if (rootSet.has(s)) deps.get(r).add(s); }
+      if (!member.has(id)) member.set(id, new Set());
+      if (member.get(id).has(r)) return;
+      member.get(id).add(r);
+      if (isBuf(n)) return;
+      for (const s of srcs.get(id)) { const sn = byId.get(s); if (n.op === "STORE" && s === srcs.get(id)[0] && isBuf(sn)) { member.has(s) || member.set(s, new Set()); member.get(s).add(r); continue; } walk(r, s, false); }
+    }
+    roots.forEach((r) => walk(r, r, true));
+    // order roots topologically by deps
+    const order = [], done = new Set();
+    const visit = (r) => { if (done.has(r)) return; done.add(r); deps.get(r).forEach(visit); order.push(r); };
+    roots.forEach(visit);
+    const kIdx = new Map(order.map((r, i) => [r, i]));
+    // cost model
+    let launches = order.length, mem = 0, recompute = 0, alu = 0;
+    order.forEach((r) => { const n = byId.get(r); mem += numel(n.shape) * 4; });             // each kernel writes its output once
+    for (const [id, rs] of member) {
+      const n = byId.get(id);
+      if (isBuf(n)) { mem += numel(n.shape) * 4 * [...rs].length; continue; }                // each reading kernel streams the buffer
+      if (["CONST", "SINK", "AFTER", "STORE"].includes(n.op) || n.op in { RESHAPE: 1, PERMUTE: 1, EXPAND: 1, PAD: 1, SHRINK: 1 }) continue;
+      alu += numel(n.shape) * rs.size; if (rs.size > 1) recompute += rs.size - 1;
+    }
+    for (const r of order) if (!stores.includes(r)) mem += numel(byId.get(r).shape) * 4 * [...deps.values()].filter((d) => d.has(r)).length; // materialized reads
+    // correctness: a reduce whose result is broadcast back must be materialized
+    const mustKeep = C.candidates.filter((c) => c.survived && byId.get(c.id) && byId.get(c.id).op === "REDUCE" && !chosen.has(c.id)).map((c) => c.id);
+    return { member, kIdx, launches, mem, recompute, alu, mustKeep, byId };
+  }
+  function drawCut(animate) {
+    const C = cutCases[cutI], P = partition(C);
+    const g = colorGraph(C.graph, (n) => P.member.has(n.id) ? [...P.member.get(n.id)].map((r) => P.kIdx.get(r)).sort() : []);
+    const candIds = new Set(C.candidates.map((c) => c.id));
+    g.nodes.forEach((n) => { if (chosen.has(n.id)) { n.label = "⬛ " + n.op; } else if (candIds.has(n.id)) n.label = "◇ " + n.op; });
+    if (!cutCtl) cutCtl = G.uopGraph("#cutgraph", g, { height: 560, compact: true, legend: false, onClick: (n) => {
+      if (isBuf(n) || ["STORE", "SINK", "AFTER", "CONST"].includes(n.op)) return;
+      chosen.has(n.id) ? chosen.delete(n.id) : chosen.add(n.id); drawCut(true);
+    } });
+    else cutCtl.setGraph(g, { animate: false });
+    legend(G.$("#cutlegend"), P.launches, "⬛ = materialized by you · ◇ = tinygrad realize-map candidate");
+    const tgKeep = new Set(C.candidates.filter((c) => c.survived).map((c) => c.id));
+    const same = tgKeep.size === chosen.size && [...chosen].every((x) => tgKeep.has(x));
+    G.$("#cutcost").innerHTML = "";
+    [["kernels", P.launches], ["bytes moved (toy)", P.mem], ["ALU element-ops (toy)", P.alu], ["recomputed nodes", P.recompute]].forEach(([k, v]) =>
+      G.$("#cutcost").append(el("div", {}, el("b", {}, v), el("small", {}, k))));
+    G.$("#cutwarn").innerHTML = P.mustKeep.length ? `⚠ Not a valid schedule: a REDUCE whose result is broadcast back (${P.mustKeep.length}) is fused into its reader. Each output element would need the <em>complete</em> reduction — tinygrad's rangeify makes these materialization points unconditionally (and they survive pm_remove_bufferize).`
+      : (same ? `<span style="color:var(--green)">This is exactly tinygrad's partition (${C.n_kernels} kernels).</span>` : "");
+  }
+  function pickCut(i) { cutI = i; cutCtl = null; G.$("#cutgraph").innerHTML = ""; G.$$("#cutsel button").forEach((b, j) => b.classList.toggle("active", i === j)); setTG(); }
+  function setTG() { chosen = new Set(cutCases[cutI].candidates.filter((c) => c.survived).map((c) => c.id)); drawCut(); }
+  cutCases.forEach((C, i) => G.$("#cutsel").append(el("button", { onclick: () => pickCut(i) }, C.title)));
+  G.$("#cut-tg").addEventListener("click", setTG);
+  G.$("#cut-none").addEventListener("click", () => { chosen = new Set(); drawCut(); });
+  G.$("#cut-all").addEventListener("click", () => { chosen = new Set(cutCases[cutI].candidates.map((c) => c.id)); drawCut(); });
+  pickCut(0);
+
+  // ---------------------------------------------------------------- game
+  const qs = (await G.loadJSON("../data/ch11_game.json")).questions;
+  let gi = 0, right = 0, answered = 0, done = false;
+  const order = qs.map((_, i) => i);
+  function showQ() {
+    done = false;
+    const q = qs[order[gi % qs.length]];
+    G.$("#gprog").textContent = q.code;
+    G.$("#gres").innerHTML = "";
+    G.$("#gscore").textContent = `question ${gi % qs.length + 1}/${qs.length} · score ${right}/${answered}`;
+    const o = G.$("#gopts"); o.innerHTML = "";
+    [0, 1, 2, 3, 4].forEach((n) => o.append(el("button", { onclick: (ev) => answer(n, ev.target) }, n === 4 ? "4+" : n)));
+  }
+  function answer(n, btn) {
+    if (done) return; done = true;
+    const q = qs[order[gi % qs.length]], truth = q.n, ok = n === truth || (n === 4 && truth >= 4);
+    answered++; if (ok) right++;
+    G.$$("#gopts button").forEach((b, i) => { if (i === Math.min(truth, 4)) b.classList.add("active"); });
+    btn.style.borderColor = ok ? "var(--green)" : "var(--red)";
+    G.$("#gres").innerHTML = `${ok ? "<b style='color:var(--green)'>Correct!</b>" : "<b style='color:var(--red)'>Not quite.</b>"} tinygrad scheduled <b>${truth}</b> kernel(s): ${q.names.map((x) => "<code>" + x + "</code>").join(" ")}<br><span style="color:var(--dim)">${G.escape(q.hint)}</span>`;
+    G.$("#gscore").textContent = `question ${gi % qs.length + 1}/${qs.length} · score ${right}/${answered}`;
+  }
+  G.$("#gnext").addEventListener("click", () => { gi++; showQ(); });
+  showQ();
+})();
+</script>
+</body>
+</html>

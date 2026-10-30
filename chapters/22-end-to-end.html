@@ -1,0 +1,1421 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>22. Capstone: the end-to-end explorer — tinygrad internals</title>
+<link rel="stylesheet" href="../assets/vendor/hljs-dark.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/vendor/highlight.min.js"></script>
+<script src="../assets/vendor/dagre.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/chapters.js"></script>
+<script src="../assets/guide.js"></script>
+<style>
+main { max-width: 1240px; }
+.ch22-x { background: var(--bg2); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin: 24px 0; }
+.ch22-x .ch22-title { font-weight: 700; color: var(--yellow); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ch22-x .ch22-title::before { content: "▶"; color: var(--blue); font-size: 12px; }
+.ch22-presets { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 8px; }
+.ch22-presets button { font-size: 13px; padding: 4px 10px; }
+.ch22-presets button small { color: var(--dim); margin-left: 4px; font-family: var(--mono); font-size: 11px; }
+.ch22-presets button.active small { color: #000; }
+.ch22-editor { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 12px; }
+.ch22-editor textarea { min-height: 150px; height: 150px; resize: vertical; line-height: 1.45; tab-size: 4; }
+.ch22-runbox { display: flex; flex-direction: column; gap: 8px; font-size: 13.5px; }
+.ch22-runbox .opts { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.ch22-runbox .btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.ch22-status { font-family: var(--mono); font-size: 12px; padding: 6px 8px; border-radius: 6px; background: var(--bg3); border: 1px solid var(--line); }
+.ch22-status.live { border-color: var(--green); color: var(--green); }
+.ch22-status.pre { border-color: var(--gold); color: var(--gold); }
+.ch22-status.err { border-color: var(--red); color: var(--red); }
+.ch22-status.busy { border-color: var(--blue); color: var(--blue); }
+.ch22-sum { font-size: 12.5px; color: var(--dim); font-family: var(--mono); line-height: 1.5; }
+.ch22-sum b { color: var(--fg); font-weight: 600; }
+.ch22-strip { display: flex; align-items: stretch; gap: 0; margin: 14px 0 8px; overflow-x: auto; padding-bottom: 4px; }
+.ch22-strip .st { flex: 1 1 0; min-width: 104px; background: var(--bg3); border: 1px solid var(--line); padding: 7px 8px 6px; cursor: pointer; position: relative; transition: all .2s; font-size: 13px; line-height: 1.25; }
+.ch22-strip .st:first-child { border-radius: 8px 0 0 8px; } .ch22-strip .st:last-child { border-radius: 0 8px 8px 0; }
+.ch22-strip .st + .st { border-left: none; }
+.ch22-strip .st .n { font-family: var(--mono); color: var(--dim); font-size: 11px; }
+.ch22-strip .st small { display: block; color: var(--dim); font-family: var(--mono); font-size: 10.5px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ch22-strip .st.kern { background: #1f2329; }
+.ch22-strip .st.kern::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: var(--purple); opacity: .6; }
+.ch22-strip .st.active { background: rgba(244,211,69,.13); border-color: var(--yellow); color: var(--yellow); z-index: 1; }
+.ch22-strip .st:hover { color: var(--yellow); }
+.ch22-strip .legendk { font-size: 11px; color: var(--purple); }
+.ch22-kpick { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 6px 0; font-size: 13px; color: var(--dim); }
+.ch22-kpick button { font-family: var(--mono); font-size: 12.5px; padding: 3px 9px; }
+.ch22-kpick button .k { color: var(--dim); margin-right: 4px; }
+.ch22-kpick button.active .k { color: #000; opacity: .65; }
+.ch22-kpick button.copy { border-style: dashed; }
+.ch22-caption { background: var(--bg3); border-left: 3px solid var(--blue); border-radius: 6px; padding: 9px 12px; font-size: 14px; margin: 8px 0 10px; }
+.ch22-caption b { color: var(--yellow); }
+.ch22-caption .chlink { float: right; margin-left: 10px; font-size: 12.5px; }
+.ch22-main { display: grid; grid-template-columns: 310px minmax(0, 1fr); gap: 12px; align-items: start; }
+.ch22-side { background: #0d0f12; border: 1px solid var(--line); border-radius: 8px; max-height: 720px; overflow: auto; font-size: 12.5px; }
+.ch22-side .hd { position: sticky; top: 0; background: #15181d; padding: 6px 10px; border-bottom: 1px solid var(--line); color: var(--gold); font-weight: 600; font-size: 12.5px; display: flex; gap: 8px; align-items: center; justify-content: space-between; z-index: 2; }
+.ch22-side .hd label { font-weight: 400; font-size: 11.5px; }
+.ch22-side pre { border: 0; margin: 0; font-size: 11.5px; padding: 8px 10px; background: transparent !important; white-space: pre; }
+.ch22-pass { padding: 4px 10px 4px calc(10px + var(--d, 0) * 14px); cursor: pointer; border-bottom: 1px solid #1b1f25; display: flex; gap: 6px; align-items: baseline; }
+.ch22-pass:hover { background: var(--bg3); }
+.ch22-pass.sel { background: rgba(244,211,69,.13); color: var(--yellow); }
+.ch22-pass.noop { color: #6b7480; }
+.ch22-pass.grp { color: var(--purple); font-style: italic; }
+.ch22-pass.ghead { color: var(--gold); cursor: default; background: #15181d; font-weight: 600; }
+.ch22-pass .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 12px; }
+.ch22-pass .m { font-family: var(--mono); font-size: 11px; padding: 0 6px; border-radius: 8px; background: rgba(252,98,85,.18); color: var(--red); }
+.ch22-pass .m.z { background: transparent; color: #5a626c; }
+.ch22-pass .io { font-family: var(--mono); font-size: 10.5px; color: var(--dim); }
+.ch22-heat { display: flex; align-items: flex-end; gap: 1px; height: 34px; padding: 4px 8px; border-bottom: 1px solid var(--line); background: #101317; }
+.ch22-heat div { flex: 1; min-width: 2px; background: #2a3038; cursor: pointer; border-radius: 1px 1px 0 0; }
+.ch22-heat div.hot { background: var(--red); opacity: .75; }
+.ch22-heat div.sel { background: var(--yellow); opacity: 1; }
+.ch22-row { padding: 5px 10px; border-bottom: 1px solid #1b1f25; cursor: pointer; font-family: var(--mono); font-size: 12px; }
+.ch22-row:hover { background: var(--bg3); } .ch22-row.sel { background: rgba(244,211,69,.13); }
+.ch22-row .k { color: var(--purple); } .ch22-row .c { color: var(--gold); } .ch22-row .d { color: var(--dim); font-size: 11px; display: block; white-space: normal; }
+table.ch22-uops { margin: 0; font-size: 11.5px; font-family: var(--mono); width: 100%; border: 0; table-layout: fixed; }
+table.ch22-uops th:nth-child(1) { width: 34px; } table.ch22-uops th:nth-child(2) { width: 74px; } table.ch22-uops th:nth-child(3) { width: 66px; } table.ch22-uops th:nth-child(4) { width: 62px; }
+table.ch22-uops td { overflow: hidden; text-overflow: ellipsis; }
+.ch22-side { overflow-x: hidden; }
+table.ch22-uops td, table.ch22-uops th { border: 0; border-bottom: 1px solid #1b1f25; padding: 2px 6px; white-space: nowrap; }
+table.ch22-uops th { position: sticky; top: 31px; background: #15181d; font-size: 11px; }
+table.ch22-uops tr { cursor: pointer; } table.ch22-uops tr:hover td { background: var(--bg3); } table.ch22-uops tr.sel td { background: rgba(244,211,69,.15); }
+table.ch22-uops td.op { font-weight: 700; } table.ch22-uops td.arg { color: var(--dim); max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
+.ch22-gtools { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 6px; font-size: 13px; }
+.ch22-gtools button { font-size: 12.5px; padding: 3px 9px; }
+.ch22-gtools .sep { width: 1px; height: 20px; background: var(--line); margin: 0 4px; }
+.ch22-gtools .info { color: var(--dim); font-family: var(--mono); font-size: 11.5px; margin-left: auto; }
+.ch22-graph .uopgraph { min-height: 260px; }
+.ch22-graph .uopgraph .node.dim { opacity: .38; }
+.ch22-graph .uopgraph .edge.dim { opacity: .25; }
+.ch22-graph .legend { margin: 0 0 6px; }
+.ch22-nodeinfo { font-family: var(--mono); font-size: 11.5px; color: var(--dim); margin: 6px 0; min-height: 1.4em; white-space: pre-wrap; }
+.ch22-below { margin-top: 10px; }
+.ch22-rules { width: 100%; font-size: 12px; margin: 4px 0; table-layout: fixed; }
+.ch22-rules td:first-child, .ch22-rules th:first-child { width: 44px; }
+.ch22-rules td:nth-child(2), .ch22-rules th:nth-child(2) { width: 300px; }
+.ch22-center { min-width: 0; }
+.ch22-rules td { font-family: var(--mono); padding: 3px 8px; } .ch22-rules tr { cursor: pointer; }
+.ch22-rules tr:hover td { background: var(--bg3); } .ch22-rules tr.sel td { background: rgba(244,211,69,.13); }
+.ch22-rules td.code { color: #cfd8dc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ch22-rules td { overflow: hidden; text-overflow: ellipsis; }
+.ch22-src pre { max-height: 640px; margin: 0; font-size: 12.5px; }
+.ch22-bars .bar { display: grid; grid-template-columns: 210px 1fr 120px; gap: 8px; align-items: center; font-family: var(--mono); font-size: 12px; margin: 4px 0; }
+.ch22-bars .bar .b { height: 16px; border-radius: 3px; background: var(--blue); min-width: 2px; }
+.ch22-bars .bar .b.copy { background: var(--gold); }
+.ch22-vals { display: inline-grid; gap: 2px; margin: 6px 0 12px; font-family: var(--mono); font-size: 11px; }
+.ch22-vals div { min-width: 46px; height: 26px; display: flex; align-items: center; justify-content: center; border-radius: 3px; color: #000; padding: 0 3px; }
+.ch22-err pre { color: #ffb3ad; max-height: 420px; }
+.ch22-tour { margin: 6px 0; }
+.ch22-tour .stepper .step-caption { font-size: 14px; }
+.ch22-flow { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 16px 0; }
+.ch22-flow .box { background: var(--bg2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: 13.5px; }
+.ch22-flow .box h4 { margin: 0 0 4px; font-size: 14px; }
+.ch22-flow .box code { font-size: 11.5px; }
+.ch22-kc { display: flex; gap: 10px; align-items: flex-end; height: 170px; padding: 10px; background: #0d0f12; border: 1px solid var(--line); border-radius: 8px; }
+.ch22-kc .col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; cursor: pointer; height: 100%; font-family: var(--mono); font-size: 11.5px; }
+.ch22-kc .col .bk { width: 70%; background: var(--purple); border-radius: 4px 4px 0 0; transition: height .6s; display: flex; align-items: flex-start; justify-content: center; color: #fff; font-weight: 700; padding-top: 2px; }
+.ch22-kc .col:hover .bk { background: var(--yellow); color: #000; }
+.ch22-kc .col span { color: var(--dim); margin-top: 4px; text-align: center; }
+@media (max-width: 1100px) { .ch22-main { grid-template-columns: 1fr; } .ch22-editor { grid-template-columns: 1fr; } .ch22-flow { grid-template-columns: 1fr 1fr; } }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="sidebar" id="sidebar"></nav>
+<main>
+  <h1><span class="chnum">CHAPTER 22</span>Capstone: the end-to-end explorer</h1>
+  <p class="lede">Type a tinygrad program and follow it all the way down: the lazy UOp graph, every scheduling rewrite and the rules
+  that fired, the schedule of kernels, each kernel's AST, optimizations and lowering passes, the linearized program, the C source
+  clang compiles, and the timings and values it produces. Everything shown comes from a real run of the pinned tinygrad checkout,
+  recorded by tinygrad's own rewrite tracker.</p>
+
+  <h2 id="intuition"><span class="sec">22.1</span>One program, eight snapshots</h2>
+  <p>The earlier chapters each took one stage of the compiler apart. This chapter connects them. You give the explorer a snippet; it runs the
+  snippet in a fresh subprocess with <code>DEV=CPU</code> and records the program at eight points:</p>
+  <div class="ch22-flow">
+    <div class="box"><h4 class="hl-blue">① Tensor graph</h4>The lazy <code>UOp</code> DAG behind <code>out.uop</code>. Nothing has run. <a href="02-tensor-laziness.html">ch 2</a> · <a href="04-uop.html">ch 4</a></div>
+    <div class="box"><h4 class="hl-blue">② Schedule passes</h4>Every <code>graph_rewrite</code> inside <code>Tensor.linear_with_vars</code>: bufferize, callify, rangeify, kernel split. <a href="10-rangeify.html">ch 10</a> · <a href="11-kernel-split.html">ch 11</a></div>
+    <div class="box"><h4 class="hl-blue">③ Schedule</h4>A <code>LINEAR</code> UOp: an ordered list of <code>CALL</code>s (kernels and copies) with their buffers. <a href="12-schedule.html">ch 12</a></div>
+    <div class="box"><h4 class="hl-purple">④ Kernel AST</h4>One kernel's <code>SINK</code>: <code>PARAM</code>s, <code>RANGE</code>s, <code>INDEX</code>, <code>REDUCE</code>, <code>STORE</code>, <code>END</code>. <a href="13-kernel-ast.html">ch 13</a></div>
+    <div class="box"><h4 class="hl-purple">⑤ Codegen passes</h4><code>do_to_program</code> → <code>full_rewrite_to_sink</code>: opts (UPCAST…), expander, devectorize, decompositions… <a href="14-optimizations.html">ch 14</a> · <a href="15-lowering.html">ch 15</a></div>
+    <div class="box"><h4 class="hl-purple">⑥ Linearized</h4>The DAG ordered into a flat list of UOps, one per line of the program. <a href="16-linearize-render.html">ch 16</a></div>
+    <div class="box"><h4 class="hl-purple">⑦ C source</h4>What <code>ClangRenderer</code> emits from that list, then compiled to a <code>BINARY</code>. <a href="16-linearize-render.html">ch 16</a></div>
+    <div class="box"><h4 class="hl-green">⑧ Run</h4><code>run_linear</code> executes each CALL; per-kernel time, estimated ops/bytes, the output values. <a href="17-runtime.html">ch 17</a></div>
+  </div>
+  <div class="callout analogy"><span class="title">Analogy</span>A factory floor with eight inspection windows. The snippet is raw material. At each window you see the part
+  as it is at that moment, and between windows you see which machines (pattern rules) touched it and how often. Purple windows are per
+  kernel: once the scheduler has cut the work into kernels, each kernel goes through its own codegen line.</div>
+  <div class="callout aha"><span class="title">The key idea</span>Every arrow in this pipeline is a <code>graph_rewrite</code> over UOps, apart from a few
+  plain Python steps (toposorting the schedule, linearizing, rendering strings, calling clang). Because UOps are hash-consed, a node that a pass
+  leaves alone is <em>the same object</em> before and after. The explorer gives each UOp one stable id for the whole trace, so the graph morphs
+  between stages: nodes that survive stay where they are, new nodes fade in, and the ones that were rewritten away disappear.</div>
+
+  <h3>The snippet convention</h3>
+  <ul>
+    <li><code>Tensor</code>, <code>dtypes</code>, <code>nn</code>, <code>UOp</code>, <code>Ops</code>, <code>Device</code> are already imported.</li>
+    <li>Assign the result to <code>out</code>: a Tensor, or a list, tuple or dict of Tensors. If you don't, and the last line is an expression, that expression becomes <code>out</code>.</li>
+    <li>Whatever the snippet realizes while it runs (for example <code>x = Tensor([...]).realize()</code>) is the <b>prelude</b>. The trace then focuses on the single realize of <code>out</code>. The presets realize their inputs first, so the traced graph starts from real <code>BUFFER</code>s instead of copies from the <code>PYTHON</code> device.</li>
+  </ul>
+
+  <h2 id="capture"><span class="sec">22.2</span>How the trace is captured: tinygrad tracks itself</h2>
+  <p>The tracer re-implements nothing. tinygrad already has a tracker for every rewrite; it is the data source for <code>VIZ=1</code>. Setting
+  <code>TRACK_MATCH_STATS=2</code> turns it on (that is what <code>VIZ=1</code> sets underneath). At import time, <code>tinygrad/uop/ops.py</code> then
+  replaces <code>PatternMatcher</code> with <code>TrackedPatternMatcher</code>, and every function wrapped in <code>@rewrite_group</code> starts recording:</p>
+  <div class="codecap"><b>tinygrad/uop/ops.py</b> — <a class="src" data-path="tinygrad/uop/ops.py" data-line="1572">TRACK_MATCH_STATS</a> <a class="src" data-path="tinygrad/uop/ops.py" data-line="1581">TrackedGraphRewrite</a> <a class="src" data-path="tinygrad/uop/ops.py" data-line="1618">rewrite_group</a> <a class="src" data-path="tinygrad/uop/ops.py" data-line="1659">TrackedPatternMatcher</a></div>
+  <pre><code class="language-python">TRACK_MATCH_STATS = ContextVar("TRACK_MATCH_STATS", 2 if VIZ else 0)
+
+@dataclass(frozen=True)
+class TrackedGraphRewrite:
+  loc:tuple[str, int]                           # location that called graph_rewrite
+  sink:int                                      # the sink input to graph_rewrite
+  matches:list[tuple[int, int, tuple, float]]   # before/after UOp, UPat location and time
+  name:str                                      # name of the rewrite
+  depth:int                                     # depth if it's a subrewrite
+  bottom_up:bool
+  walk:bool
+  enter_calls:bool
+
+tracked_keys:list[TracingKey] = []
+tracked_ctxs:list[list[TrackedGraphRewrite]] = []
+
+# graph_rewrite itself is decorated:
+@rewrite_group(new_ctx=False)
+def graph_rewrite(sink:UOp, pm:PatternMatcher, ctx=None, bottom_up=False, name=None, ...) -> UOp: ...</code></pre>
+  <p>There are two kinds of <code>@rewrite_group</code>. A <b>new-context</b> group, such as the scheduler or <code>do_to_program</code> for one kernel,
+  appends a new entry to <code>tracked_keys</code>. A <code>new_ctx=False</code> function, such as <code>graph_rewrite</code>, <code>prepare_rangeify</code> or
+  <code>get_kernel_graph</code>, appends one <code>TrackedGraphRewrite</code> to the current group. Its depth is the length of the <code>active_rewrites</code> stack,
+  which is why rewrites nested inside a pattern's callback appear indented. <code>TrackedPatternMatcher.rewrite</code> then adds
+  <code>(before.trace_num, after.trace_num, upat.location, seconds)</code> to <code>active_rewrites[-1].matches</code> every time a rule returns a new UOp.</p>
+  <p>For one realize on CPU, the groups look like this (names are real):</p>
+  <table>
+    <tr><th>group (<code>TracingKey.display_name</code>)</th><th>created by</th><th>explorer stage</th></tr>
+    <tr><td><code>Schedule 1 -&gt; 1 n3</code></td><td><a class="src" data-path="tinygrad/schedule/__init__.py" data-line="121">lower_sink_to_linear</a> under <code>Tensor.linear_with_vars</code></td><td>② schedule passes</td></tr>
+    <tr><td><code>r_4_4_4</code> (one per compiled kernel; <code>key.ret</code> is the Renderer)</td><td><a class="src" data-path="tinygrad/codegen/__init__.py" data-line="469">do_to_program</a></td><td>⑤ codegen passes</td></tr>
+    <tr><td><code>HCQ Compile 1 Kernel n3</code>, <code>HCQ Link 1 Kernel n3</code></td><td><code>hcq_compile</code> / <code>hcq_link</code> inside <a class="src" data-path="tinygrad/engine/realize.py" data-line="284">run_linear</a></td><td>⑧ run (listed, not drawn)</td></tr>
+  </table>
+  <p><a class="src" data-path="tools/trace.py">tools/trace.py</a> (in this guide's repo, not tinygrad) adds three small hooks on top of that machinery:</p>
+  <ol>
+    <li><b>Output graphs.</b> <code>TrackedGraphRewrite</code> stores only the input sink, as a <code>trace_num</code>. VIZ rebuilds outputs by replaying the matches. The tracer wraps
+      <a class="src" data-path="tinygrad/uop/ops.py" data-line="1733">RewriteContext</a><code>.unified_rewrite</code> / <code>.walk_rewrite</code> and records <code>(input, output)</code> for the
+      <code>TrackedGraphRewrite</code> that is <code>active_rewrites[-1]</code> when the call starts. Only the outermost call per context counts: <code>substitute()</code> and <code>simplify()</code> without a name run
+      untracked (<code>TRACK_MATCH_STATS=0</code>) but still go through <code>RewriteContext</code> while an outer rewrite is active.</li>
+    <li><b>Timings.</b> It wraps <a class="src" data-path="tinygrad/engine/realize.py" data-line="61">track_stats</a> (the function that prints the <code>DEBUG=2</code> lines) to record each call's kernel time and estimates, and runs <code>run_linear(..., wait=True)</code> so kernel times are measured.</li>
+    <li><b>Compiled programs.</b> After the run it reads each kernel's <code>PROGRAM</code> UOp (SINK, LINEAR, SOURCE, BINARY) from <code>to_program_cache</code>, using <code>to_program_key(ast, renderer)</code>.</li>
+  </ol>
+  <p>The worker also sets <code>PARALLEL=0</code>, because the compile worker pool's initializer runs <code>Context(TRACK_MATCH_STATS=0)</code> and would hide kernel lowering. It unregisters the
+  <code>atexit</code> hook that would otherwise write <code>rewrites.pkl</code>. Realization is split the way <code>Tensor.realize</code> splits it internally: <code>Tensor.linear_with_vars(*outs)</code>
+  (scheduling), then <code>run_linear</code> (compile and execute). That gives a clean boundary between stages ② and ⑤.</p>
+  <div class="callout note">Serialization keeps the JSON small: there is <b>one node table</b> per trace (<code>id → {op, dtype, arg, shape, src ids}</code>, with args formatted by tinygrad's own
+  <code>_render_arg</code>), and every graph is stored as just a root id. Because of hash-consing, a node's id fixes its sources, so the browser rebuilds any graph by walking <code>src</code> from the root.
+  Limits: at most 1500 nodes per graph (the ones nearest the root, as in <code>uop2json</code>), 25k nodes per trace, 160 passes per group.</div>
+
+  <h2 id="read"><span class="sec">22.3</span>How to read each stage</h2>
+  <p>For every stage: what goes in, what transformation happens, what comes out, and what to look for in the explorer.</p>
+  <h3>① Tensor graph: <code>UOp.sink(*[t.uop for t in outs])</code></h3>
+  <p><b>In:</b> your Python. <b>Out:</b> a DAG of tensor-level UOps: <code>BUFFER</code> (realized inputs), movement ops (<code>RESHAPE</code>, <code>PERMUTE</code>, <code>EXPAND</code>, <code>PAD</code>, <code>SHRINK</code>, <code>FLIP</code>), ALU ops, <code>REDUCE</code>.
+  Shapes live on the nodes. <b>Look for:</b> how a single high-level call (<code>@</code>, <code>softmax</code>, <code>conv2d</code>) expanded into primitives (<a href="08-decompositions.html">ch 8</a>), and the extra backward UOps after <code>.backward()</code> (<a href="09-autograd.html">ch 9</a>).</p>
+  <h3>② Schedule passes: <code>Tensor.linear_with_vars</code></h3>
+  <p><b>In:</b> the tensor graph. <b>Out:</b> a <code>LINEAR</code>. In order: realized outputs get <code>buf.after(buf.store(compute))</code> (<i>drop after</i> / <i>substitute bufferize</i>). Then
+  <a class="src" data-path="tinygrad/schedule/__init__.py" data-line="257">transform_to_call</a> turns buffers into <code>PARAM</code>s and wraps everything in a <code>CALL</code> (<i>replace bufs</i>). Then
+  <a class="src" data-path="tinygrad/schedule/__init__.py" data-line="121">lower_sink_to_linear</a> runs <a class="src" data-path="tinygrad/schedule/prepare.py" data-line="255">prepare_rangeify</a> →
+  <a class="src" data-path="tinygrad/schedule/rangeify.py" data-line="339">get_kernel_graph</a> (<i>apply rangeify</i> replaces movement ops with index expressions, <i>stage to store</i>, <i>split kernels</i>) →
+  <a class="src" data-path="tinygrad/schedule/__init__.py" data-line="31">create_schedule</a>. Finally <i>resolve linear call</i> binds the PARAMs back to buffers, and <a class="src" data-path="tinygrad/schedule/memory.py" data-line="19">memory_plan_rewrite</a> packs intermediate buffers into an arena.
+  <b>Look for:</b> the pass where movement ops disappear (<i>apply rangeify</i>) and the pass where the graph splits into <code>CALL</code>s (<i>split kernels</i>).
+  The heat strip above the pass list shows where the matches concentrate.</p>
+  <h3>③ Schedule: the <code>LINEAR</code></h3>
+  <p><b>Out:</b> <code>LINEAR(CALL(SINK, buf0, buf1, …), CALL(…), …)</code>, in execution order (a Kahn toposort over read-after-write and write-after-read dependencies). A kernel CALL's body is a <code>SINK</code> with <code>KernelInfo</code>.
+  A copy's body is a <code>STORE</code>. The arguments are the buffers, with output first. <b>Look for:</b> how many kernels the preset turned into, and which buffers connect them.</p>
+  <h3>④ Kernel AST</h3>
+  <p><b>In to codegen:</b> <code>SINK(END(STORE(INDEX(PARAM, idx), value), ranges…))</code>. Every loop is a <code>RANGE</code>; a reduction is <code>REDUCE(value, range)</code>. <b>Look for:</b> the index expressions (<code>range*4 + range</code>) that replaced the movement ops.</p>
+  <h3>⑤ Codegen passes: <a class="src" data-path="tinygrad/codegen/__init__.py" data-line="253">full_rewrite_to_sink</a></h3>
+  <p>The named passes run in order. <i>simplify ranges</i> merges loops. <code>apply_opts</code> applies the heuristic's OptOps: a pass named <code>shift (0,) 4 upcast</code> is one OptOp being applied.
+  <i>expander</i> turns upcast ranges into vectors. <i>remove reduces</i> rewrites <code>REDUCE</code> into an accumulator register and a loop. <i>expand broadcast / add loads</i>, <i>devectorize2</i> and
+  <i>memory coalescing</i> regroup loads into <code>float4</code>. <i>lower all index dtypes</i> turns <code>weakint</code> indices into <code>i32</code>. <i>late decompositions</i> rewrites ops the renderer lacks (for example <code>exp2</code> becomes a polynomial on CPU).
+  <i>add control flow</i> orders the loops. Then <code>linearize/render</code> calls <code>do_linearize</code>, <code>do_estimates</code>, <code>do_render</code> and <code>do_compile</code>.</p>
+  <h3>⑥ Linearized, ⑦ C source, ⑧ Run</h3>
+  <p><a class="src" data-path="tinygrad/codegen/late/linearizer.py" data-line="8">linearize</a> orders the DAG into a list (the <code>LINEAR</code> in the <code>PROGRAM</code>). <a class="src" data-path="tinygrad/renderer/cstyle.py" data-line="294">ClangRenderer</a> walks that list and emits one C statement per non-inlined UOp.
+  <code>run_linear</code> then executes the CALLs. In the explorer, click a row in the linearized table to highlight that UOp and its sources in the graph.</p>
+
+  <h2 id="explorer"><span class="sec">22.4</span>The explorer</h2>
+  <p>Pick a preset (it loads a precomputed trace instantly) or edit the code, then press <b>Trace</b> to run it live through <code>POST /api/trace</code>. Click the pipeline stages, the passes,
+  the rules and the kernels. <b>Guided tour</b> steps through the stages with an explanation for each.</p>
+
+  <div class="ch22-x" id="ch22-x">
+    <div class="ch22-title">End-to-end explorer <span class="legend" style="margin:0">nodes colored by op family</span></div>
+    <div class="ch22-presets" id="ch22-presets"></div>
+    <div class="ch22-editor">
+      <textarea id="ch22-code" spellcheck="false" aria-label="tinygrad snippet"></textarea>
+      <div class="ch22-runbox">
+        <div class="opts">
+          <label><input type="checkbox" id="ch22-noopt"> NOOPT=1</label>
+          <label>BEAM <select id="ch22-beam"><option value="0">off</option><option value="1">1</option><option value="2">2</option></select></label>
+        </div>
+        <div class="btns">
+          <button class="primary" id="ch22-trace">▶ Trace (live)</button>
+          <button id="ch22-tourbtn">🎬 Guided tour</button>
+        </div>
+        <div class="ch22-status" id="ch22-status">loading presets…</div>
+        <div class="ch22-sum" id="ch22-sum"></div>
+      </div>
+    </div>
+    <div class="ch22-strip" id="ch22-strip"></div>
+    <div class="ch22-tour" id="ch22-tour"></div>
+    <div class="ch22-kpick" id="ch22-kpick"></div>
+    <div class="ch22-caption" id="ch22-caption"></div>
+    <div class="ch22-main">
+      <div class="ch22-side" id="ch22-side"></div>
+      <div class="ch22-center">
+        <div class="ch22-gtools" id="ch22-gtools"></div>
+        <div class="ch22-graph" id="ch22-graph"></div>
+        <div class="ch22-nodeinfo" id="ch22-nodeinfo"></div>
+        <div class="ch22-below" id="ch22-below"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout note">Things to try: load <b>Softmax</b> and click through the three kernels. Load <b>Matmul</b>, toggle <b>NOOPT=1</b> and press Trace, then compare the C source (an accumulator loop instead of a <code>float4</code> load).
+  In <b>Pad / slice</b>, go to schedule pass <i>apply rangeify</i> and press <b>morph</b> to watch every movement op disappear. In <b>MLP fwd+bwd</b>, look at the size of the tensor graph after <code>backward()</code>.</div>
+
+  <h2 id="walkthrough"><span class="sec">22.5</span>Walkthrough: <code>a @ b</code>, with the real artifacts</h2>
+  <p>Here is the <b>Matmul</b> preset (two realized 4×4 float tensors) traced by the CLI version of the explorer. Each block below is real output from
+  <code>examples/22_trace_cli.py --preset matmul</code> (timings vary from run to run).</p>
+  <div class="codecap"><b>examples/22_trace_cli.py</b> — run with <code>DEV=CPU python3 examples/22_trace_cli.py --preset matmul</code></div>
+  <pre><code class="language-python">a = Tensor([[1., 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12], [13, 14, 15, 16]]).realize()
+b = Tensor([[1., 0, 0, 1], [0, 1, 0, 1], [0, 0, 1, 1], [1, 1, 1, 0]]).realize()
+out = a @ b</code></pre>
+  <h3>① The tensor graph: matmul is reshape + permute + mul + reduce</h3>
+  <p><code>Tensor.matmul</code> is not a primitive. Below, <code>a</code> is reshaped to <code>(4,1,4)</code> and <code>b</code> to <code>(1,4,4)</code>, then permuted <code>(0,2,1)</code>; they are multiplied
+  with broadcasting, permuted so the contracted axis is first, and <code>REDUCE</code>d with <code>op=add pop=1</code> (reduce the first axis). There is no <code>EXPAND</code> node: in this version a binary UOp broadcasts its <code>(4,1,4)</code> and <code>(1,4,4)</code> operands implicitly.</p>
+  <pre class="output"><code>  1. lazy tensor graph — 21 UOps, nothing computed yet  (render_uir of UOp.sink(*outs))
+%0 = buffer 16 : dtype=f32 slot=1 device=CPU
+%1 = reshape %0, (4, 4)
+%2 = reshape %1, (4, 1, 4)
+%3 = buffer 16 : dtype=f32 slot=3 device=CPU
+%4 = reshape %3, (4, 4)
+%5 = reshape %4, (1, 4, 4)
+%6 = permute %5, (0, 2, 1)
+%7 = mul %2, %6
+%8 = permute %7, (2, 0, 1)
+%9 = reduce %8 : op=add pop=1
+%10 = sink %9</code></pre>
+  <h3>② Scheduling: 29 rewrites, 13 of which match nothing</h3>
+  <p>Look at the three <code>reshape</code> sub-rewrites at depth 4. Each one is <code>_apply_reshape</code>, which builds the index arithmetic for one RESHAPE and simplifies it with <code>symbolic</code>.
+  <i>apply rangeify</i> then removes all five movement ops (rule <code>indexing.py:139 remove_movement_op_after_rangeify</code>, 5 times) and bufferizes four nodes. <i>split kernels</i> cuts the graph once.</p>
+  <pre class="output"><code>  [Schedule 1 -&gt; 1 n3]  29 rewrites
+  pass                                         matches  nodes in→out  call site / top rules
+  drop after                                         1          25→6  tinygrad/tensor.py:202
+                                                                        ×1   tinygrad/uop/ops.py:1870: pm_drop_after = PatternMatcher([(UPat(Ops.AFTER, name="a"), lambda a: 
+  substitute bufferize                               1          21→6  tinygrad/uop/ops.py:510
+                                                                        ×1   tinygrad/uop/ops.py:1860: _substitute = PatternMatcher([(UPat(tuple(Ops), name="x"), lambda ctx,
+  replace bufs                                       3         25→25  tinygrad/schedule/__init__.py:263
+                                                                        ×3   tinygrad/schedule/__init__.py:250: (UPat(Ops.BUFFER, name="b"), lambda ctx,b: replace_input_buffer(ctx, b
+  schedule to linear                                 1         29→27  tinygrad/schedule/__init__.py:271
+                                                                        ×1   tinygrad/schedule/__init__.py:150: (UPat(Ops.CALL, name="call"), lower_sink_to_linear),
+      inline calls                                   1         25→26  tinygrad/schedule/prepare.py:258
+                                                                        ×1   tinygrad/schedule/prepare.py:85: (UPat(GroupOp.Movement|{Ops.INDEX}, name="r").after(name="a", allow_an
+      earliest rewrites                              3         26→23  tinygrad/schedule/prepare.py:260
+                                                                        ×2   tinygrad/uop/movement.py:10: (UPat(Ops.RESHAPE, src=(UPat(Ops.RESHAPE, name="x2"), UPat()), name="x
+                                                                        ×1   tinygrad/schedule/prepare.py:250: (UPat(Ops.SINK, name="s"), lambda s: s.replace(src=tuple(walk_mop(u) f
+        reshape                                      9          14→6  tinygrad/schedule/indexing.py:160
+                                                                        ×3   tinygrad/uop/symbolic.py:165: (UPat(GroupOp.ALU-{Ops.THREEFRY}, src=bare_const, name="a"), fold_cons
+                                                                        ×2   tinygrad/uop/symbolic.py:126: (UPat({Ops.ADD, Ops.XOR, Ops.OR}, src=[UPat.var("x"), UPat.const(0)]),
+        reshape                                     10          14→6  tinygrad/schedule/indexing.py:160
+                                                                        ×3   tinygrad/uop/symbolic.py:126: (UPat({Ops.ADD, Ops.XOR, Ops.OR}, src=[UPat.var("x"), UPat.const(0)]),
+                                                                        ×3   tinygrad/uop/symbolic.py:165: (UPat(GroupOp.ALU-{Ops.THREEFRY}, src=bare_const, name="a"), fold_cons
+        reshape                                      8          12→6  tinygrad/schedule/indexing.py:160
+                                                                        ×2   tinygrad/uop/symbolic.py:126: (UPat({Ops.ADD, Ops.XOR, Ops.OR}, src=[UPat.var("x"), UPat.const(0)]),
+                                                                        ×2   tinygrad/uop/symbolic.py:237: (UPat(GroupOp.Commutative, dtype=dtypes.weakint, name='x'), lambda x: 
+        apply rangeify                              10         23→22  tinygrad/schedule/indexing.py:311
+                                                                        ×5   tinygrad/schedule/indexing.py:139: (UPat(GroupOp.Movement, name="x"), remove_movement_op_after_rangeify),
+                                                                        ×4   tinygrad/schedule/indexing.py:137: (UPat(GroupOp.All-{Ops.STAGE, Ops.INDEX}, name="x"), create_bufferize_
+        reduce_collapse                              1         15→15  tinygrad/codegen/simplify.py:137
+                                                                        ×1   tinygrad/uop/symbolic.py:237: (UPat(GroupOp.Commutative, dtype=dtypes.weakint, name='x'), lambda x: 
+      split kernels                                  1         22→24  tinygrad/schedule/rangeify.py:356
+                                                                        ×1   tinygrad/schedule/rangeify.py:335: (UPat((Ops.STORE, Ops.END), name="x"), split_store),
+        kernel split                                 3         20→20  tinygrad/schedule/rangeify.py:327
+                                                                        ×3   tinygrad/schedule/rangeify.py:307: (UPat(Ops.PARAM, name="buf"), lambda ctx, buf:
+        graph_rewrite                                3         20→20  tinygrad/schedule/rangeify.py:329
+                                                                        ×3   tinygrad/schedule/rangeify.py:319: pm_renumber_range = PatternMatcher([(UPat(Ops.RANGE, name="r"), lambda
+  resolve linear call                                1         27→26  tinygrad/schedule/__init__.py:274
+                                                                        ×1   tinygrad/schedule/__init__.py:116: (UPat(Ops.CALL, src=(UPat(Ops.LINEAR),), name="linear_call", allow_any
+    params to buffers                                3         23→26  tinygrad/schedule/__init__.py:101
+                                                                        ×3   tinygrad/schedule/__init__.py:95: (UPat(Ops.PARAM, name="x"), lambda ctx,x: ctx[x.arg.slot] if x.arg.slo
+  (13 passes matched nothing and are hidden; --full shows them)</code></pre>
+  <h3>③ The schedule: one CALL</h3>
+  <pre class="output"><code>3. the schedule: LINEAR with 1 CALL(s), in execution order
+  #0  kernel r_4_4_4              args: BUFFER(f32, 16, CPU), BUFFER(f32, 16, CPU), BUFFER(f32, 16, CPU)</code></pre>
+  <h3>④ The kernel AST: three RANGEs and index math</h3>
+  <p>Three loops: <code>WEAK 1</code> (row <i>i</i>), <code>WEAK 2</code> (column <i>j</i>), and <code>WEAK 0</code> (the contracted <i>k</i>, consumed by <code>REDUCE</code>). Output index <code>i*4+j</code>; <code>a</code> is read at <code>i*4+k</code> and <code>b</code> at <code>k*4+j</code>.
+  The <code>reshape</code>/<code>permute</code> chain from ① now exists only as these expressions.</p>
+  <pre class="output"><code>  4.1 kernel r_4_4_4  —  global [1, 1, 1] local [1, 1, 1]  opts ['Opt(op=OptOps.SPLIT, axis=2, arg=(0, AxisType.UPCAST))']
+  ── kernel AST (input to codegen) ──
+%0 = param 16 : dtype=f32 slot=0 device=CPU
+%1 = range 4 : WEAK 1
+%2 = mul %1, 4
+%3 = range 4 : WEAK 2
+%4 = add %2, %3
+%5 = index %0, %4
+%6 = param 16 : dtype=f32 slot=1 device=CPU
+%7 = range 4 : WEAK 0
+%8 = add %2, %7
+%9 = index %6, %8
+%10 = param 16 : dtype=f32 slot=2 device=CPU
+%11 = mul %7, 4
+%12 = add %11, %3
+%13 = index %10, %12
+%14 = mul %9, %13
+%15 = reduce %14, %7 : op=add
+%16 = store %5, %15
+%17 = end %16, %1, %3
+%18 = sink %17 : test</code></pre>
+  <h3>⑤ Codegen: 42 rewrites, one OptOp</h3>
+  <p>The heuristic chose one optimization, <code>Opt(op=OptOps.SPLIT, axis=2, arg=(0, AxisType.UPCAST))</code>, which shows up as the pass <code>shift (0,) 4 upcast</code>: the 4-long reduce axis becomes a vector axis.
+  The <i>expander</i> turns it into vector constants, <i>remove reduces</i> lowers the (now horizontal) reduce, <i>devectorize2</i> splits it back into scalar lanes (34 matches), and <i>memory coalescing</i> merges the four row loads of <code>a</code> into one <code>float4</code>.</p>
+  <pre class="output"><code>  ── codegen passes: [r_4_4_4] 42 rewrites (do_to_program → full_rewrite_to_sink → linearize/render) ──
+  pass                                         matches  nodes in→out  call site / top rules
+    reduce_collapse                                  1         15→15  tinygrad/codegen/simplify.py:137
+                                                                        ×1   tinygrad/uop/symbolic.py:237: (UPat(GroupOp.Commutative, dtype=dtypes.weakint, name='x'), lambda x: 
+    check_merge_(1,)_(2,)                            6         20→20  tinygrad/codegen/simplify.py:31
+                                                                        ×2   tinygrad/uop/ops.py:1860: _substitute = PatternMatcher([(UPat(tuple(Ops), name="x"), lambda ctx,
+                                                                        ×1   tinygrad/uop/symbolic.py:165: (UPat(GroupOp.ALU-{Ops.THREEFRY}, src=bare_const, name="a"), fold_cons
+  shift (0,) 4 upcast                                2         21→25  tinygrad/uop/ops.py:510
+                                                                        ×1   tinygrad/uop/ops.py:1860: _substitute = PatternMatcher([(UPat(tuple(Ops), name="x"), lambda ctx,
+                                                                        ×1   tinygrad/codegen/simplify.py:15: (UPat((Ops.REDUCE, Ops.END), name="r"), flatten_range),
+  postopt symbolic                                   4         25→21  tinygrad/codegen/__init__.py:282
+                                                                        ×1   tinygrad/uop/symbolic.py:288: (UPat(Ops.RANGE, src=(UPat.cvar().or_casted(),), name="x"), lambda x: 
+                                                                        ×1   tinygrad/uop/symbolic.py:165: (UPat(GroupOp.ALU-{Ops.THREEFRY}, src=bare_const, name="a"), fold_cons
+  expander                                           2         21→26  tinygrad/codegen/__init__.py:285
+                                                                        ×1   tinygrad/codegen/__init__.py:78: (UPat(Ops.RANGE, name="r"),
+                                                                        ×1   tinygrad/codegen/__init__.py:77: (UPat(Ops.REDUCE, name="r"), expand_reduce),
+  remove reduces                                     1         26→32  tinygrad/codegen/__init__.py:290
+                                                                        ×1   tinygrad/codegen/__init__.py:199: (UPat(Ops.REDUCE, name="r"), lower_reduce),
+  *** expand broadcast / add loads                   5         32→39  tinygrad/codegen/__init__.py:300
+                                                                        ×3   tinygrad/codegen/__init__.py:111: (UPat(GroupOp.Binary|GroupOp.Ternary|{Ops.STORE}, name="x"), expand_br
+                                                                        ×1   tinygrad/uop/symbolic.py:165: (UPat(GroupOp.ALU-{Ops.THREEFRY}, src=bare_const, name="a"), fold_cons
+  devectorize2                                      34         39→47  tinygrad/codegen/__init__.py:303
+                                                                        ×10  tinygrad/schedule/prepare.py:78: (UPat(GroupOp.Movement, name="r").f(Ops.INDEX, allow_any_len=True, nam
+                                                                        ×8   tinygrad/uop/movement.py:26: (UPat(Ops.INDEX, src=(UPat(Ops.INDEX, src=(UPat.var("buf"), UPat.var("
+  early symbolic                                     3         47→47  tinygrad/codegen/__init__.py:306
+                                                                        ×3   tinygrad/uop/symbolic.py:237: (UPat(GroupOp.Commutative, dtype=dtypes.weakint, name='x'), lambda x: 
+  memory coalescing                                  4         47→43  tinygrad/uop/ops.py:510
+                                                                        ×4   tinygrad/uop/ops.py:1860: _substitute = PatternMatcher([(UPat(tuple(Ops), name="x"), lambda ctx,
+  lower all index dtypes                            18         43→48  tinygrad/codegen/__init__.py:322
+                                                                        ×18  tinygrad/uop/weak.py:85: (UPat(GroupOp.All-GroupOp.Defines, name="u"), lower_weak_node),
+  late decompositions                                1         48→48  tinygrad/codegen/__init__.py:340
+                                                                        ×1   tinygrad/codegen/decomp/op.py:88: if Ops.SHL in ops: pat += [(UPat.var("x", dtypes.ints)*UPat.cvar("c"),
+  final rewrite                                      1         48→49  tinygrad/codegen/__init__.py:348
+                                                                        ×1   tinygrad/codegen/late/linearizer.py:96: (UPat(Ops.END, name="e"), do_split_ends),
+  cast consts                                        4         49→51  tinygrad/codegen/__init__.py:351
+                                                                        ×4   tinygrad/uop/weak.py:106: pm_cast_const = PatternMatcher([(UPat(GroupOp.All-GroupOp.Defines, nam
+  add control flow                                   1         51→52  tinygrad/codegen/__init__.py:360
+                                                                        ×1   tinygrad/codegen/late/linearizer.py:85: (UPat(Ops.RANGE, name="x"), lambda ctx,x: x.replace(src=(x.src[0].afte
+  linearize/render                                   4         53→57  tinygrad/codegen/__init__.py:497
+                                                                        ×1   tinygrad/codegen/__init__.py:460: (UPat(Ops.PROGRAM, src=(UPat(Ops.SINK, name="sink"),), name="prg"), do
+                                                                        ×1   tinygrad/codegen/__init__.py:461: (UPat(Ops.PROGRAM, src=(UPat(Ops.SINK, name="sink"), UPat(Ops.LINEAR, 
+  precompile kernels                                 1         26→62  tinygrad/uop/ops.py:510
+                                                                        ×1   tinygrad/uop/ops.py:1860: _substitute = PatternMatcher([(UPat(tuple(Ops), name="x"), lambda ctx,
+  (25 passes matched nothing and are hidden; --full shows them)</code></pre>
+  <h3>⑥ Linearized (first 45 of 52 UOps)</h3>
+  <p>In program order: constants and params first, then <code>RANGE</code> (loop open), loads, ALU, <code>STORE</code>, <code>END</code>. The <code>src</code> column holds indices into this same list. That is the entire program, in SSA form.</p>
+  <pre class="output"><code>  ── linearized: 52 UOps in program order ──
+     0 CONST        weakint        []                 16
+     1 PARAM        f32            [0]                dtype=f32 slot=0 device=CPU
+     2 PARAM        f32            [0]                dtype=f32 slot=1 device=CPU
+     3 PARAM        f32            [0]                dtype=f32 slot=2 device=CPU
+     4 CONST        weakint        []                 0
+     5 CAST         i32            [4]                i32
+     6 CONST        weakint        []                 1
+     7 CAST         i32            [6]                i32
+     8 CONST        weakint        []                 12
+     9 CAST         i32            [8]                i32
+    10 CONST        weakint        []                 2
+    11 CAST         i32            [10]               i32
+    12 CONST        weakint        []                 3
+    13 CAST         i32            [12]               i32
+    14 CONST        weakint        []                 4
+    15 CAST         i32            [14]               i32
+    16 CONST        weakint        []                 8
+    17 CAST         i32            [16]               i32
+    18 RANGE        i32            [15]               WEAK 1
+    19 SHL          i32            [18, 11]           
+    20 SHRINK       f32            [2, 19, 15]        
+    21 LOAD         f32            [20]               
+    22 AFTER        i32            [15, 18]           
+    23 INDEX        f32            [21, 5]            
+    24 INDEX        f32            [21, 7]            
+    25 INDEX        f32            [21, 11]           
+    26 INDEX        f32            [21, 13]           
+    27 RANGE        i32            [22]               WEAK 2
+    28 ADD          i32            [27, 9]            
+    29 INDEX        f32            [3, 28]            
+    30 LOAD         f32            [29]               
+    31 ADD          i32            [27, 15]           
+    32 INDEX        f32            [3, 31]            
+    33 LOAD         f32            [32]               
+    34 ADD          i32            [27, 17]           
+    35 INDEX        f32            [3, 34]            
+    36 LOAD         f32            [35]               
+    37 INDEX        f32            [3, 27]            
+    38 LOAD         f32            [37]               
+    39 ADD          i32            [19, 27]           
+    40 INDEX        f32            [1, 39]            
+    41 MUL          f32            [23, 38]           
+    42 MUL          f32            [24, 33]           
+    43 ADD          f32            [41, 42]           
+    44 MUL          f32            [25, 36]           
+  ... (7 more, use --full)</code></pre>
+  <h3>⑦ The C source and ⑧ the run</h3>
+  <p>Two loops remain (<code>Lidx1</code>, <code>Lidx2</code>). The k-loop is gone: it was upcast into a <code>float4</code> load of a row of <code>a</code> and four scalar loads of a column of <code>b</code>. The estimate is 112 FLOPs
+  (16 outputs × (4 mul + 3 add)) and 192 bytes of unique memory (3 × 16 floats × 4 bytes).</p>
+  <pre class="output"><code>  ── rendered C source (ClangRenderer) ──
+typedef float float4 __attribute__((aligned(4),ext_vector_type(4)));
+struct r_4_4_4_args { float* arg0; float* arg1; float* arg2; };
+void r_4_4_4(const struct r_4_4_4_args* args) {
+  float* data0_16 = args-&gt;arg0;
+  float* data1_16 = args-&gt;arg1;
+  float* data2_16 = args-&gt;arg2;
+  for (int Lidx1 = 0; Lidx1 &lt; 4; Lidx1++) {
+    int alu0 = (Lidx1&lt;&lt;2);
+    float4 val0 = (*((float4*)((data1_16+alu0))));
+    for (int Lidx2 = 0; Lidx2 &lt; 4; Lidx2++) {
+      float val1 = (*(data2_16+(Lidx2+12)));
+      float val2 = (*(data2_16+(Lidx2+4)));
+      float val3 = (*(data2_16+(Lidx2+8)));
+      float val4 = (*(data2_16+Lidx2));
+      *(data0_16+(alu0+Lidx2)) = ((val0[0]*val4)+(val0[1]*val2)+(val0[2]*val3)+(val0[3]*val1));
+    }
+  }
+}
+
+  estimates: {'ops': 112, 'lds': 384, 'mem': 192}   binary: 776 bytes</code></pre>
+  <pre class="output"><code>  5. run (run_linear, wait=True)
+  kernel r_4_4_4                           9.96 us (kernel)   ops 112  mem 192 B
+
+  out f32 (4, 4) =
+    [[5, 6, 7, 6],
+     [13, 14, 15, 18],
+     [21, 22, 23, 30],
+     [29, 30, 31, 42]]
+
+  wall time of the whole trace: 0.565 s</code></pre>
+
+  <h2 id="hammer"><span class="sec">22.6</span>Hammer it again: same program, different knobs and shapes</h2>
+  <h3>NOOPT=1: what the optimizer contributed</h3>
+  <p>The same matmul with <code>NOOPT=1</code>. Every codegen pass still runs; only <code>hand_coded_optimizations</code> inside <a class="src" data-path="tinygrad/codegen/opt/postrange.py" data-line="251">apply_opts</a> is skipped (<code>elif not NOOPT and …</code>), so no <code>shift … upcast</code> pass appears. With nothing upcast, <i>remove reduces</i>
+  produces a real accumulator. <code>float buf0[1]</code> is the <code>REG</code>-space <code>ALLOC</code> that <code>lower_reduce</code> creates, and the k-loop survives. Estimated FLOPs go from 112 to 128, because the accumulator also adds into the initial <code>0.0f</code>:</p>
+  <pre class="output"><code>  ── rendered C source (ClangRenderer) ──
+
+struct r_4_4_4_args { float* arg0; float* arg1; float* arg2; };
+void r_4_4_4(const struct r_4_4_4_args* args) {
+  float* data0_16 = args-&gt;arg0;
+  float* data1_16 = args-&gt;arg1;
+  float* data2_16 = args-&gt;arg2;
+  float buf0[1];
+  for (int Lidx1 = 0; Lidx1 &lt; 4; Lidx1++) {
+    int alu0 = (Lidx1&lt;&lt;2);
+    for (int Lidx2 = 0; Lidx2 &lt; 4; Lidx2++) {
+      *(buf0+0) = 0.0f;
+      for (int Lidx0 = 0; Lidx0 &lt; 4; Lidx0++) {
+        float val0 = (*(data1_16+(alu0+Lidx0)));
+        float val1 = (*(data2_16+((Lidx0&lt;&lt;2)+Lidx2)));
+        *(buf0+0) = ((*(buf0+0))+(val0*val1));
+      }
+      *(data0_16+(alu0+Lidx2)) = (*(buf0+0));
+    }
+  }
+}
+
+  estimates: {'ops': 128, 'lds': 576, 'mem': 192}   binary: 848 bytes</code></pre>
+  <h3>How many kernels? Click a bar to load that preset</h3>
+  <p>The scheduler fuses as much as it can. It only materializes a buffer where an elementwise consumer needs a reduce's result broadcast back over the reduced axis, as in softmax and the fused chain,
+  or where several outputs are requested (the MLP's loss and two gradients). Counts below come from the precomputed traces.</p>
+  <div class="ch22-kc" id="ch22-kc"></div>
+  <h3>Softmax: three kernels, and exp2 written out as a polynomial</h3>
+  <p><code>softmax</code> = <code>x - max</code>, <code>exp</code>, divide by the sum. tinygrad computes <code>exp(x)</code> as <code>exp2(x·log₂e)</code>. The first kernel is the max-reduce; here it is, with the 8-wide reduce upcast into two <code>float4</code> loads and a chain of compare-selects:</p>
+  <pre class="output"><code>  ── rendered C source (ClangRenderer) ──
+typedef float float4 __attribute__((aligned(4),ext_vector_type(4)));
+struct r_2_8_args { float* arg0; float* arg1; };
+void r_2_8(const struct r_2_8_args* args) {
+  float* data0_2 = args-&gt;arg0;
+  float* data1_16 = args-&gt;arg1;
+  for (int Lidx1 = 0; Lidx1 &lt; 2; Lidx1++) {
+    int alu0 = (Lidx1&lt;&lt;3);
+    float4 val0 = (*((float4*)((data1_16+(alu0+4)))));
+    float4 val1 = (*((float4*)((data1_16+alu0))));
+    float alu1 = ((val1[0]&lt;val1[1])?val1[1]:val1[0]);
+    float alu2 = ((alu1&lt;val1[2])?val1[2]:alu1);
+    float alu3 = ((alu2&lt;val1[3])?val1[3]:alu2);
+    float alu4 = ((alu3&lt;val0[0])?val0[0]:alu3);
+    float alu5 = ((alu4&lt;val0[1])?val0[1]:alu4);
+    float alu6 = ((alu5&lt;val0[2])?val0[2]:alu5);
+    float alu7 = ((alu6&lt;val0[3])?val0[3]:alu6);
+    *(data0_2+Lidx1) = alu7;
+  }
+}
+
+  estimates: {'ops': 28, 'lds': 72, 'mem': 72}   binary: 736 bytes</code></pre>
+  <p>The second kernel, exp-and-sum, is much longer. <code>ClangRenderer</code> has no <code>EXP2</code> in <code>code_for_op</code>, so <i>late decompositions</i> (<code>get_transcendental_patterns</code>) replaces each <code>EXP2</code> with range reduction,
+  a degree-7 polynomial, and exponent bit tricks (<code>__builtin_bit_cast(float, (int)((e+127)&lt;&lt;23))</code>). Open it in the explorer: <b>Softmax</b> → kernel #1 → C source.</p>
+
+  <h2 id="cli"><span class="sec">22.7</span>The same chain in a terminal</h2>
+  <p><code>examples/22_trace_cli.py</code> prints the whole chain for any snippet (<code>-c "…"</code>, a file, or <code>--preset id</code>). By default it hides passes that matched nothing; <code>--full</code> shows every pass, the whole AST and the whole UOp list.
+  Here is the complete output for its default snippet, <code>(a*b+1).sum()</code> over two 4-element vectors:</p>
+  <div class="codecap"><b>examples/22_trace_cli.py</b> — run with <code>DEV=CPU python3 examples/22_trace_cli.py</code></div>
+  <pre class="output"><code>════════════════════════════════════════════════════════════════════════════════════════════════════
+  0. the program
+════════════════════════════════════════════════════════════════════════════════════════════════════
+a = Tensor([1., 2, 3, 4]).realize()
+b = Tensor([5., 6, 7, 8]).realize()
+out = (a * b + 1).sum()
+
+  (prelude: the snippet itself realized 6 group(s): Schedule 1 -&gt; 1 n1, HCQ Compile 1 Kernel n1, HCQ Link 1 Kernel n1, Schedule 1 -&gt; 1 n2, HCQ Compile 1 Kernel n2, HCQ Link 1 Kernel n2)
+
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  1. lazy tensor graph — 8 UOps, nothing computed yet  (render_uir of UOp.sink(*outs))
+════════════════════════════════════════════════════════════════════════════════════════════════════
+%0 = buffer 4 : dtype=f32 slot=1 device=CPU
+%1 = buffer 4 : dtype=f32 slot=3 device=CPU
+%2 = mul %0, %1
+%3 = add %2, 1.0
+%4 = reduce %3 : op=add pop=1
+%5 = sink %4
+
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  2. scheduling: every tracked graph_rewrite inside Tensor.linear_with_vars
+════════════════════════════════════════════════════════════════════════════════════════════════════
+
+  [Schedule 1 -&gt; 1 n3]  27 rewrites
+  pass                                         matches  nodes in→out  call site / top rules
+  drop after                                         1          14→5  tinygrad/tensor.py:202
+                                                                        ×1   tinygrad/uop/ops.py:1870: pm_drop_after = PatternMatcher([(UPat(Ops.AFTER, name="a"), lambda a: 
+  substitute bufferize                               1           8→5  tinygrad/uop/ops.py:510
+                                                                        ×1   tinygrad/uop/ops.py:1860: _substitute = PatternMatcher([(UPat(tuple(Ops), name="x"), lambda ctx,
+  replace bufs                                       3         14→14  tinygrad/schedule/__init__.py:263
+                                                                        ×3   tinygrad/schedule/__init__.py:250: (UPat(Ops.BUFFER, name="b"), lambda ctx,b: replace_input_buffer(ctx, b
+  schedule to linear                                 1         18→22  tinygrad/schedule/__init__.py:271
+                                                                        ×1   tinygrad/schedule/__init__.py:150: (UPat(Ops.CALL, name="call"), lower_sink_to_linear),
+      inline calls                                   1         14→15  tinygrad/schedule/prepare.py:258
+                                                                        ×1   tinygrad/schedule/prepare.py:85: (UPat(GroupOp.Movement|{Ops.INDEX}, name="r").after(name="a", allow_an
+      earliest rewrites                              1         15→14  tinygrad/schedule/prepare.py:260
+                                                                        ×1   tinygrad/schedule/prepare.py:250: (UPat(Ops.SINK, name="s"), lambda s: s.replace(src=tuple(walk_mop(u) f
+        reshape                                      1           4→2  tinygrad/schedule/indexing.py:160
+                                                                        ×1   tinygrad/uop/symbolic.py:165: (UPat(GroupOp.ALU-{Ops.THREEFRY}, src=bare_const, name="a"), fold_cons
+        apply rangeify                               4         14→17  tinygrad/schedule/indexing.py:311
+                                                                        ×2   tinygrad/schedule/indexing.py:137: (UPat(GroupOp.All-{Ops.STAGE, Ops.INDEX}, name="x"), create_bufferize_
+                                                                        ×1   tinygrad/schedule/indexing.py:139: (UPat(GroupOp.Movement, name="x"), remove_movement_op_after_rangeify),
+        reduce_collapse                              6         10→10  tinygrad/codegen/simplify.py:137
+                                                                        ×2   tinygrad/uop/symbolic.py:165: (UPat(GroupOp.ALU-{Ops.THREEFRY}, src=bare_const, name="a"), fold_cons
+                                                                        ×1   tinygrad/codegen/simplify.py:110: ((UPat.var("x")+UPat.var("y")).reduce(arg=Ops.ADD, allow_any_len=True,
+      split kernels                                  1         17→19  tinygrad/schedule/rangeify.py:356
+                                                                        ×1   tinygrad/schedule/rangeify.py:335: (UPat((Ops.STORE, Ops.END), name="x"), split_store),
+        kernel split                                 3         15→15  tinygrad/schedule/rangeify.py:327
+                                                                        ×3   tinygrad/schedule/rangeify.py:307: (UPat(Ops.PARAM, name="buf"), lambda ctx, buf:
+  resolve linear call                                1         22→21  tinygrad/schedule/__init__.py:274
+                                                                        ×1   tinygrad/schedule/__init__.py:116: (UPat(Ops.CALL, src=(UPat(Ops.LINEAR),), name="linear_call", allow_any
+    params to buffers                                3         18→21  tinygrad/schedule/__init__.py:101
+                                                                        ×3   tinygrad/schedule/__init__.py:95: (UPat(Ops.PARAM, name="x"), lambda ctx,x: ctx[x.arg.slot] if x.arg.slo
+  (14 passes matched nothing and are hidden; --full shows them)
+
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  3. the schedule: LINEAR with 1 CALL(s), in execution order
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  #0  kernel r_4                  args: BUFFER(f32, 1, CPU), BUFFER(f32, 4, CPU), BUFFER(f32, 4, CPU)
+
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  4.1 kernel r_4  —  global [1, 1, 1] local [1, 1, 1]  opts ['Opt(op=OptOps.SPLIT, axis=0, arg=(0, AxisType.UPCAST))']
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  ── kernel AST (input to codegen) ──
+%0 = param 1 : dtype=f32 slot=0 device=CPU
+%1 = index %0, 0
+%2 = param 4 : dtype=f32 slot=1 device=CPU
+%3 = range 4 : WEAK 0
+%4 = index %2, %3
+%5 = param 4 : dtype=f32 slot=2 device=CPU
+%6 = index %5, %3
+%7 = mul %4, %6
+%8 = add %7, 1.0
+%9 = reduce %8, %3 : op=add
+%10 = store %1, %9
+%11 = sink %10 : test
+
+  ── codegen passes: [r_4] 41 rewrites (do_to_program → full_rewrite_to_sink → linearize/render) ──
+  pass                                         matches  nodes in→out  call site / top rules
+    reduce_collapse                                  6         10→10  tinygrad/codegen/simplify.py:137
+                                                                        ×2   tinygrad/uop/symbolic.py:165: (UPat(GroupOp.ALU-{Ops.THREEFRY}, src=bare_const, name="a"), fold_cons
+                                                                        ×1   tinygrad/codegen/simplify.py:110: ((UPat.var("x")+UPat.var("y")).reduce(arg=Ops.ADD, allow_any_len=True,
+  shift (0,) 4 upcast                                2         16→19  tinygrad/uop/ops.py:510
+                                                                        ×1   tinygrad/uop/ops.py:1860: _substitute = PatternMatcher([(UPat(tuple(Ops), name="x"), lambda ctx,
+                                                                        ×1   tinygrad/codegen/simplify.py:15: (UPat((Ops.REDUCE, Ops.END), name="r"), flatten_range),
+  postopt symbolic                                   4         19→16  tinygrad/codegen/__init__.py:282
+                                                                        ×1   tinygrad/uop/symbolic.py:288: (UPat(Ops.RANGE, src=(UPat.cvar().or_casted(),), name="x"), lambda x: 
+                                                                        ×1   tinygrad/uop/symbolic.py:165: (UPat(GroupOp.ALU-{Ops.THREEFRY}, src=bare_const, name="a"), fold_cons
+  expander                                           2         16→19  tinygrad/codegen/__init__.py:285
+                                                                        ×1   tinygrad/codegen/__init__.py:78: (UPat(Ops.RANGE, name="r"),
+                                                                        ×1   tinygrad/codegen/__init__.py:77: (UPat(Ops.REDUCE, name="r"), expand_reduce),
+  remove reduces                                     1         19→25  tinygrad/codegen/__init__.py:290
+                                                                        ×1   tinygrad/codegen/__init__.py:199: (UPat(Ops.REDUCE, name="r"), lower_reduce),
+  *** expand broadcast / add loads                   3         25→29  tinygrad/codegen/__init__.py:300
+                                                                        ×2   tinygrad/codegen/__init__.py:111: (UPat(GroupOp.Binary|GroupOp.Ternary|{Ops.STORE}, name="x"), expand_br
+                                                                        ×1   tinygrad/codegen/__init__.py:206: (UPat(GroupOp.Elementwise|{Ops.WMMA,Ops.STACK}, name="x"),
+  devectorize2                                      26         29→39  tinygrad/codegen/__init__.py:303
+                                                                        ×8   tinygrad/uop/movement.py:26: (UPat(Ops.INDEX, src=(UPat(Ops.INDEX, src=(UPat.var("buf"), UPat.var("
+                                                                        ×6   tinygrad/schedule/prepare.py:78: (UPat(GroupOp.Movement, name="r").f(Ops.INDEX, allow_any_len=True, nam
+  early symbolic                                    12         39→36  tinygrad/codegen/__init__.py:306
+                                                                        ×6   tinygrad/uop/symbolic.py:308: ((UPat.var("x") + UPat.cvar("c1")) + UPat.var("y"), lambda x,c1,y: m+c
+                                                                        ×3   tinygrad/uop/symbolic.py:171: *((UPat.var("x").alu(op, UPat.cvar("c1")).alu(op, UPat.cvar("c2")).nam
+  memory coalescing                                  8         36→32  tinygrad/uop/ops.py:510
+                                                                        ×8   tinygrad/uop/ops.py:1860: _substitute = PatternMatcher([(UPat(tuple(Ops), name="x"), lambda ctx,
+  lower all index dtypes                            11         32→37  tinygrad/codegen/__init__.py:322
+                                                                        ×11  tinygrad/uop/weak.py:85: (UPat(GroupOp.All-GroupOp.Defines, name="u"), lower_weak_node),
+  cast consts                                        1         37→38  tinygrad/codegen/__init__.py:351
+                                                                        ×1   tinygrad/uop/weak.py:106: pm_cast_const = PatternMatcher([(UPat(GroupOp.All-GroupOp.Defines, nam
+  linearize/render                                   4         39→43  tinygrad/codegen/__init__.py:497
+                                                                        ×1   tinygrad/codegen/__init__.py:460: (UPat(Ops.PROGRAM, src=(UPat(Ops.SINK, name="sink"),), name="prg"), do
+                                                                        ×1   tinygrad/codegen/__init__.py:461: (UPat(Ops.PROGRAM, src=(UPat(Ops.SINK, name="sink"), UPat(Ops.LINEAR, 
+  precompile kernels                                 1         21→48  tinygrad/uop/ops.py:510
+                                                                        ×1   tinygrad/uop/ops.py:1860: _substitute = PatternMatcher([(UPat(tuple(Ops), name="x"), lambda ctx,
+  (28 passes matched nothing and are hidden; --full shows them)
+
+  ── linearized: 38 UOps in program order ──
+     0 CONST        weakint        []                 1
+     1 PARAM        f32            [0]                dtype=f32 slot=0 device=CPU
+     2 CONST        weakint        []                 4
+     3 PARAM        f32            [2]                dtype=f32 slot=1 device=CPU
+     4 PARAM        f32            [2]                dtype=f32 slot=2 device=CPU
+     5 CONST        weakint        []                 0
+     6 CAST         i32            [5]                i32
+     7 CAST         i32            [2]                i32
+     8 SHRINK       f32            [3, 6, 7]          
+     9 LOAD         f32            [8]                
+    10 SHRINK       f32            [4, 6, 7]          
+    11 LOAD         f32            [10]               
+    12 INDEX        f32            [1, 6]             
+    13 INDEX        f32            [9, 6]             
+    14 CAST         i32            [0]                i32
+    15 INDEX        f32            [9, 14]            
+    16 CONST        weakint        []                 2
+    17 CAST         i32            [16]               i32
+    18 INDEX        f32            [9, 17]            
+    19 CONST        weakint        []                 3
+    20 CAST         i32            [19]               i32
+    21 INDEX        f32            [9, 20]            
+    22 INDEX        f32            [11, 6]            
+    23 INDEX        f32            [11, 14]           
+    24 INDEX        f32            [11, 17]           
+    25 INDEX        f32            [11, 20]           
+    26 CONST        weakfloat      []                 4.0
+    27 CAST         f32            [26]               f32
+    28 MUL          f32            [13, 22]           
+    29 MUL          f32            [15, 23]           
+    30 ADD          f32            [29, 28]           
+    31 MUL          f32            [18, 24]           
+    32 ADD          f32            [31, 30]           
+    33 MUL          f32            [21, 25]           
+    34 ADD          f32            [33, 32]           
+    35 ADD          f32            [34, 27]           
+    36 STORE        void           [12, 35]           
+    37 SINK         void           [36]               r_4
+
+  ── rendered C source (ClangRenderer) ──
+typedef float float4 __attribute__((aligned(4),ext_vector_type(4)));
+struct r_4_args { float* arg0; float* arg1; float* arg2; };
+void r_4(const struct r_4_args* args) {
+  float* data0_1 = args-&gt;arg0;
+  float* data1_4 = args-&gt;arg1;
+  float* data2_4 = args-&gt;arg2;
+  float4 val0 = (*((float4*)((data1_4+0))));
+  float4 val1 = (*((float4*)((data2_4+0))));
+  *(data0_1+0) = ((val0[3]*val1[3])+(val0[2]*val1[2])+(val0[1]*val1[1])+(val0[0]*val1[0])+4.0f);
+}
+
+  estimates: {'ops': 8, 'lds': 36, 'mem': 36}   binary: 864 bytes
+
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  5. run (run_linear, wait=True)
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  kernel r_4                              11.64 us (kernel)   ops 8  mem 36 B
+
+  out f32 () =
+    74
+
+  wall time of the whole trace: 0.546 s</code></pre>
+  <div class="callout aha"><span class="title">Spot the algebra</span>The C source ends with <code>+4.0f</code>, not four <code>+1</code>s. The scheduler's <i>reduce_collapse</i> sub-rewrite (rule <code>simplify.py:110</code>, <code>(x+y).reduce(ADD)</code>)
+  split <code>sum(a*b + 1)</code> into <code>sum(a*b) + sum(1)</code>, and <code>sum(1)</code> over a range of 4 folded to the constant 4.</div>
+  <p>The precomputed traces are rebuilt by <code>examples/22_build_presets.py</code>, which calls the same tracer:</p>
+  <div class="codecap"><b>examples/22_build_presets.py</b> — run with <code>DEV=CPU python3 examples/22_build_presets.py</code></div>
+  <pre class="output"><code>elementwise    53.4 KB  1 call(s): E_2_4                                    nodes=335
+sum            49.1 KB  1 call(s): r_3_8                                    nodes=316
+matmul         63.0 KB  1 call(s): r_4_4_4                                  nodes=416
+softmax       295.9 KB  3 call(s): r_2_8, r_2_8, E_2_2_4                    nodes=2541
+conv2d        131.6 KB  1 call(s): r_2_4_4_3_3                              nodes=1019
+mlp           283.5 KB  5 call(s): r_2_4_3, r_2_4, r_2, r_3_4_2, r_4_2      nodes=1950
+padslice      112.3 KB  1 call(s): E_3_5                                    nodes=636
+fused         132.4 KB  2 call(s): r_2_4, r_2_4                             nodes=976
+wrote data/ch22_presets.json (8 presets)</code></pre>
+
+  <h2 id="api"><span class="sec">22.8</span>The API contract</h2>
+  <p><code>server.py</code> serves the guide statically, as before, and adds one endpoint. It loads <code>tools/trace.py</code>, which spawns a worker subprocess (with <code>DEV=CPU TRACK_MATCH_STATS=2 PARALLEL=0 NO_COLOR=1</code>, plus <code>NOOPT</code> and <code>BEAM</code> from the options)
+  with a 60 s timeout. At most two traces run at once.</p>
+  <pre><code class="language-bash">curl -s -X POST localhost:8765/api/trace \
+     -d '{"code": "out = Tensor([1.,2,3]).exp2() * 2", "opts": {"noopt": false, "beam": 0}}'</code></pre>
+  <table>
+    <tr><th>field</th><th>contents</th></tr>
+    <tr><td><code>ok</code>, <code>error</code>, <code>stage</code>, <code>traceback</code></td><td>success flag. On failure: the exception, the stage it happened in (snippet, schedule, compile+run…), the traceback, and <code>partial_groups</code> (rewrites recorded before the crash)</td></tr>
+    <tr><td><code>nodes</code></td><td>the node table: <code>id → {op, dt, arg, sh, src:[ids]}</code></td></tr>
+    <tr><td><code>tensor_graph</code>, <code>linear</code></td><td>graph refs <code>{root, n}</code> (n = total nodes before the cap)</td></tr>
+    <tr><td><code>schedule_groups[]</code>, <code>kernel_groups[]</code>, <code>runtime_groups[]</code></td><td><code>{name, kind, passes:[{name, depth, loc, matches, noop, in, out, rules:[{loc, code, count, us, before:[ids], after:[ids]}]}]}</code></td></tr>
+    <tr><td><code>calls[]</code></td><td>the schedule in order: <code>{kind, name, fn, bufs, ast, ast_text, applied_opts, estimates, global_size, local_size, final_sink, uops:[{op, dt, src:[idx], arg, id}], source, group}</code></td></tr>
+    <tr><td><code>runs[]</code>, <code>global_counters</code></td><td>per-call <code>time_us</code> (kernel, measured with <code>wait=True</code>) or <code>wall_us</code> (copies), <code>ops</code>/<code>mem</code>/<code>lds</code> estimates</td></tr>
+    <tr><td><code>outputs[]</code>, <code>stdout</code>, <code>prelude</code></td><td>output values (the first 256 per output), anything the snippet printed, and the groups realized while the snippet ran</td></tr>
+  </table>
+  <div class="callout warn">The endpoint runs arbitrary Python. That is fine for a personal study guide served from a sandbox; do not expose it publicly as is.</div>
+
+  <h2 id="quiz"><span class="sec">22.9</span>Check yourself</h2>
+  <div class="quiz" data-answer="2">
+    <div class="q">The explorer's graph morphs smoothly from "before" to "after" a rewrite. What makes stable node ids possible?</div>
+    <button class="opt">The tracer diffs the two graphs with a tree-edit-distance algorithm</button>
+    <button class="opt">graph_rewrite records a mapping from old to new node for every node</button>
+    <button class="opt">UOps are hash-consed: an untouched subgraph is the identical Python object after the rewrite, so one id per object works across the whole trace</button>
+    <div class="explain">UOpMetaClass caches every UOp by <code>(op, src, arg, type(arg))</code>. A rewrite rebuilds only the path from changed nodes up to the root; everything else is literally the same object (chapter 4).</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">Why does the tracer run the worker with <code>PARALLEL=0</code>?</div>
+    <button class="opt">Parallel compilation produces different C code</button>
+    <button class="opt">Kernel lowering would run in worker processes whose initializer sets TRACK_MATCH_STATS=0, so codegen passes would not be recorded</button>
+    <button class="opt">clang cannot run twice at the same time</button>
+    <div class="explain"><code>engine/worker.py: _init_worker</code> enters <code>Context(ALLOW_DEVICE_USAGE=0, VIZ=0, TRACK_MATCH_STATS=0)</code>. With one kernel tinygrad lowers in-process anyway, but presets like softmax have several.</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">In the matmul trace, which stage first has no <code>RESHAPE</code>/<code>PERMUTE</code> nodes left?</div>
+    <button class="opt">After the schedule pass <i>apply rangeify</i></button>
+    <button class="opt">After the codegen pass <i>devectorize2</i></button>
+    <button class="opt">Only in the C source</button>
+    <div class="explain">Rangeify assigns every node an index expression built from RANGEs; <code>remove_movement_op_after_rangeify</code> then deletes the movement ops (it fired 5 times). The kernel AST never sees them.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">A pass shows <code>matches 6</code> but its in→out node counts are equal and the graph looks identical. How can that be?</div>
+    <button class="opt">The tracker double-counts</button>
+    <button class="opt">Matches are counted before the rewrite is undone</button>
+    <button class="opt">The matches happened in sub-rewrites or on intermediate nodes that were rewritten again. Counts and graph sizes can also stay equal when nodes are replaced one for one, as in renumbering ranges</button>
+    <div class="explain">Every successful rule application is a match, including ones whose result was later rewritten by another rule in the same fixpoint. Graph size alone does not measure change; use the highlighted "new" nodes.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">Two kernels in the <b>Fused chain</b> preset are both named <code>r_2_4</code>. Are they the same program?</div>
+    <button class="opt">Yes, the name is the cache key</button>
+    <button class="opt">Not necessarily: the name only encodes the kind (r = has a reduce, E = elementwise) and the loop sizes. The cache key is the AST's hash (<code>to_program_key</code>)</button>
+    <button class="opt">No, tinygrad never reuses programs</button>
+    <div class="explain">Check the explorer: each kernel group carries <code>prg_key</code> (the PROGRAM's key). Different ASTs, different programs, same pretty name.</div>
+  </div>
+
+  <div class="summary-box"><h3>Chapter summary</h3><ul>
+    <li>The pipeline is Tensor graph → (Tensor.linear_with_vars: bufferize, callify, rangeify, split) → LINEAR of CALLs → per kernel do_to_program (full_rewrite_to_sink, linearize, render, compile) → run_linear.</li>
+    <li>tinygrad records itself: with <code>TRACK_MATCH_STATS=2</code>, <code>@rewrite_group</code> writes <code>tracked_keys</code>/<code>tracked_ctxs</code>, one TrackedGraphRewrite per graph_rewrite, with every rule match.</li>
+    <li>The tracer adds output graphs (a RewriteContext wrapper), per-call timings (a track_stats wrapper) and the compiled PROGRAMs (to_program_cache), and serializes all of it as one hash-consed node table.</li>
+    <li>Read a trace by its deltas: which pass removed the movement ops, where the graph was cut into CALLs, which OptOps were applied, how REDUCE became an accumulator, and which ops were decomposed for the renderer.</li>
+    <li>Use the explorer, <code>examples/22_trace_cli.py</code> or <code>POST /api/trace</code> on any small program to check claims from the other chapters.</li>
+  </ul></div>
+</main>
+</div>
+<script>
+// ===== Chapter 22: end-to-end explorer =====
+// Data: a trace JSON produced by tools/trace.py (live via POST /api/trace, or precomputed data/ch22_preset_*.json).
+(function () {
+  const G = window.Guide, el = G.el, esc = G.escape;
+  const $ = (id) => document.getElementById(id);
+
+  // ---------- what each stage / pass means (checked against the pinned checkout) ----------
+  const STAGES = [
+    { key: "tensor", name: "Tensor graph", ch: ["02-tensor-laziness", "04-uop"], kern: false },
+    { key: "spass", name: "Schedule passes", ch: ["10-rangeify", "11-kernel-split"], kern: false },
+    { key: "sched", name: "Schedule", ch: ["12-schedule"], kern: false },
+    { key: "ast", name: "Kernel AST", ch: ["13-kernel-ast"], kern: true },
+    { key: "cpass", name: "Codegen passes", ch: ["14-optimizations", "15-lowering"], kern: true },
+    { key: "lin", name: "Linearized", ch: ["16-linearize-render"], kern: true },
+    { key: "src", name: "C source", ch: ["16-linearize-render"], kern: true },
+    { key: "run", name: "Run", ch: ["17-runtime"], kern: false },
+  ];
+  const STAGE_TEXT = {
+    tensor: (t) => `<b>The lazy tensor graph.</b> <code>UOp.sink(*[t.uop for t in outs])</code> before anything runs: ${t.tensor_graph.n} UOps. Realized inputs are <code>BUFFER</code>s; every Tensor method you called added movement / ALU / <code>REDUCE</code> nodes. Shapes live on the nodes; there are no loops or indices yet.`,
+    spass: (t) => `<b>Scheduling = a sequence of graph_rewrites.</b> <code>Tensor.linear_with_vars</code> bufferizes the outputs, <code>transform_to_call</code> turns buffers into PARAMs, then <code>lower_sink_to_linear</code> runs prepare_rangeify → get_kernel_graph (rangeify, stage to store, split kernels) → create_schedule. Pick a pass: <span class="hl-yellow">yellow</span> nodes are new in its output (or, in "before", the ones it removed).`,
+    sched: (t) => `<b>The schedule.</b> A <code>LINEAR</code> of ${t.calls.length} <code>CALL</code>(s) in execution order (Kahn toposort over RAW/WAR dependencies, <code>create_schedule</code>). Kernel bodies are <code>SINK</code>s with <code>KernelInfo</code>; copies are <code>STORE</code>s. Arguments are buffers, output first. Click a call to select that kernel.`,
+    ast: (t, c) => `<b>Kernel AST</b> of <code>${esc(c ? c.fn || c.name : "?")}</code>: the input to codegen. Loops are <code>RANGE</code>s, memory access is <code>INDEX(PARAM, expr)</code>, reductions are <code>REDUCE(value, range)</code>, and <code>END</code> closes the store's ranges. The movement ops of stage ① survive only as these index expressions.`,
+    cpass: (t, c) => `<b>Codegen: <code>do_to_program</code> → <code>full_rewrite_to_sink</code> → linearize/render.</b> Each row is one named <code>graph_rewrite</code> in <code>codegen/__init__.py</code>. Passes named like <code>shift (0,) 4 upcast</code> are OptOps applied by <code>apply_opts</code> (applied: ${c && c.applied_opts && c.applied_opts.length ? c.applied_opts.map(esc).join(", ") : "none"}).`,
+    lin: (t, c) => `<b>Linearized program.</b> <code>linearize(sink)</code> ordered the DAG into ${c && c.uops ? c.uops.length : "?"} UOps; <code>src</code> are indices into this list (SSA). Click a row to highlight that UOp and its sources in the graph. The graph is drawn straight from this list.`,
+    src: (t, c) => `<b>Rendered source.</b> <code>ClangRenderer.render</code> walks the linearized list and emits C; <code>do_compile</code> runs clang to get a ${c && c.binary_bytes ? c.binary_bytes + "-byte " : ""}<code>BINARY</code>. Global size ${c ? JSON.stringify(c.global_size) : ""}, local ${c ? JSON.stringify(c.local_size) : ""}.`,
+    run: (t) => `<b>Run.</b> <code>run_linear</code> links the programs and executes each CALL in order (<code>exec_kernel</code> / <code>exec_copy</code>). Kernel times are measured with <code>wait=True</code>; ops/bytes are the codegen's <code>Estimates</code>.`,
+  };
+  const PASS_INFO = [
+    [/^drop after$/, "Tensor.linear_with_vars wrapped every realized output as <code>buf.after(buf.store(compute))</code>; this strips the AFTERs to find the storage each tensor becomes (the becomes_map).", "12-schedule"],
+    [/^substitute bufferize$/, "<code>_apply_map_to_tensors</code>: every live Tensor's <code>.uop</code> is rewritten so it points at its new storage once the schedule runs.", "02-tensor-laziness"],
+    [/^early transform tensor graph$/, "<code>transform_to_call</code>, step 1: collect the store-AFTERs and fold contiguous movement ops on COPY into buffer views.", "12-schedule"],
+    [/^replace bufs$/, "BUFFERs become positional <code>PARAM</code>s (and ALLOCs get canonical slots), so the schedule cache key doesn't depend on which buffers you used. The graph is wrapped in <code>CALL(precompile=True)</code>.", "12-schedule"],
+    [/^schedule to linear$/, "<code>pm_schedule</code> → <code>lower_sink_to_linear</code>: the CALL body goes through prepare_rangeify → get_kernel_graph → create_schedule (cached in <code>schedule_cache</code> by its key). Its sub-rewrites are indented below.", "12-schedule"],
+    [/^prepare_rangeify$/, "Group: multi-device resolution, inlining calls and early movement-op cleanup before rangeify.", "10-rangeify"],
+    [/^multi_pm$/, "Multi-device rules (UNSHARD/MSELECT/MSTACK). A no-op for single-device programs.", "19-multi"],
+    [/^inline calls$/, "<code>pm_mops + pm_inline_calls + pm_disk_copy</code>: inline function CALLs and push movement ops through AFTERs.", "10-rangeify"],
+    [/^earliest rewrites$/, "Bottom-up cleanups: merge chained reshapes, handle size-0 tensors, strip movement ops hanging off SINK/AFTER.", "07-movement"],
+    [/^get_kernel_graph$/, "Group: rangeify, then cleanups, then bufferize → store → split into kernels.", "11-kernel-split"],
+    [/^run_rangeify$/, "Group: decide what must be realized, then give every node index expressions made of RANGEs.", "10-rangeify"],
+    [/^get realize$/, "<code>pm_generate_realize_map</code>: mark which nodes must be materialized into a buffer.", "11-kernel-split"],
+    [/^reshape$/, "<code>_apply_reshape</code>: the index arithmetic for one RESHAPE (flatten, then unflatten with // and %), simplified by <code>symbolic</code>.", "10-rangeify"],
+    [/^pad$/, "The validity condition (r ≥ off) & (r < size+off) for one PAD, simplified.", "10-rangeify"],
+    [/^apply rangeify$/, "<code>pm_apply_rangeify</code> (bottom-up): movement ops are deleted, since their effect now lives in the ranges, and realized nodes become STAGE (bufferize) nodes indexed by RANGEs.", "10-rangeify"],
+    [/^add device to deviceless$/, "Values that must be materialized but have no device (e.g. pure consts) get the sink's device.", "10-rangeify"],
+    [/^symbolic\+reduce_collapse\+debuf$/, "Cleanups: <code>symbolic</code>, reduce simplification, constant-buffer folding, and removing bufferizes that aren't needed.", "06-symbolic"],
+    [/^reduce_collapse$/, "Algebraic reduce folding, e.g. <code>sum(x + c)</code> → <code>sum(x) + c·n</code>, and reduces whose value doesn't depend on the range.", "06-symbolic"],
+    [/^limit buffers$/, "Insert extra buffers if a kernel would read more buffers than the device allows.", "11-kernel-split"],
+    [/^stage to store$/, "<code>pm_add_buffers</code>: each STAGE becomes ALLOC + STORE + END over its ranges, i.e. an explicit write into a buffer.", "11-kernel-split"],
+    [/^remove indexing from call args$/, "Call arguments must be plain buffers, not indexed views.", "11-kernel-split"],
+    [/^split kernels$/, "<code>split_store</code>: every STORE/END with no open ranges becomes its own kernel, <code>SINK(KernelInfo)</code> wrapped in a <code>CALL</code> whose args are the buffers.", "11-kernel-split"],
+    [/^kernel split$/, "Inside split_store: <code>to_define_global</code> collects the buffers a kernel touches; they become kernel-local PARAM slots (debuf).", "11-kernel-split"],
+    [/^remove views from the kernel graph$/, "Final cleanup of view ops left between kernels.", "11-kernel-split"],
+    [/^resolve linear call$/, "The scheduled LINEAR is inlined into the caller; positional PARAMs are bound back to the real buffers.", "12-schedule"],
+    [/^params to buffers$/, "<code>pm_post_sched_cache</code>: PARAM slots → the buffers passed in; ALLOCs → fresh BUFFERs for this run.", "12-schedule"],
+    [/^lower copy kernels to STORE calls$/, "Cross-device copy kernels become bulk STORE calls (exec_copy).", "12-schedule"],
+    [/^memory plan$/, "<code>memory_plan_rewrite</code>: intermediate buffers with non-overlapping lifetimes are sub-allocated from one arena (SHRINK/BITCAST views).", "12-schedule"],
+    [/^lower calls$/, "<code>pm_lower_calls</code>: nested CALLs inside a kernel get compiled first. Usually a no-op.", "15-lowering"],
+    [/^early movement ops$/, "<code>pm_mops</code> bottom-up: any movement op still in the AST is pushed into INDEX expressions.", "15-lowering"],
+    [/^load collapse$/, "<code>pm_load_collapse</code>: a reduce over a load indexed by a tensor (gather-like) collapses into a direct load.", "15-lowering"],
+    [/^split ranges$/, "<code>pm_split_ranges</code>: split a RANGE where index math uses it via // and % so the pieces become separate loops.", "14-optimizations"],
+    [/^initial symbolic$/, "<code>sym</code>: full symbolic simplification. Required for simplify-ranges to be correct.", "06-symbolic"],
+    [/^simplify ranges$/, "<code>pm_simplify_ranges</code>: merge adjacent RANGEs when the index math allows it (fewer, longer loops).", "14-optimizations"],
+    [/^check_merge_/, "One attempted range merge, inside simplify ranges.", "14-optimizations"],
+    [/(upcast|unroll|local|group|upcastmid|shift|split|padto|swap|thread|nolocals|tc)/i, "An OptOp being applied by <code>apply_opts</code> (from <code>hand_coded_optimizations</code>, or BEAM): the RANGE is split and part of it gets a new AxisType (UPCAST = vector lanes, UNROLL = unrolled reduce, LOCAL/GROUP = GPU workgroup).", "14-optimizations"],
+    [/^postopt symbolic$/, "Symbolic cleanup after optimization: fold size-1 ranges, move WHEREs onto loads, remove unparented reduces.", "15-lowering"],
+    [/^expander$/, "UPCAST/UNROLL ranges are replaced by vector constants (0,1,2,3…); REDUCEs over them become horizontal reduces.", "15-lowering"],
+    [/^remove reduces$/, "<code>lower_reduce</code>: REDUCE → an accumulator in REG memory (<code>ALLOC</code>): init to the identity, accumulate in the loop, END. A horizontal reduce becomes a chain of ALU ops.", "15-lowering"],
+    [/^add local buffers$/, "LOCAL/GROUP opts get their shared-memory buffers here.", "15-lowering"],
+    [/^group gpudims$/, "Global/local ranges are grouped onto the device's launch dimensions. No-op on CPU.", "15-lowering"],
+    [/expand broadcast \/ add loads/, "Make broadcasts explicit (each vector operand gets its full shape) and insert LOAD for every buffer read.", "15-lowering"],
+    [/^devectorize2$/, "Vector ops the renderer can't do are split into per-lane scalar ops; index expressions get simplified (<code>indexing_simplify</code>).", "15-lowering"],
+    [/^early symbolic$/, "<code>sym</code> again: some coalescing opportunities only appear after this.", "06-symbolic"],
+    [/^memory coalescing$/, "Adjacent scalar loads/stores are merged into vector accesses (e.g. <code>float4</code>) when alignment and contiguity can be proven.", "15-lowering"],
+    [/^add images$/, "Image-buffer handling (only for IMAGE devices).", "15-lowering"],
+    [/^extra symbolic$/, "Symbolic + indexing simplify while indices are still <code>weakint</code>; commits weak dtypes created so far.", "06-symbolic"],
+    [/^lower all index dtypes$/, "<code>pm_lower_weak</code>: weakly typed index arithmetic gets concrete dtypes (usually <code>i32</code>).", "03-dtypes"],
+    [/^final symbolic$/, "Last full symbolic pass before decompositions.", "06-symbolic"],
+    [/^cast float alu operands$/, "Make operand dtypes of float ALU ops agree.", "03-dtypes"],
+    [/^early decompositions$/, "Simplifying decompositions for ops missing from the renderer's <code>code_for_op</code> (e.g. MUL by a power of two → SHL).", "15-lowering"],
+    [/^late decompositions$/, "Late decompositions, including transcendental functions: on Clang, EXP2/LOG2/SIN become polynomial approximations.", "15-lowering"],
+    [/^decomp dtypes$/, "Emulate dtypes the device can't do natively.", "03-dtypes"],
+    [/^move gates from index$/, "Gates (validity conditions) move from INDEX to the LOAD/STORE that uses it.", "15-lowering"],
+    [/^final rewrite$/, "Renderer-specific rules (<code>extra_matcher</code>), split ENDs into one per range, remove leftover Invalids.", "16-linearize-render"],
+    [/^cast consts$/, "Every still-bare constant gets a concrete dtype so no renderer sees a weak literal.", "03-dtypes"],
+    [/^add implicit barriers$/, "Barriers for LOCAL memory hazards (GPU only).", "15-lowering"],
+    [/^range to special$/, "Hardware-parallel ranges become SPECIAL (thread/block ids). No-op on CPU.", "15-lowering"],
+    [/^add control flow$/, "<code>pm_add_control_flow</code>: add ordering edges between RANGEs so the linearizer nests/sequences loops correctly.", "16-linearize-render"],
+    [/^number variables$/, "Symbolic variables get parameter slots after the buffers.", "16-linearize-render"],
+    [/^linearize\/render$/, "<code>pm_to_program</code> on the PROGRAM UOp: do_linearize (list of UOps) → do_estimates → do_render (C string) → do_compile (clang → BINARY). One match per step.", "16-linearize-render"],
+    [/^precompile kernels$/, "Back in the schedule (<code>lower_and_compile</code>): the compiled PROGRAMs are substituted into the LINEAR's CALLs.", "17-runtime"],
+    [/^graph_rewrite$/, "An unnamed graph_rewrite (no <code>name=</code>); see the call site for what it does.", null],
+  ];
+  function passInfo(name) { for (const [re, txt, ch] of PASS_INFO) if (re.test(name)) return { txt, ch }; return { txt: "A named graph_rewrite; see its call site.", ch: null }; }
+  const chTitle = (slug) => { const c = (window.CHAPTERS || []).find((x) => x.slug === slug); return c ? `Ch ${c.n}: ${c.title}` : slug; };
+  const chLink = (slug) => slug ? `<a class="chlink" href="${slug}.html">→ ${esc(chTitle(slug))}</a>` : "";
+  const srcLink = (loc) => { const m = /^(tinygrad\/.*):(\d+)$/.exec(loc || ""); return m ? `<a class="src" target="_blank" title="${esc(loc)}" href="${G.src(m[1], m[2])}">${esc(loc.replace(/^tinygrad\//, ""))}</a>` : `<code>${esc(loc || "")}</code>`; };
+
+  // ---------- state ----------
+  const S = { t: null, origin: "", presetId: null, stage: 0, kc: 0, spass: -1, cpass: {}, view: "after", hideNoop: true, cap: 250, zoom: "auto", rule: null, uopSel: null };
+  let presets = [], gctl = null, tour = null;
+
+  // ---------- graph building from the node table ----------
+  function topo(t, root) {
+    const out = [], seen = new Set(), stack = [[root, false]];
+    while (stack.length) {
+      const [id, done] = stack.pop();
+      if (done) { out.push(id); continue; }
+      if (seen.has(id) || !t.nodes[id]) continue;
+      seen.add(id); stack.push([id, true]);
+      const src = t.nodes[id].src;
+      for (let i = src.length - 1; i >= 0; i--) if (!seen.has(src[i])) stack.push([src[i], false]);
+    }
+    return out;
+  }
+  function toGraph(t, ref) {
+    if (!ref || !t.nodes[ref.root]) return { g: { nodes: [], edges: [] }, total: 0, shown: 0, ids: new Set() };
+    let order = topo(t, ref.root);
+    const total = Math.max(order.length, ref.n || 0);
+    if (order.length > S.cap) order = order.slice(-S.cap);
+    const set = new Set(order);
+    const nodes = order.map((id) => { const n = t.nodes[id]; return { id, op: n.op, dtype: n.dt, arg: n.arg, shape: n.sh }; });
+    const edges = [];
+    for (const id of order) t.nodes[id].src.forEach((s, i) => { if (set.has(s)) edges.push([s, id, i]); });
+    return { g: { nodes, edges }, total, shown: order.length, ids: set };
+  }
+  function uopsGraph(c) {
+    const rows = c.uops || [];
+    let idx = rows.map((_, i) => i);
+    if (idx.length > S.cap) idx = idx.slice(-S.cap);
+    const keep = new Set(idx);
+    const nodes = idx.map((i) => ({ id: rows[i].id, op: rows[i].op, dtype: rows[i].dt, arg: rows[i].arg, label: `${i}: ${rows[i].op}` }));
+    const edges = [];
+    for (const i of idx) rows[i].src.forEach((s, k) => { if (s >= 0 && keep.has(s)) edges.push([rows[s].id, rows[i].id, k]); });
+    return { g: { nodes, edges }, total: rows.length, shown: idx.length, ids: new Set(nodes.map((n) => n.id)) };
+  }
+
+  // ---------- helpers ----------
+  const kernels = () => (S.t ? S.t.calls : []);
+  const curCall = () => kernels()[S.kc];
+  function schedPasses() {
+    const out = [];
+    (S.t.schedule_groups || []).forEach((g, gi) => { out.push({ header: g.name }); g.passes.forEach((p, pi) => out.push(Object.assign({ gi, pi }, p))); });
+    return out;
+  }
+  function kernPasses(c) {
+    if (!c || c.group === null || c.group === undefined) return [];
+    const g = S.t.kernel_groups[c.group];
+    return [{ header: g.name + (g.truncated ? " (truncated)" : "") }].concat(g.passes);
+  }
+  const isVisible = (p) => p.header || !S.hideNoop || p.matches > 0 || p.noop === false || !p.in;
+
+  // ---------- rendering ----------
+  function renderStrip() {
+    const t = S.t, strip = $("ch22-strip");
+    strip.innerHTML = "";
+    const c = curCall();
+    const nSched = (t.schedule_groups || []).reduce((a, g) => a + g.n_passes, 0);
+    const kg = c && c.group != null ? t.kernel_groups[c.group] : null;
+    const subs = {
+      tensor: `${t.tensor_graph.n} UOps`, spass: `${nSched} rewrites`, sched: `${t.calls.length} call${t.calls.length === 1 ? "" : "s"}`,
+      ast: c && c.ast ? `${c.ast.n} UOps` : "—", cpass: kg ? `${kg.n_passes} rewrites` : "—", lin: c && c.uops ? `${c.uops.length} uops` : "—",
+      src: c && c.source ? `${c.source.split("\n").length} lines` : "—",
+      run: t.global_counters ? `${t.global_counters.time_sum_us.toFixed(1)} µs` : "",
+    };
+    STAGES.forEach((st, i) => {
+      strip.append(el("div", { class: "st" + (st.kern ? " kern" : "") + (i === S.stage ? " active" : ""), onclick: () => { stopTour(); go({ stage: i }); }, title: st.kern ? "per-kernel stage" : "" },
+        el("span", { class: "n" }, "①②③④⑤⑥⑦⑧"[i] + " "), st.name, el("small", {}, subs[st.key])));
+    });
+  }
+  function renderKpick() {
+    const kp = $("ch22-kpick"); kp.innerHTML = "";
+    const t = S.t;
+    if (!t.calls.length) { kp.append("no calls: everything was already realized or constant-folded"); return; }
+    kp.append(el("span", {}, STAGES[S.stage].kern ? "kernel:" : "calls:"));
+    t.calls.forEach((c, i) => kp.append(el("button", { class: (i === S.kc ? "active " : "") + (c.kind !== "kernel" ? "copy" : ""), onclick: () => { stopTour(); go({ kc: i }); }, title: c.kind },
+      el("span", { class: "k" }, "#" + i), c.fn || c.name)));
+    kp.append(el("span", { class: "legendk", style: "margin-left:8px" }, "▬ purple stages are per-kernel"));
+  }
+  function setCaption(html, ch) {
+    $("ch22-caption").innerHTML = (ch || []).map(chLink).join("") + html;
+  }
+  function gtools(extra) {
+    const bar = $("ch22-gtools"); bar.innerHTML = "";
+    (extra || []).forEach((x) => bar.append(x));
+    if (extra && extra.length) bar.append(el("span", { class: "sep" }));
+    const capSel = el("select", { onchange: (e) => { S.cap = +e.target.value; refresh(); }, title: "max nodes drawn (nearest to the root)" },
+      [120, 250, 500, 1500].map((v) => el("option", Object.assign({ value: v }, v === S.cap ? { selected: "" } : {}), v === 1500 ? "all (≤1500)" : "≤" + v + " nodes")));
+    bar.append(el("button", { onclick: () => zoomBy(1 / 1.25), title: "zoom out" }, "−"), el("button", { onclick: () => zoomBy(1.25), title: "zoom in" }, "+"),
+      el("button", { onclick: () => { S.zoom = "fit"; applyZoom(); } }, "fit"), el("button", { onclick: () => { S.zoom = 1; applyZoom(); } }, "1:1"), capSel,
+      el("span", { class: "info", id: "ch22-ginfo" }));
+  }
+  function showGraph(res, opts = {}) {
+    const box = $("ch22-graph");
+    box.style.display = "";
+    if (!gctl) {
+      gctl = G.uopGraph(box, res.g, { height: 600, compact: true, onClick: (n) => nodeInfo(n) });
+    } else gctl.setGraph(res.g, { animate: opts.animate !== false });
+    applyZoom();
+    const info = $("ch22-ginfo");
+    if (info) info.textContent = res.shown < res.total ? `showing ${res.shown} of ${res.total} nodes (nearest the root)` : `${res.shown} nodes`;
+    gctl.highlight(opts.hl || [], { dimOthers: !!(opts.hl && opts.hl.length) });
+  }
+  function hideGraph() { $("ch22-graph").style.display = "none"; G.$$("#ch22-gtools button, #ch22-gtools select").forEach((b) => { if (/^(−|\+|fit|1:1)$/.test(b.textContent) || b.tagName === "SELECT") b.style.display = "none"; }); const i = $("ch22-ginfo"); if (i) i.textContent = ""; }
+  let zoomVal = 1;
+  function applyZoom() {
+    if (!gctl) return;
+    const svg = gctl.svg, vb = (svg.getAttribute("viewBox") || "0 0 100 100").split(" ").map(Number);
+    const W = vb[2], H = vb[3], avail = $("ch22-graph").clientWidth - 4;
+    if (S.zoom === "auto") zoomVal = W > avail ? Math.max(0.6, avail / W) : 1;
+    else if (S.zoom === "fit") zoomVal = Math.min(1.5, avail / W);
+    else zoomVal = S.zoom;
+    svg.setAttribute("width", W * zoomVal); svg.setAttribute("height", H * zoomVal);
+  }
+  function zoomBy(f) { S.zoom = Math.max(0.2, Math.min(3, zoomVal * f)); applyZoom(); }
+  function nodeInfo(n) {
+    const t = S.t, raw = t.nodes[n.id];
+    const srcs = raw ? raw.src.map((s) => (t.nodes[s] ? `${s}:${t.nodes[s].op}` : s)).join(", ") : "";
+    $("ch22-nodeinfo").textContent = `${n.id}  UOp(Ops.${n.op}, dtypes.${n.dtype || "?"}${n.arg ? ", arg=" + n.arg : ""})${n.shape ? "  shape " + n.shape : ""}${srcs ? "\n  src: " + srcs : ""}`;
+  }
+
+  function sideHeader(title, extra) { return el("div", { class: "hd" }, el("span", {}, title), extra || null); }
+
+  function renderPassList(list, selIdx, onSel) {
+    const side = $("ch22-side"); side.innerHTML = "";
+    const hide = el("label", {}, el("input", Object.assign({ type: "checkbox", onchange: (e) => { S.hideNoop = e.target.checked; refresh(); } }, S.hideNoop ? { checked: "" } : {})), " hide no-op");
+    side.append(sideHeader(`${list.filter((p) => !p.header).length} rewrites`, hide));
+    // heat strip: one bar per pass, height ~ log(matches)
+    const heat = el("div", { class: "ch22-heat", title: "one bar per pass; height = log(matches)" });
+    const maxm = Math.max(1, ...list.filter((p) => !p.header).map((p) => p.matches));
+    list.forEach((p, i) => {
+      if (p.header) return;
+      const h = p.matches ? 6 + 22 * Math.log(1 + p.matches) / Math.log(1 + maxm) : 3;
+      heat.append(el("div", { class: (p.matches ? "hot" : "") + (i === selIdx ? " sel" : ""), style: `height:${h}px`, title: `${p.name}: ${p.matches} matches`, onclick: () => onSel(i) }));
+    });
+    side.append(heat);
+    list.forEach((p, i) => {
+      if (!isVisible(p)) return;
+      if (p.header) { side.append(el("div", { class: "ch22-pass ghead" }, el("span", { class: "nm" }, "group: " + p.header))); return; }
+      const io = p.in ? `${p.in.n}→${p.out.n}` : "group";
+      side.append(el("div", { class: "ch22-pass" + (i === selIdx ? " sel" : "") + (p.noop && !p.matches ? " noop" : "") + (!p.in ? " grp" : ""), style: `--d:${p.depth}`, onclick: () => onSel(i), title: `${p.name} @ ${p.loc}` },
+        el("span", { class: "nm" }, p.name), el("span", { class: "io" }, io), el("span", { class: "m" + (p.matches ? "" : " z") }, String(p.matches))));
+    });
+    const s = side.querySelector(".ch22-pass.sel");
+    if (s) { const top = s.offsetTop - side.clientHeight / 2; if (top > 0) side.scrollTop = top; }
+  }
+
+  function renderPassDetail(list, idx, setIdx) {
+    const p = list[idx];
+    const below = $("ch22-below"); below.innerHTML = "";
+    if (!p || p.header) { hideGraph(); return; }
+    const pi = passInfo(p.name);
+    const flags = [p.bottom_up ? "bottom_up" : "", p.walk ? "walk" : ""].filter(Boolean).join(", ");
+    setCaption(`<b>${esc(p.name)}</b> &nbsp;${srcLink(p.loc)} &nbsp;<span class="hl-red">${p.matches} matches</span>${p.in ? ` · ${p.in.n} → ${p.out.n} nodes` : ""}${flags ? " · " + flags : ""}${p.noop ? " · <i>output is the identical UOp (no-op)</i>" : ""}<br>${pi.txt}`,
+      pi.ch ? [pi.ch] : STAGES[S.stage].ch);
+    const visible = list.map((q, i) => i).filter((i) => !list[i].header && isVisible(list[i]));
+    const pos = visible.indexOf(idx);
+    const prev = el("button", { onclick: () => pos > 0 && setIdx(visible[pos - 1]) }, "◀ pass"), next = el("button", { onclick: () => pos < visible.length - 1 && setIdx(visible[pos + 1]) }, "pass ▶");
+    if (pos <= 0) prev.disabled = true; if (pos >= visible.length - 1) next.disabled = true;
+    if (!p.in) {
+      gtools([prev, next]); hideGraph();
+      below.append(el("div", { class: "callout note", html: `<code>${esc(p.name)}</code> is a <code>@rewrite_group(new_ctx=False)</code> function, not a graph_rewrite itself. Its child rewrites (indented below it) do the work.` }));
+      return;
+    }
+    const bBtn = el("button", { class: S.view === "before" ? "active" : "", onclick: () => { S.view = "before"; refresh(); } }, "before");
+    const aBtn = el("button", { class: S.view === "after" ? "active" : "", onclick: () => { S.view = "after"; refresh(); } }, "after");
+    const morph = el("button", { class: "primary", onclick: () => morphPass(p), title: "animate input → output" }, "▶ morph");
+    gtools([prev, next, el("span", { class: "sep" }), bBtn, aBtn, morph]);
+    const gin = toGraph(S.t, p.in), gout = toGraph(S.t, p.out);
+    let hl;
+    if (S.rule) hl = S.rule.before.concat(S.rule.after);
+    else if (S.view === "after") hl = [...gout.ids].filter((id) => !gin.ids.has(id));
+    else hl = [...gin.ids].filter((id) => !gout.ids.has(id));
+    showGraph(S.view === "after" ? gout : gin, { hl });
+    // rules
+    if (p.rules && p.rules.length) {
+      const tb = el("table", { class: "ch22-rules" }, el("tr", {}, el("th", {}, "×"), el("th", {}, "rule (UPat location)"), el("th", {}, "pattern source")));
+      p.rules.forEach((r) => {
+        const tr = el("tr", { class: S.rule && S.rule.loc === r.loc ? "sel" : "", onclick: () => { S.rule = S.rule && S.rule.loc === r.loc ? null : r; refresh(); } },
+          el("td", { class: "hl-red" }, String(r.count)), el("td", { html: srcLink(r.loc) }), el("td", { class: "code", title: r.code }, r.code));
+        tb.append(tr);
+      });
+      below.append(el("div", { class: "ch22-sum" }, `rules that fired (click to highlight the nodes they matched/produced; ${S.view === "after" ? "new nodes" : "removed nodes"} are highlighted by default):`), tb);
+    } else below.append(el("div", { class: "ch22-sum" }, "no rule fired in this pass" + (p.noop ? " — the output is the identical UOp." : " — but the graph changed via a sub-rewrite or ctx-driven replacement.")));
+  }
+  async function morphPass(p) {
+    const gin = toGraph(S.t, p.in), gout = toGraph(S.t, p.out);
+    S.view = "before"; showGraph(gin, { animate: false, hl: [...gin.ids].filter((id) => !gout.ids.has(id)) });
+    await G.sleep(900);
+    S.view = "after"; showGraph(gout, { hl: [...gout.ids].filter((id) => !gin.ids.has(id)) });
+    G.$$("#ch22-gtools button").forEach((b) => { if (b.textContent === "after") b.classList.add("active"); if (b.textContent === "before") b.classList.remove("active"); });
+  }
+
+  function renderStage() {
+    const t = S.t, st = STAGES[S.stage], c = curCall();
+    renderStrip(); renderKpick();
+    $("ch22-nodeinfo").textContent = "";
+    const side = $("ch22-side"), below = $("ch22-below");
+    side.innerHTML = ""; below.innerHTML = "";
+    if (st.kern && (!c || c.kind !== "kernel")) {
+      setCaption(STAGE_TEXT[st.key](t, c), st.ch); gtools([]); hideGraph();
+      side.append(sideHeader("no kernel selected"));
+      below.append(el("div", { class: "callout note", html: c ? `Call #${S.kc} is a <b>${esc(c.kind)}</b>, not a compiled kernel. Pick a kernel above.` : "This schedule has no kernels." }));
+      return;
+    }
+    switch (st.key) {
+      case "tensor": {
+        setCaption(STAGE_TEXT.tensor(t), st.ch);
+        side.append(sideHeader("render_uir(tensor graph)"), el("pre", {}, t.tensor_graph_text || ""));
+        gtools([]); showGraph(toGraph(t, t.tensor_graph));
+        below.append(el("div", { class: "ch22-sum", html: (t.outputs_meta || []).map((o) => `<b>${esc(o.name)}</b>: ${esc(o.dtype)} ${esc(JSON.stringify(o.shape))} on ${esc(o.device)}`).join(" · ") }));
+        if (t.prelude && t.prelude.length) below.append(el("div", { class: "ch22-sum" }, `prelude (realized while the snippet ran, not traced in detail): ${t.prelude.map((g) => g.name).join(", ")}`));
+        break;
+      }
+      case "spass": {
+        const list = schedPasses();
+        if (S.spass < 0 || !list[S.spass]) { S.spass = list.findIndex((p) => !p.header && p.name === "apply rangeify" && p.in); if (S.spass < 0) S.spass = list.findIndex((p) => !p.header && p.matches > 0 && p.in); }
+        const setIdx = (i) => { S.spass = i; S.rule = null; stopTour(); refresh(); };
+        renderPassList(list, S.spass, setIdx); renderPassDetail(list, S.spass, setIdx);
+        break;
+      }
+      case "sched": {
+        setCaption(STAGE_TEXT.sched(t), st.ch);
+        side.append(sideHeader(`LINEAR · ${t.calls.length} CALLs`));
+        t.calls.forEach((cc, i) => side.append(el("div", { class: "ch22-row" + (i === S.kc ? " sel" : ""), onclick: () => { stopTour(); go({ kc: i }); } },
+          el("span", { class: "c" }, `#${i} `), el("span", { class: "k" }, cc.kind + " "), cc.fn || cc.name,
+          el("span", { class: "d" }, cc.bufs.map((b, j) => `${j === 0 ? "out" : "in"}: ${b.op} ${b.dtype}[${b.numel ?? "?"}]`).join("\n")))));
+        gtools([]);
+        const res = toGraph(t, t.linear);
+        showGraph(res, { hl: c ? [c.call] : [] });
+        const tb = el("table", { class: "ch22-rules" }, el("tr", {}, el("th", {}, "#"), el("th", {}, "kind"), el("th", {}, "name"), el("th", {}, "args (buffers)"), el("th", {}, "estimates")));
+        t.calls.forEach((cc, i) => tb.append(el("tr", { class: i === S.kc ? "sel" : "", onclick: () => go({ kc: i }) }, el("td", {}, i), el("td", {}, cc.kind), el("td", {}, cc.fn || cc.name),
+          el("td", { class: "code" }, cc.bufs.map((b) => b.text || b.op).join(" | ")), el("td", {}, cc.estimates ? `${cc.estimates.ops} ops, ${cc.estimates.mem} B` : ""))));
+        below.append(tb);
+        break;
+      }
+      case "ast": {
+        setCaption(STAGE_TEXT.ast(t, c), st.ch);
+        side.append(sideHeader("render_uir(kernel AST)"), el("pre", {}, c.ast_text || ""));
+        gtools([]); showGraph(toGraph(t, c.ast));
+        below.append(el("div", { class: "ch22-sum", html: `buffers: ${c.bufs.map((b, j) => `<b>slot ${j}</b> ${esc(b.text || b.op)}`).join(" · ")}` }));
+        break;
+      }
+      case "cpass": {
+        const list = kernPasses(c);
+        let idx = S.cpass[S.kc];
+        if (idx === undefined || !list[idx]) {
+          idx = list.findIndex((p) => !p.header && p.in && p.depth === 0 && OPT_RE.test(p.name) && !TOUR_CODEGEN.includes(p.name));
+          if (idx < 0) idx = list.findIndex((p) => !p.header && p.in && p.name === "remove reduces" && !p.noop);
+          if (idx < 0) idx = list.findIndex((p) => !p.header && p.matches > 0 && p.in);
+          idx = S.cpass[S.kc] = Math.max(0, idx);
+        }
+        const setIdx = (i) => { S.cpass[S.kc] = i; S.rule = null; stopTour(); refresh(); };
+        if (!list.length) { setCaption(STAGE_TEXT.cpass(t, c), st.ch); gtools([]); hideGraph(); below.append(el("div", { class: "callout note" }, "no codegen group recorded for this kernel")); break; }
+        renderPassList(list, idx, setIdx); renderPassDetail(list, idx, setIdx);
+        const cap = $("ch22-caption");
+        cap.innerHTML += `<br><span class="ch22-sum">kernel <b>${esc(c.fn)}</b> · applied opts: ${c.applied_opts && c.applied_opts.length ? c.applied_opts.map(esc).join(", ") : "none"}</span>`;
+        break;
+      }
+      case "lin": {
+        setCaption(STAGE_TEXT.lin(t, c), st.ch);
+        const rows = c.uops || [];
+        side.append(sideHeader(`${rows.length} UOps`));
+        const tb = el("table", { class: "ch22-uops" }, el("tr", {}, el("th", {}, "#"), el("th", {}, "op"), el("th", {}, "dtype"), el("th", {}, "src"), el("th", {}, "arg")));
+        rows.forEach((u, i) => {
+          const col = G.opColor(u.op);
+          tb.append(el("tr", { class: S.uopSel === i ? "sel" : "", onclick: () => { S.uopSel = S.uopSel === i ? null : i; refresh(); } }, el("td", {}, i), el("td", { class: "op", style: `color:${col}` }, u.op), el("td", {}, u.dt),
+            el("td", {}, u.src.join(",")), el("td", { class: "arg", title: u.arg }, u.arg)));
+        });
+        side.append(tb);
+        gtools([]);
+        const res = uopsGraph(c);
+        const hl = S.uopSel != null && rows[S.uopSel] ? [rows[S.uopSel].id, ...rows[S.uopSel].src.filter((s) => s >= 0).map((s) => rows[s].id)] : [];
+        showGraph(res, { hl });
+        if (S.uopSel != null && rows[S.uopSel]) { const u = rows[S.uopSel]; $("ch22-nodeinfo").textContent = `line ${S.uopSel}: ${u.op} ${u.dt}  src=[${u.src.join(", ")}]  ${u.arg}`; }
+        const s = side.querySelector("tr.sel"); if (s) side.scrollTop = Math.max(0, s.offsetTop - side.clientHeight / 2);
+        break;
+      }
+      case "src": {
+        setCaption(STAGE_TEXT.src(t, c), st.ch);
+        const kv = el("div", { class: "kv", style: "padding:10px;font-size:12.5px" });
+        const add = (k, v) => kv.append(el("span", {}, k), el("span", {}, v));
+        add("function", c.fn); add("global_size", JSON.stringify(c.global_size)); add("local_size", JSON.stringify(c.local_size));
+        add("applied_opts", (c.applied_opts || []).join(", ") || "none");
+        if (c.estimates) { add("est. ops", String(c.estimates.ops)); add("est. mem", c.estimates.mem + " B (unique)"); add("est. lds", c.estimates.lds + " B (all loads/stores)"); }
+        add("binary", (c.binary_bytes || "?") + " bytes");
+        c.bufs.forEach((b, j) => add("arg" + j, `${b.op} ${b.dtype}[${b.numel ?? "?"}]`));
+        side.append(sideHeader("kernel facts"), kv);
+        gtools([]); hideGraph();
+        const code = el("code", { class: "language-c" }, c.source || "(no source)");
+        below.append(el("div", { class: "ch22-src" }, el("pre", {}, code)));
+        if (window.hljs) hljs.highlightElement(code);
+        break;
+      }
+      case "run": {
+        setCaption(STAGE_TEXT.run(t), st.ch);
+        const gc = t.global_counters || {};
+        const kv = el("div", { class: "kv", style: "padding:10px;font-size:12.5px" });
+        const add = (k, v) => kv.append(el("span", {}, k), el("span", {}, v));
+        add("kernels run", String(gc.kernel_count)); add("global ops", String(gc.global_ops)); add("global mem", gc.global_mem + " B"); add("kernel time Σ", (gc.time_sum_us || 0).toFixed(2) + " µs");
+        add("schedule", (t.schedule_s * 1000).toFixed(1) + " ms (Python)"); add("compile+run", (t.run_s * 1000).toFixed(1) + " ms"); if (t.wall_s) add("whole trace", t.wall_s + " s");
+        side.append(sideHeader("GlobalCounters"), kv);
+        if (t.stdout) side.append(sideHeader("snippet stdout"), el("pre", {}, t.stdout));
+        gtools([]); hideGraph();
+        const bars = el("div", { class: "ch22-bars" });
+        const mx = Math.max(1e-9, ...t.runs.map((r) => r.time_us ?? r.wall_us ?? 0));
+        t.runs.forEach((r) => { const v = r.time_us ?? r.wall_us ?? 0; bars.append(el("div", { class: "bar" }, el("span", {}, `${r.kind} ${r.name}`), el("div", { class: "b" + (r.kind !== "kernel" ? " copy" : ""), style: `width:${(100 * v) / mx}%` }), el("span", {}, `${v.toFixed(2)} µs ${r.time_us != null ? "" : "(wall)"}`))); });
+        below.append(el("h4", { style: "margin-top:0" }, "per-call time"), bars);
+        (t.outputs || []).forEach((o) => {
+          below.append(el("h4", {}, `${o.name}  ·  ${o.dtype} ${JSON.stringify(o.shape)}`));
+          below.append(valueGrid(o));
+          below.append(el("pre", { class: "output" }, el("code", {}, o.text)));
+        });
+        break;
+      }
+    }
+  }
+  function valueGrid(o) {
+    const vals = o.values.map(Number), sh = o.shape;
+    const cols = sh.length >= 1 ? sh[sh.length - 1] : 1;
+    const finite = vals.filter((v) => isFinite(v));
+    const lo = Math.min(...finite, 0), hi = Math.max(...finite, 0), span = hi - lo || 1;
+    const g = el("div", { class: "ch22-vals", style: `grid-template-columns: repeat(${Math.min(cols, 16)}, auto)` });
+    vals.slice(0, cols > 16 ? 0 : 128).forEach((v) => {
+      const k = (v - lo) / span;
+      g.append(el("div", { style: `background: hsl(${200 - 160 * k}, 70%, ${45 + 20 * k}%)`, title: String(v) }, Math.abs(v) >= 1000 || (Math.abs(v) < 0.01 && v !== 0) ? v.toExponential(1) : +v.toFixed(3)));
+    });
+    return g;
+  }
+
+  function refresh() { if (S.t) renderStage(); }
+  function go(patch) {
+    Object.assign(S, patch);
+    if ("stage" in patch || "kc" in patch) { S.rule = null; S.uopSel = null; }
+    refresh();
+  }
+
+  // ---------- summary + status ----------
+  function setStatus(kind, html) { const s = $("ch22-status"); s.className = "ch22-status " + kind; s.innerHTML = html; }
+  function renderSummary() {
+    const t = S.t, k = t.calls.filter((c) => c.kind === "kernel");
+    $("ch22-sum").innerHTML = `<b>${t.calls.length}</b> call(s): ${k.length} kernel(s) ${t.calls.length - k.length ? "+ " + (t.calls.length - k.length) + " other" : ""}<br>` +
+      `<b>${Object.keys(t.nodes).length}</b> unique UOps recorded<br>` +
+      `outputs: ${(t.outputs || []).map((o) => `<b>${esc(o.name)}</b>${esc(JSON.stringify(o.shape))}`).join(", ")}<br>` +
+      `opts: NOOPT=${esc(t.env && t.env.NOOPT)} BEAM=${esc(t.env && t.env.BEAM)}`;
+  }
+  function showError(t, note) {
+    S.t = null; stopTour();
+    setStatus("err", `ERROR${t.stage ? " in stage " + esc(t.stage) : ""}`);
+    $("ch22-strip").innerHTML = ""; $("ch22-kpick").innerHTML = ""; $("ch22-side").innerHTML = ""; $("ch22-gtools").innerHTML = ""; hideGraph();
+    setCaption(`<b class="hl-red">${esc(t.error || "unknown error")}</b>${note ? "<br>" + note : ""}`, []);
+    const below = $("ch22-below"); below.innerHTML = "";
+    below.append(el("div", { class: "ch22-err" }, el("pre", {}, (t.traceback || t.stderr || "") + (t.stdout ? "\n--- stdout ---\n" + t.stdout : ""))));
+    if (t.partial_groups && t.partial_groups.length) below.append(el("div", { class: "ch22-sum" }, "rewrites recorded before the failure: " + t.partial_groups.map((g) => `${g.name} (${g.n_passes})`).join(", ")));
+  }
+  function loadTrace(t, origin) {
+    if (!t || !t.ok) return showError(t || { error: "empty response" });
+    S.t = t; S.origin = origin; S.spass = -1; S.cpass = {}; S.rule = null; S.uopSel = null; S.view = "after";
+    S.kc = Math.max(0, t.calls.findIndex((c) => c.kind === "kernel"));
+    renderSummary();
+    if (S.stage >= STAGES.length) S.stage = 0;
+    refresh();
+  }
+
+  // ---------- presets & live trace ----------
+  function renderPresets() {
+    const box = $("ch22-presets"); box.innerHTML = "";
+    presets.forEach((p) => box.append(el("button", { class: p.id === S.presetId ? "active" : "", title: p.blurb, onclick: () => { stopTour(); loadPreset(p.id); } }, p.title)));
+  }
+  async function loadPreset(id) {
+    const p = presets.find((x) => x.id === id); if (!p) return;
+    S.presetId = id; renderPresets();
+    $("ch22-code").value = p.code; $("ch22-noopt").checked = false; $("ch22-beam").value = "0";
+    setStatus("busy", "loading precomputed trace…");
+    try {
+      const t = await G.loadJSON("../data/" + p.file);
+      loadTrace(t, "pre");
+      setStatus("pre", `PRECOMPUTED · data/${esc(p.file)}<br><span style="color:var(--dim)">press Trace to re-run it live</span>`);
+    } catch (e) { showError({ error: "could not load data/" + p.file + ": " + e }); }
+  }
+  async function liveTrace() {
+    stopTour();
+    const code = $("ch22-code").value, opts = { noopt: $("ch22-noopt").checked, beam: +$("ch22-beam").value };
+    const btn = $("ch22-trace"); btn.disabled = true;
+    setStatus("busy", "tracing live… (subprocess, DEV=CPU)");
+    const t0 = performance.now();
+    let t = null, apiErr = null;
+    try {
+      const r = await fetch("/api/trace", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code, opts }) });
+      if (!r.ok && r.status !== 200) apiErr = `HTTP ${r.status}`;
+      const ct = r.headers.get("content-type") || "";
+      if (ct.includes("json")) t = await r.json(); else apiErr = apiErr || "API returned non-JSON (static server without /api/trace?)";
+    } catch (e) { apiErr = String(e); }
+    btn.disabled = false;
+    if (t && (t.ok || t.error) && !apiErr) {
+      if (!t.ok) return showError(t);
+      const match = presets.find((p) => p.code.trim() === code.trim());
+      S.presetId = match && !opts.noopt && !opts.beam ? match.id : null; renderPresets();
+      loadTrace(t, "live");
+      return setStatus("live", `LIVE · traced in ${t.wall_s ?? ((performance.now() - t0) / 1000).toFixed(2)} s<br><span style="color:var(--dim)">POST /api/trace · ${esc(JSON.stringify(opts))}</span>`);
+    }
+    // fallback: API unavailable -> precomputed preset if the code is a preset
+    const match = presets.find((p) => p.code.trim() === code.trim());
+    if (match && !opts.noopt && !opts.beam) {
+      await loadPreset(match.id);
+      return setStatus("pre", `API unavailable (${esc(apiErr || "?")}) → PRECOMPUTED · data/${esc(match.file)}`);
+    }
+    showError({ error: `live API unavailable: ${apiErr}` }, "The precomputed presets still work. To trace your own code, serve the guide with <code>python3 server.py</code> (it provides <code>POST /api/trace</code>).");
+  }
+
+  // ---------- guided tour ----------
+  const TOUR_SCHED = ["drop after", "replace bufs", "earliest rewrites", "apply rangeify", "symbolic+reduce_collapse+debuf", "stage to store", "split kernels", "kernel split", "params to buffers", "memory plan"];
+  const TOUR_CODEGEN = ["simplify ranges", "postopt symbolic", "expander", "remove reduces", "*** expand broadcast / add loads", "devectorize2", "memory coalescing", "lower all index dtypes", "late decompositions", "add control flow", "linearize/render"];
+  const OPT_RE = /(upcast|unroll|local|group|shift)/i;
+  function buildTour() {
+    const t = S.t, steps = [];
+    const stepOf = (stage, extra, caption) => steps.push({ state: Object.assign({ stage }, extra), caption });
+    stepOf(0, {}, `<b>① Tensor graph.</b> ${STAGE_TEXT.tensor(t).replace(/^<b>.*?<\/b>/, "")} <a href="02-tensor-laziness.html">Chapter 2</a>`);
+    const sp = schedPasses();
+    const seen = new Set();
+    sp.forEach((p, i) => {
+      if (p.header || !p.in || seen.has(p.name) || !TOUR_SCHED.includes(p.name) || (p.matches === 0 && p.noop)) return;
+      seen.add(p.name);
+      const pi = passInfo(p.name), top = p.rules && p.rules[0];
+      stepOf(1, { spass: i, view: "after" }, `<b>② schedule pass “${esc(p.name)}”</b> (${p.matches} matches, ${p.in.n}→${p.out.n} nodes). ${pi.txt}${top ? ` Top rule ×${top.count}: <code>${esc(top.code.slice(0, 90))}</code>` : ""} ${pi.ch ? `<a href="${pi.ch}.html">${esc(chTitle(pi.ch))}</a>` : ""}`);
+    });
+    stepOf(2, {}, `<b>③ The schedule:</b> ${t.calls.length} CALL(s) — ${t.calls.map((c) => esc(c.fn || c.name)).join(", ")}. ${STAGE_TEXT.sched(t).replace(/^<b>.*?<\/b>/, "")} <a href="12-schedule.html">Chapter 12</a>`);
+    const kc = S.t.calls[S.kc] && S.t.calls[S.kc].kind === "kernel" ? S.kc : S.t.calls.findIndex((c) => c.kind === "kernel");
+    if (kc >= 0) {
+      const c = t.calls[kc];
+      stepOf(3, { kc }, `<b>④ Kernel AST of ${esc(c.fn)}</b> (kernel #${kc}). ${STAGE_TEXT.ast(t, c).replace(/^<b>.*?<\/b>/, "")} <a href="13-kernel-ast.html">Chapter 13</a>`);
+      const kp = kernPasses(c), seenc = new Set();
+      kp.forEach((p, i) => {
+        if (p.header || !p.in || (p.matches === 0 && p.noop)) return;
+        const isOpt = OPT_RE.test(p.name) && !TOUR_CODEGEN.includes(p.name);
+        if (!isOpt && (!TOUR_CODEGEN.includes(p.name) || seenc.has(p.name))) return;
+        seenc.add(p.name);
+        const pi = passInfo(p.name);
+        stepOf(4, { kc, cpassIdx: i, view: "after" }, `<b>⑤ codegen pass “${esc(p.name)}”</b> (${p.matches} matches, ${p.in.n}→${p.out.n} nodes). ${pi.txt} ${pi.ch ? `<a href="${pi.ch}.html">${esc(chTitle(pi.ch))}</a>` : ""}`);
+      });
+      stepOf(5, { kc }, `<b>⑥ Linearized:</b> ${c.uops ? c.uops.length : "?"} UOps in program order — the DAG is now a list, each entry referencing earlier entries. <a href="16-linearize-render.html">Chapter 16</a>`);
+      stepOf(6, { kc }, `<b>⑦ C source</b> from ClangRenderer (${c.source ? c.source.split("\n").length : "?"} lines), compiled by clang. Opts applied: ${(c.applied_opts || []).map(esc).join(", ") || "none"}.`);
+    }
+    stepOf(7, {}, `<b>⑧ Run:</b> ${t.runs.length} call(s) executed by run_linear; kernel time Σ ${(t.global_counters.time_sum_us || 0).toFixed(1)} µs. Output: <code>${esc((t.outputs[0] || {}).text || "").slice(0, 120)}</code> <a href="17-runtime.html">Chapter 17</a>`);
+    return steps;
+  }
+  function startTour() {
+    if (!S.t) return;
+    const box = $("ch22-tour"); box.innerHTML = "";
+    const steps = buildTour();
+    box.append(el("div", { class: "ch22-sum", style: "margin-bottom:4px" }, `guided tour · ${steps.length} steps · auto-advances every 6 s when playing · `, el("a", { href: "#", onclick: (e) => { e.preventDefault(); stopTour(); } }, "close")));
+    tour = G.stepper(box, steps, (i, step) => {
+      const st = step.state;
+      const patch = { stage: st.stage };
+      if (st.kc !== undefined) patch.kc = st.kc;
+      if (st.spass !== undefined) patch.spass = st.spass;
+      if (st.view) patch.view = st.view;
+      Object.assign(S, patch); S.rule = null; S.uopSel = null;
+      if (st.cpassIdx !== undefined) S.cpass[S.kc] = st.cpassIdx;
+      refresh();
+    }, { autoplayMs: 6000 });
+    $("ch22-tourbtn").classList.add("active");
+    box.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
+  function stopTour() { if (tour) { tour.stop(); tour = null; } $("ch22-tour").innerHTML = ""; $("ch22-tourbtn").classList.remove("active"); }
+
+  // ---------- kernel-count chart ----------
+  async function kernelChart() {
+    const box = $("ch22-kc"); if (!box) return;
+    const counts = presets.map((p) => p.kernels || []);
+    const mx = Math.max(1, ...counts.map((c) => c.length));
+    presets.forEach((p, i) => {
+      const bk = el("div", { class: "bk", style: "height:0px" }, String(counts[i].length));
+      box.append(el("div", { class: "col", title: counts[i].join(", "), onclick: () => { loadPreset(p.id); document.getElementById("ch22-x").scrollIntoView({ behavior: "smooth" }); } }, bk, el("span", {}, p.title), el("span", { style: "font-size:10px" }, counts[i].join(" "))));
+      requestAnimationFrame(() => requestAnimationFrame(() => (bk.style.height = (110 * counts[i].length) / mx + "px")));
+    });
+  }
+
+  // ---------- boot ----------
+  document.addEventListener("DOMContentLoaded", async () => {
+    $("ch22-trace").addEventListener("click", liveTrace);
+    $("ch22-tourbtn").addEventListener("click", () => (tour ? stopTour() : startTour()));
+    $("ch22-code").addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); liveTrace(); }
+      if (e.key === "Tab") { e.preventDefault(); const ta = e.target, s = ta.selectionStart; ta.value = ta.value.slice(0, s) + "  " + ta.value.slice(ta.selectionEnd); ta.selectionStart = ta.selectionEnd = s + 2; }
+    });
+    $("ch22-code").addEventListener("input", () => { if (S.presetId) { S.presetId = null; renderPresets(); } });
+    window.addEventListener("resize", () => applyZoom());
+    try { presets = (await G.loadJSON("../data/ch22_presets.json")).presets; }
+    catch (e) { setStatus("err", "could not load data/ch22_presets.json"); return; }
+    renderPresets();
+    S.stage = 1;
+    await loadPreset("matmul");
+    kernelChart();
+  });
+})();
+
+</script>
+</body>
+</html>

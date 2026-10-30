@@ -1,0 +1,1276 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>7. Movement ops — tinygrad internals</title>
+<link rel="stylesheet" href="../assets/vendor/hljs-dark.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/vendor/highlight.min.js"></script>
+<script src="../assets/vendor/dagre.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/chapters.js"></script>
+<script src="../assets/guide.js"></script>
+<style>
+.ch07-grid { display: inline-grid; gap: 2px; font-family: var(--mono); font-size: 11.5px; vertical-align: top; }
+.ch07-cell { width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; border-radius: 4px; border: 1px solid rgba(255,255,255,.08); color: #0d0f12; font-weight: 600; cursor: default; transition: transform .15s, box-shadow .15s; }
+.ch07-cell.pad { background: repeating-linear-gradient(45deg, #23272e, #23272e 4px, #1a1d22 4px, #1a1d22 8px) !important; color: #5b6470; font-weight: 400; }
+.ch07-cell.hot { outline: 2px solid var(--yellow); outline-offset: 1px; transform: scale(1.12); box-shadow: 0 0 12px rgba(244,211,69,.6); z-index: 2; }
+.ch07-cell.dimc { opacity: .25; }
+.ch07-gap { height: 6px; }
+.ch07-panel { background: #0d0f12; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 8px 0; }
+.ch07-panel h5 { margin: 0 0 6px; color: var(--gold); font-size: 13px; font-weight: 600; }
+.ch07-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0; }
+.ch07-chip { font-family: var(--mono); font-size: 12px; padding: 3px 8px; border-radius: 12px; border: 1px solid var(--teal); color: var(--teal); background: rgba(92,208,179,.08); cursor: pointer; white-space: nowrap; }
+.ch07-chip.hl { background: var(--teal); color: #000; }
+.ch07-chip.grp { border-color: var(--gold); color: var(--gold); background: rgba(240,172,95,.08); }
+.ch07-chip small { color: var(--dim); margin-left: 4px; }
+.ch07-chip.hl small { color: #123; }
+.ch07-formula { font-family: var(--mono); font-size: 13px; color: var(--yellow); word-break: break-all; }
+.ch07-formula .v { color: var(--red); }
+.ch07-trace { font-family: var(--mono); font-size: 12px; border-collapse: collapse; margin: 4px 0; }
+.ch07-trace td { border: none; border-bottom: 1px solid var(--line); padding: 2px 8px; }
+.ch07-trace td:first-child { color: var(--teal); }
+.ch07-flat { display: flex; flex-wrap: wrap; gap: 2px; }
+.ch07-err { color: var(--red); font-family: var(--mono); font-size: 13px; min-height: 1.2em; }
+.ch07-lbl { font-size: 12px; color: var(--dim); margin: 2px 0 4px; font-family: var(--mono); }
+.ch07-sl { display: grid; grid-template-columns: 110px 160px 30px; align-items: center; gap: 4px 8px; font-size: 13px; }
+.ch07-optable td code { white-space: nowrap; }
+.ch07-svgfig text { font-family: var(--mono); }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="sidebar" id="sidebar"></nav>
+<main>
+  <h1><span class="chnum">CHAPTER 07</span>Movement ops</h1>
+  <p class="lede">A movement op never moves a byte. It is a promise about <em>where to look</em>. After this chapter you will be able to read any
+  chain of <code>RESHAPE · PERMUTE · EXPAND · PAD · SHRINK</code> UOps as a single function from an output position to an input position (plus a
+  validity mask), know exactly which primitive ops each friendly <code>Tensor</code> method turns into — including the surprising ones, like
+  <code>flip</code> — and see why this version of tinygrad treats the index expressions built during rangeify as the source of truth.</p>
+
+  <h2 id="intuition"><span class="sec">7.1</span>Intuition: a view is a recipe for where to look</h2>
+  <p>Take a buffer of six floats in memory, <code>[0 1 2 3 4 5]</code>. "Reshape it to 2×3", "transpose it", "flip it", "pad it with zeros" —
+  none of these needs to touch the six floats. Each one only changes the answer to one question:</p>
+  <div class="callout aha"><span class="title">The one question</span>
+  <em>"If somebody asks for element <code>out[i, j]</code> of the result, which element of the buffer do I read — or is it padding?"</em><br>
+  A movement op is nothing but a function \( f : \text{output index} \mapsto \text{input index} \cup \{\text{invalid}\} \). Compose a chain of
+  them and you get one bigger function. That function is what eventually appears as the address arithmetic inside a kernel's load.</div>
+
+  <div class="callout analogy"><span class="title">Analogy: a concert hall seating chart</span>
+  The audience (the bytes) sits still. A movement op is a new seating <em>chart</em> printed for the ushers: "row 2, seat 1 on the new chart means
+  row 1, seat 2 in the hall". PERMUTE relabels rows as seats, RESHAPE renumbers the seats as if the hall had a different width, EXPAND tells several
+  ushers to send people to the same seat, SHRINK hands out a chart for just the balcony, and PAD adds imaginary seats along the walls that are
+  always empty (zero). Printing a new chart is free. Only when someone actually <em>reads</em> the chart (a kernel loads data) does work happen.</div>
+
+  <p>Here is that picture for a transpose of a 2×3 view of our 6-element buffer. Hover any output cell: the arrow shows which buffer element it reads.</p>
+  <div class="demo" id="demo-intro">
+    <div class="demo-title">Warm-up: <code>buf.reshape(2,3).T</code> as arrows</div>
+    <div class="demo-desc">Every output cell of the 3×2 result points back into the flat buffer. Same colour = same buffer element. Nothing was copied.</div>
+    <svg class="ch07-svgfig" id="intro-svg" viewBox="0 0 760 210" width="100%"></svg>
+  </div>
+
+  <h2 id="primitives"><span class="sec">7.2</span>The five primitives (and what is <em>not</em> one)</h2>
+  <p>In this checkout the tensor graph has exactly five movement ops. The <code>Ops</code> enum says it in a comment:</p>
+  <div class="codecap"><b><a class="src" data-path="tinygrad/uop/__init__.py" data-line="92">tinygrad/uop/__init__.py:92</a></b></div>
+  <pre><code class="language-python"># the core 5 movement ops! these only exist in the tensor graph
+RESHAPE = auto(); PERMUTE = auto(); EXPAND = auto(); PAD = auto()
+UNSHARD = auto()  # UNSHARD is really a movement op</code></pre>
+  <p>plus <code>SHRINK</code>, which is declared higher up next to <code>INDEX</code> (<a class="src" data-path="tinygrad/uop/__init__.py" data-line="45"></a>) because it
+  survives into codegen as a pointer-window op, and the set used by the scheduler is
+  <code>GroupOp.Movement = {RESHAPE, EXPAND, PERMUTE, PAD, SHRINK}</code> (<a class="src" data-path="tinygrad/uop/__init__.py" data-line="117"></a>).
+  <code>UNSHARD</code> is "really a movement op" for multi-device tensors (it concatenates per-device shards along an axis); we leave it to
+  <a href="19-multi.html">Chapter 19</a>.</p>
+
+  <table class="ch07-optable">
+    <tr><th>op</th><th>decoded arg (<code>u.marg</code>)</th><th>output shape</th><th>index function: out index \(r\) → in index</th></tr>
+    <tr><td><b class="hl-teal">RESHAPE</b></td><td>new shape</td><td><code>arg</code> (same numel)</td><td>flatten \(r\) row-major with the new shape, unflatten with the old: \( (\sum_i r_i s'_i) \,/\!/\, \text{stride}_j \bmod n_j \)</td></tr>
+    <tr><td><b class="hl-teal">PERMUTE</b></td><td>axis order</td><td><code>shape[arg[i]]</code></td><td>\( \text{in}[\text{arg}[i]] = r_i \)</td></tr>
+    <tr><td><b class="hl-teal">EXPAND</b></td><td><em>new leading dims</em></td><td><code>arg + shape</code></td><td>drop the leading indices: \( \text{in} = r_{k:} \)</td></tr>
+    <tr><td><b class="hl-teal">PAD</b></td><td><code>(offset, new_size)</code> per axis</td><td><code>new_size</code>s</td><td>\( r_i - \text{off}_i \), valid iff \( \text{off}_i \le r_i &lt; \text{off}_i + n_i \)</td></tr>
+    <tr><td><b class="hl-teal">SHRINK</b></td><td><code>(offset, size)</code> per axis</td><td><code>size</code>s</td><td>\( r_i + \text{off}_i \)</td></tr>
+  </table>
+
+  <div class="callout warn"><span class="title">Three things your memory of older tinygrad (or PyTorch) will get wrong</span>
+  <ol>
+    <li><b>There is no FLIP op.</b> <code>Ops.FLIP</code> does not exist; <code>Tensor.flip</code> is built from PAD/RESHAPE/PERMUTE/SHRINK (§7.4 — it is a beautiful trick).</li>
+    <li><b>EXPAND only adds dimensions on the left.</b> Its arg is the tuple of <em>new leading</em> sizes and the output shape is <code>arg + src.shape</code>.
+      To broadcast a size-1 axis in the middle, the high-level <code>expand</code> squeezes it out, expands on the left, and permutes back.</li>
+    <li><b>PAD and SHRINK store <code>(offset, size)</code>, not <code>(before, after)</code> or <code>(start, end)</code>.</b> <code>x.pad(((1,1),(0,2)))</code> on a 2×3 tensor is stored
+      as <code>PAD((1,4),(0,5))</code>: offset 1 into a new size of 4, offset 0 into a new size of 5.</li>
+  </ol></div>
+
+  <div class="quiz" data-answer="2">
+    <div class="q">A UOp is <code>EXPAND</code> with <code>marg = (4,)</code> applied to a source of shape <code>(2, 3)</code>. What is its shape?</div>
+    <button class="opt">(4, 3) — the 2 is broadcast to 4</button><button class="opt">(2, 3, 4)</button><button class="opt">(4, 2, 3)</button><button class="opt">error: EXPAND needs a size-1 axis</button>
+    <div class="explain">In this version <code>_shape</code> for EXPAND is literally <code>tuple(self.marg) + ps</code> (<a class="src" data-path="tinygrad/uop/ops.py" data-line="392">ops.py:392</a>): new axes are prepended. The index function just drops the leading indices, which is why the same input element is read for every value of the new axis.</div>
+  </div>
+
+  <h2 id="representation"><span class="sec">7.3</span>How a movement op is stored: args are UOps</h2>
+  <p>You might expect <code>UOp(Ops.RESHAPE, arg=(3,2))</code>. That is <em>not</em> how it looks. The shape argument is itself part of the graph:
+  <code>src[1:]</code> holds UOps — a <code>STACK</code> of <code>CONST</code>s (or a single <code>CONST</code> for a 1-tuple) — and <code>.arg</code> is <code>None</code>.
+  Here is the real thing, printed by <code>examples/07_movement_basics.py</code>:</p>
+  <div class="codecap"><b>examples/07_movement_basics.py</b> — run with <code>DEV=CPU python3 examples/07_movement_basics.py</code></div>
+  <pre><code class="language-python"># A Tensor made from a Python list lives in a flat 1-D buffer; its 2-D shape is itself a RESHAPE view.
+a = Tensor([[0., 1, 2], [3, 4, 5]]).realize()
+print(&quot;\n--- the base tensor a (shape&quot;, a.shape, &quot;)&quot;)
+print(a.uop)
+
+def short(u):
+  # compact one-line description of a movement UOp: op, decoded arg, and the ops of its shape-arg srcs
+  return f&quot;{u.op.name:8s} marg={u.marg!s:28s} srcs={[s.op.name for s in u.src]}  -&gt;  shape {u.shape}&quot;
+
+print(&quot;\n--- the five primitives, applied to a&quot;)
+print(short(a.reshape(3, 2).uop))
+print(short(a.permute(1, 0).uop))
+print(short(a.reshape(1, 2, 3)._mop(Ops.EXPAND, (4,)).uop))   # raw EXPAND: arg = the NEW LEADING dims
+print(short(a.pad(((1, 1), (0, 2))).uop))                       # PAD marg = (offset, new_size) per axis
+print(short(a.shrink(((0, 1), (1, 3))).uop))                    # SHRINK marg = (offset, size) per axis
+
+print(&quot;\n--- a full movement UOp: the args are UOps (STACKs of CONSTs), shared by hash-consing&quot;)
+print(a.pad(((1, 1), (0, 2))).uop)</code></pre>
+  <pre class="output"><code>GroupOp.Movement = [&#x27;EXPAND&#x27;, &#x27;PAD&#x27;, &#x27;PERMUTE&#x27;, &#x27;RESHAPE&#x27;, &#x27;SHRINK&#x27;]
+is FLIP an Op?   = False
+
+--- the base tensor a (shape (2, 3) )
+UOp(Ops.RESHAPE, arg=None, src=(
+  UOp(Ops.BUFFER, arg=ParamArg(1, dtypes.f32, device=&#x27;CPU&#x27;, buffer=UOp.new_buffer(&#x27;CPU&#x27;, 6, dtypes.f32, 1).buffer), src=(
+    UOp(Ops.CONST, arg=6, src=()),)),
+  UOp(Ops.STACK, arg=None, src=(
+    UOp(Ops.CONST, arg=2, src=()),
+    UOp(Ops.CONST, arg=3, src=()),)),))
+
+--- the five primitives, applied to a
+RESHAPE  marg=(3, 2)                       srcs=[&#x27;RESHAPE&#x27;, &#x27;STACK&#x27;]  -&gt;  shape (3, 2)
+PERMUTE  marg=(1, 0)                       srcs=[&#x27;RESHAPE&#x27;, &#x27;STACK&#x27;]  -&gt;  shape (3, 2)
+EXPAND   marg=(4,)                         srcs=[&#x27;RESHAPE&#x27;, &#x27;CONST&#x27;]  -&gt;  shape (4, 1, 2, 3)
+PAD      marg=((1, 4), (0, 5))             srcs=[&#x27;RESHAPE&#x27;, &#x27;STACK&#x27;, &#x27;STACK&#x27;]  -&gt;  shape (4, 5)
+SHRINK   marg=((0, 1), (1, 2))             srcs=[&#x27;RESHAPE&#x27;, &#x27;STACK&#x27;, &#x27;STACK&#x27;]  -&gt;  shape (1, 2)
+
+--- a full movement UOp: the args are UOps (STACKs of CONSTs), shared by hash-consing
+UOp(Ops.PAD, arg=None, src=(
+  UOp(Ops.RESHAPE, arg=None, src=(
+    UOp(Ops.BUFFER, arg=ParamArg(1, dtypes.f32, device=&#x27;CPU&#x27;, buffer=UOp.new_buffer(&#x27;CPU&#x27;, 6, dtypes.f32, 1).buffer), src=(
+      UOp(Ops.CONST, arg=6, src=()),)),
+    UOp(Ops.STACK, arg=None, src=(
+      UOp(Ops.CONST, arg=2, src=()),
+      UOp(Ops.CONST, arg=3, src=()),)),)),
+  UOp(Ops.STACK, arg=None, src=(
+    UOp(Ops.CONST, arg=1, src=()),
+    UOp(Ops.CONST, arg=0, src=()),)),
+  UOp(Ops.STACK, arg=None, src=(
+    UOp(Ops.CONST, arg=4, src=()),
+    UOp(Ops.CONST, arg=5, src=()),)),))</code></pre>
+  <p>Read the output carefully, it is dense with design decisions:</p>
+  <ul>
+    <li><b>Buffers are flat.</b> <code>Tensor([[0,1,2],[3,4,5]])</code> is a 1-D <code>BUFFER</code> of 6 floats wrapped in <code>RESHAPE(2,3)</code>. Every tensor shape
+      you ever see is already a movement op on top of flat storage.</li>
+    <li><b>Args are UOps</b>, built by <code>shape_to_shape_arg</code> and attached by <code>UOp._mop</code>. That is what lets a shape contain a symbolic
+      <code>Variable</code> (Chapter 6) — a shape is just an integer-valued UOp expression — and it means args are hash-consed like everything else:
+      the two <code>STACK</code>s inside <code>PAD</code> reuse the very same <code>CONST</code> nodes as other shapes in the graph.</li>
+    <li><b><code>marg</code> decodes them back.</b> For PAD/SHRINK there are two arg srcs (offsets, sizes) zipped into pairs.</li>
+  </ul>
+  <div class="tabs">
+    <div class="tabpane" data-title="UOp._mop (ops.py)">
+      <div class="codecap"><b><a class="src" data-path="tinygrad/uop/ops.py" data-line="775">tinygrad/uop/ops.py:775 — UOp._mop</a></b></div>
+      <pre><code class="language-python">def _mop(self, op:Ops, arg) -&gt; UOp:
+  # early NOOP
+  if op is Ops.EXPAND and len(arg) == 0: return self
+  if op in {Ops.SHRINK, Ops.PAD} and len(arg) == 0:
+    assert len(self.shape) == 0, &quot;0 len arg only valid on zero length shape&quot;
+    return self
+  match op:
+    case Ops.RESHAPE | Ops.EXPAND: src_args = [arg]
+    case Ops.PAD | Ops.SHRINK: src_args = list(zip(*arg))
+    case Ops.PERMUTE: src_args = [arg]
+    case Ops.STACK:
+      srcs = (self,)+tuple(arg)
+      dtype = dtype_from_uop(Ops.STACK, srcs, None)
+      return UOp(Ops.STACK, src=tuple(u if u.base.is_invalid else u.ccast(dtype) for u in srcs))
+    case _: raise RuntimeError(f&quot;{op} is not a MovementOp&quot;)
+  usrcs = [shape_to_shape_arg(arg) for arg in src_args]
+  return UOp(op, src=(self,)+UOp.sink(*usrcs).simplify().src)</code></pre>
+    </div>
+    <div class="tabpane" data-title="marg / shape_to_shape_arg">
+      <div class="codecap"><b><a class="src" data-path="tinygrad/uop/ops.py" data-line="768">ops.py:768 — marg</a> and <a class="src" data-path="tinygrad/uop/ops.py" data-line="105">ops.py:105 — shape_to_shape_arg</a></b></div>
+      <pre><code class="language-python">@functools.cached_property
+def marg(self):
+  match self.op:
+    case Ops.RESHAPE | Ops.EXPAND: return self.src[1].as_shape
+    case Ops.PAD | Ops.SHRINK: return tuple(zip(self.src[1].as_shape, self.src[2].as_shape))
+    case Ops.PERMUTE: return self.src[1].as_shape
+    case _: raise RuntimeError(f&quot;{self.op} is not a MovementOp&quot;)
+
+def shape_to_shape_arg(arg:tuple[sint, ...]) -&gt; UOp:
+  src = tuple(x if isinstance(x, UOp) else UOp.const(x) for x in arg)
+  for x in src:
+    if not dtypes.is_int(x.dtype): raise RuntimeError(f&quot;shape must be int, got {x.dtype} in {arg}&quot;)
+  return src[0] if len(src) == 1 else UOp(Ops.STACK, src=src)</code></pre>
+    </div>
+    <div class="tabpane" data-title="_shape: shape inference">
+      <div class="codecap"><b><a class="src" data-path="tinygrad/uop/ops.py" data-line="383">tinygrad/uop/ops.py:383 — the movement branch of UOp._shape</a></b></div>
+      <pre><code class="language-python"># movement ops change the shape
+if self.op in GroupOp.Movement.union({Ops.UNSHARD, Ops.REDUCE}):
+  ps = self.src[0]._shape
+  if ps is None: raise RuntimeError(f&quot;movement op {self.op} requires shape, {self.src[0].op} doesn&#x27;t have one&quot;)
+  match self.op:
+    case Ops.RESHAPE:
+      if not all(x &gt;= 0 for x in self.marg): raise ValueError(f&quot;shape can&#x27;t contain negative numbers {self.marg}&quot;)
+      # with symbolic views prod equality can be true at runtime but unprovable, only reject provably unequal products
+      if resolve(prod(ps) != prod(self.marg), False): raise ValueError(f&quot;bad reshape: {ps} -&gt; {self.marg}&quot;)
+      return self.marg
+    case Ops.EXPAND:
+      return tuple(self.marg) + ps
+    case Ops.PERMUTE:
+      if sorted(self.marg) != list(range(len(ps))): raise ValueError(f&quot;invalid permutation {self.marg} of len {len(ps)}&quot;)
+      return tuple(ps[i] for i in self.marg)
+    case Ops.PAD:
+      # TODO: why do i need resolve here?
+      if len(ps) != len(self.marg) or not all(resolve(sz&gt;=0) and resolve(0&lt;=o) and resolve(o+s&lt;=sz) for s,(o,sz) in zip(ps, self.marg)):
+        raise ValueError(f&quot;invalid pad {self.marg} for {ps}&quot;)
+      return tuple(sz for _,sz in self.marg)
+    case Ops.SHRINK:
+      # TODO: why do i need resolve here?
+      if len(ps) != len(self.marg) or not all(resolve(0&lt;=o) and resolve(sz&gt;=0) and resolve(o+sz&lt;=s) for s,(o,sz) in zip(ps, self.marg)):
+        raise ValueError(f&quot;invalid shrink {self.marg} for {ps}&quot;)
+      return tuple(sz for _,sz in self.marg)</code></pre>
+    </div>
+  </div>
+  <p><b>Shape inference.</b> <code>UOp._shape</code> (<a class="src" data-path="tinygrad/uop/ops.py" data-line="315"></a>) is a
+  <code>recursive_property</code>: every UOp computes its shape from its sources the moment it is built, and invalid ops raise immediately — a bad
+  reshape fails at the Python line that wrote it, not deep inside the scheduler. Note the subtle <code>resolve(prod(ps) != prod(self.marg), False)</code>:
+  with symbolic shapes the product equality might be true at runtime but unprovable now, so only <em>provably</em> unequal products are rejected.</p>
+
+  <div class="callout note"><span class="title">Where did broadcasting go?</span>
+  Elementwise ops broadcast <em>implicitly</em>: the comment at <a class="src" data-path="tinygrad/uop/ops.py" data-line="424">ops.py:424</a> says
+  "broadcasting lives in _shape property now". <code>MUL</code> of a <code>(2,1,3)</code> and a <code>(1,4,3)</code> source simply has shape <code>(2,4,3)</code>; no
+  EXPAND is inserted. Rangeify later gives the broadcast axes a constant-0 index (<code>broadcast_rngs</code>,
+  <a class="src" data-path="tinygrad/schedule/indexing.py" data-line="60"></a>). You will see this in matmul in <a href="08-decompositions.html">Chapter 8</a>.
+  (Set <code>DISALLOW_BROADCAST=1</code> to make implicit broadcasting an error.)</div>
+
+  <h2 id="methods"><span class="sec">7.4</span>From friendly Tensor methods to primitives</h2>
+  <p>All the movement methods live in <code>MovementMixin</code> (<a class="src" data-path="tinygrad/mixin/movement.py" data-line="12">tinygrad/mixin/movement.py</a>),
+  shared by <code>Tensor</code> and <code>UOp</code>; each one bottoms out in <code>self._mop(op, arg)</code>. Indexing (<code>__getitem__</code>) lives in
+  <a class="src" data-path="tinygrad/mixin/op.py" data-line="97">op.py:_getitem</a> and the padding modes in <a class="src" data-path="tinygrad/mixin/op.py" data-line="344">op.py:pad</a>.
+  Here is what each method really emits (same script, next section of its output):</p>
+  <pre class="output"><code>--- high-level methods -&gt; primitives
+x.T                          (4, 3)      1 ops: PERMUTE(1, 0)
+x.flatten()                  (12,)       1 ops: RESHAPE(12,)
+x.unsqueeze(1)               (3, 1, 4)   1 ops: RESHAPE(3, 1, 4)
+x.reshape(1,3,4).squeeze(0)  (3, 4)      2 ops: RESHAPE(1, 3, 4) -&gt; RESHAPE(3, 4)
+x[1]                         (4,)        2 ops: SHRINK((1, 1), (0, 4)) -&gt; RESHAPE(4,)
+x[1:3, ::2]                  (2, 2)      4 ops: SHRINK((1, 2), (0, 4)) -&gt; RESHAPE(2, 1, 2, 2) -&gt; SHRINK((0, 2), (0, 1), (0, 2), (0, 1)) -&gt; RESHAPE(2, 2)
+x[:, None]                   (3, 1, 4)   1 ops: RESHAPE(3, 1, 4)
+x[:, 1:2].expand(3, 5)       (3, 5)      4 ops: SHRINK((0, 3), (1, 1)) -&gt; RESHAPE(3,) -&gt; EXPAND(5,) -&gt; PERMUTE(1, 0)
+x.repeat(2, 1)               (6, 4)      4 ops: RESHAPE(1, 3, 4) -&gt; RESHAPE(3, 4) -&gt; EXPAND(2,) -&gt; RESHAPE(6, 4)
+x.roll(1, 1)                 (3, 4)      6 ops: RESHAPE(3, 1, 4) -&gt; RESHAPE(3, 4) -&gt; EXPAND(2,) -&gt; PERMUTE(1, 0, 2) -&gt; RESHAPE(3, 8) -&gt; SHRINK((0, 3), (3, 4))
+x.pad(((0,0),(1,1)))         (3, 6)      1 ops: PAD((0, 3), (1, 6))
+x.flip(1)                    (3, 4)     14 ops: PERMUTE(1, 0) -&gt; PAD((0, 4), (0, 3)) -&gt; RESHAPE(4, 1, 3) -&gt; PAD((0, 4), (0, 3), (0, 3)) -&gt; RESHAPE(12, 3) -&gt; PAD((3, 16), (0, 3)) -&gt; RESHAPE(4, 4, 3) -&gt; PERMUTE(1, 0, 2) -&gt; RESHAPE(16, 3) -&gt; SHRINK((3, 12), (0, 3)) -&gt; RESHAPE(4, 3, 3) -&gt; SHRINK((0, 4), (0, 1), (0, 3)) -&gt; RESHAPE(4, 3) -&gt; PERMUTE(1, 0)
+
+--- the values (realized), to convince ourselves the tricks are right
+x.flip(1)    = [[3.0, 2.0, 1.0, 0.0], [7.0, 6.0, 5.0, 4.0], [11.0, 10.0, 9.0, 8.0]]
+x.roll(1, 1) = [[3.0, 0.0, 1.0, 2.0], [7.0, 4.0, 5.0, 6.0], [11.0, 8.0, 9.0, 10.0]]
+x[1:3, ::2]  = [[4.0, 6.0], [8.0, 10.0]]</code></pre>
+  <p>Some lessons hiding in that table:</p>
+  <ul>
+    <li><code>view</code>, <code>flatten</code>, <code>unflatten</code>, <code>squeeze</code>, <code>unsqueeze</code> and <code>x[:, None]</code> are all just RESHAPE. <code>transpose</code> and <code>.T</code> are PERMUTE.</li>
+    <li>Integer indexing <code>x[1]</code> is a SHRINK to size 1 followed by a RESHAPE that drops the axis.</li>
+    <li><b>Strided slicing</b> <code>x[1:3, ::2]</code> has no stride op: <code>_apply_view_ops</code> pads to a multiple of the stride, reshapes each axis into
+      <code>(n/stride, stride)</code>, and SHRINKs the inner axis to 1 — "take every 2nd" becomes "take column 0 of a 2-wide reshape".</li>
+    <li><b><code>expand</code> of a middle axis</b> is RESHAPE (squeeze) → EXPAND (left) → PERMUTE (move it back): see <code>_broadcast_to</code> below.</li>
+    <li><code>repeat</code> = reshape-to-insert-1s → EXPAND → reshape-to-merge. <code>roll</code> = <code>repeat(2)</code> along the axis, then a SHRINK window that starts at the right offset.</li>
+    <li><b><code>flip</code> takes 12–14 primitive ops.</b> Read on.</li>
+  </ul>
+  <div class="tabs">
+    <div class="tabpane" data-title="flip (the anti-diagonal trick)">
+      <div class="codecap"><b><a class="src" data-path="tinygrad/mixin/movement.py" data-line="233">tinygrad/mixin/movement.py:233 — flip</a></b></div>
+      <pre><code class="language-python">axis_arg = tuple(self._resolve_dim(x) for x in argfix(axis, *args))
+assert all(not isinstance(x, bool) and x &gt;= 0 and x &lt; self.ndim for x in axis_arg), f&quot;flip args must be axis ints {axis_arg}&quot;
+if len(axis_arg) != len(dedup(axis_arg)):
+  raise RuntimeError(f&quot;dim can appear at most once, getting {axis_arg}&quot;)
+ret = self
+for axis in axis_arg:
+  if resolve((n:=ret.shape[axis]) &lt;= 1, False): continue
+  x = ret.transpose(0, axis)
+  bounds, crop = (None,) * (x.ndim-1), tuple((0, s) for s in x.shape[1:])
+  tail = tuple(s if resolve(s &gt; 0, False) else s+1 for s in x.shape[1:])
+  m, tail_pad = n if resolve(n &gt;= 2, False) else n+2, tuple((0, s) for s in tail)
+  # Place values on an anti-diagonal, transpose it, then extract the anti-diagonal.
+  # Pad possibly empty dimensions before reshaping, then crop them back afterwards.
+  x = x._mop(Ops.PAD, ((0, m),)+tail_pad).reshape(m, 1, *tail)
+  x = x._mop(Ops.PAD, ((0, m), (0, m-1))+tail_pad).reshape(m*(m-1), *tail)
+  x = x._mop(Ops.PAD, ((m-1, m*m),)+tail_pad).reshape(m, m, *tail).transpose(0, 1).reshape(m*m, *tail)
+  x = x._mop(Ops.SHRINK, ((m-1, m*(m-1)),)+tail_pad).reshape(m, m-1, *tail)
+  x = x.shrink((None, (0, 1))+bounds).reshape(m, *tail)
+  ret = x.shrink(((m-n, m),)+crop).transpose(0, axis)
+return ret</code></pre>
+    </div>
+    <div class="tabpane" data-title="_broadcast_to (expand)">
+      <div class="codecap"><b><a class="src" data-path="tinygrad/mixin/movement.py" data-line="128">tinygrad/mixin/movement.py:128 — _broadcast_to</a></b></div>
+      <pre><code class="language-python">def _broadcast_to(self, new_shape: tuple[sint, ...]) -&gt; Self:
+  if self.shape == new_shape:
+    return self
+  if self.ndim &gt; len(new_shape):
+    raise ValueError(f&quot;cannot broadcast tensor to fewer dimensions. shape={self.shape} to {new_shape=}&quot;)
+  # first unsqueeze left with 1s https://data-apis.org/array-api/latest/API_specification/broadcasting.html
+  shape, _ = _align_left(self.shape, new_shape)
+  # for each dimension, check either dim is 1, or it does not change
+  if not all(s == ns or s == 1 for s, ns in zip(shape, new_shape)):
+    raise ValueError(f&quot;cannot broadcast {self.shape} to {new_shape=}&quot;)
+  # EXPAND only adds dims on the left. squeeze 1s that need expanding, EXPAND on left, permute back.
+  n_left = len(new_shape) - len(self.shape)
+  expand_at = tuple(i-n_left for i in broadcast_axes(self.shape, new_shape) if i &gt;= n_left)
+  kept = tuple(i for i in range(len(self.shape)) if i not in expand_at)
+  squeezed = self.reshape(tuple(self.shape[i] for i in kept))
+  expanded = squeezed._mop(Ops.EXPAND, arg=new_shape[:n_left] + tuple(new_shape[n_left+i] for i in expand_at))
+  # expanded shape = [left] + [expand_at dims] + [kept dims], permute to new_shape
+  perm = tuple(range(n_left)) + tuple(
+    n_left + (expand_at.index(i) if i in expand_at else len(expand_at) + kept.index(i)) for i in range(len(self.shape)))
+  return expanded.permute(perm)</code></pre>
+    </div>
+    <div class="tabpane" data-title="_apply_view_ops (slicing)">
+      <div class="codecap"><b><a class="src" data-path="tinygrad/mixin/movement.py" data-line="115">tinygrad/mixin/movement.py:115 — _apply_view_ops</a></b></div>
+      <pre><code class="language-python">def _apply_view_ops(self, mops:list) -&gt; Self:
+  # applies shrink + flip + stride from a list of parsed view indices
+  # flip negative strides
+  x = self.shrink(tuple(m[&quot;boundary&quot;] for m in mops)).flip(tuple(i for i, m in enumerate(mops) if m[&quot;stride&quot;] &lt; 0))
+  strides = tuple(abs(m[&quot;stride&quot;]) for m in mops)
+  # apply stride
+  if any(st != 1 for st in strides):
+    if not all_int(x.shape): raise RuntimeError(&quot;symbolic shape not supported&quot;)
+    x = x.pad_to(tuple(round_up(s, st) for s, st in zip(x.shape, strides)))
+    x = x.reshape(tuple(flatten((s // st, st) for s, st in zip(x.shape, strides))))
+    x = x.shrink_to(tuple(flatten((s, 1) for s in x.shape[::2]))).reshape(x.shape[::2])
+  return x</code></pre>
+    </div>
+    <div class="tabpane" data-title="repeat / roll">
+      <div class="codecap"><b><a class="src" data-path="tinygrad/mixin/movement.py" data-line="591">movement.py:591 — repeat</a>, <a class="src" data-path="tinygrad/mixin/movement.py" data-line="551">movement.py:551 — roll</a></b></div>
+      <pre><code class="language-python">repeats = argfix(repeats, *args)
+if any(resolve(r &lt; 0, False) for r in repeats): raise RuntimeError(f&quot;repeats should be non negative, got {repeats} instead&quot;)
+base_shape = _align_left(self.shape, repeats)[0]
+unsqueezed_shape = flatten([[s] if r == 1 else [1, s] for r, s in zip(repeats, base_shape)])
+expanded_shape = flatten([[s] if r == 1 else [r, s] for r, s in zip(repeats, base_shape)])
+final_shape = [r * s for r, s in zip(repeats, base_shape)]
+return self.reshape(unsqueezed_shape).expand(expanded_shape).reshape(final_shape)
+
+if dims is None: return self.flatten().roll(shifts, 0).reshape(self.shape)
+dims, shifts = tuple(self._resolve_dim(d) for d in make_tuple(dims, 1)), make_tuple(shifts, 1)
+if len(dims) != len(shifts): raise RuntimeError(f&quot;{len(dims)=} != {len(shifts)=}&quot;)
+if 0 in self.shape: return self
+shift = [0] * self.ndim
+for d, s in zip(dims, shifts): shift[d] += s
+shrink_arg = tuple((delta:=n-s%n, delta+n) if i in dims else None for i, (n, s) in enumerate(zip(self.shape, shift)))
+return self.repeat(*tuple(2 if i in dims else 1 for i in range(self.ndim))).shrink(shrink_arg)</code></pre>
+    </div>
+    <div class="tabpane" data-title="cat / stack">
+      <div class="codecap"><b><a class="src" data-path="tinygrad/mixin/op.py" data-line="754">op.py:754 — cat</a>, <a class="src" data-path="tinygrad/mixin/movement.py" data-line="270">movement.py:270 — stack</a></b></div>
+      <pre><code class="language-python">dim = self._resolve_dim(dim)
+for arg in args: assert arg.ndim==self.ndim and all(ti==ai for i,(ti,ai) in enumerate(zip(self.shape, arg.shape)) if i!=dim)
+tensors = [self, *args]
+if all(t.shape[dim] == self.shape[dim] for t in args): return self.stack(*args, dim=dim).flatten(dim, dim+1)
+dim_cumsum = list(itertools.accumulate([t.shape[dim] for t in tensors], initial=0))
+padded = [t.pad(tuple((dim_cumsum[i], dim_cumsum[-1]-dim_cumsum[i+1]) if j==dim else None for j in range(t.ndim))) for i,t in enumerate(tensors)]
+return padded[0].usum(*padded[1:])
+
+tensors = argfix(self, *args)
+dim = tensors[0]._resolve_dim(dim, extra=True)
+assert all(t.shape == tensors[0].shape for t in tensors), f&quot;all shapes must match for stack, got {[t.shape for t in tensors]}&quot;
+ret = tensors[0]._mop(Ops.STACK, arg=tuple(t._uop for t in tensors[1:]))
+return ret.permute(tuple(range(1, dim+1)) + (0,) + tuple(range(dim+1, ret.ndim)))</code></pre>
+    </div>
+  </div>
+  <h3>The flip trick, in words</h3>
+  <p>To reverse an axis of length \(n\) without a reverse primitive: pad each element into its own row of width \(n-1\) (it sits in column 0 of an
+  \(n\times(n-1)\) grid), flatten — element \(i\) is now at position \(i(n-1)\) — and pad \(n-1\) zeros at the front, so element \(i\) is at
+  \((i+1)(n-1) = in + (n-1-i)\). Read that in a grid of width \(n\): row \(i\), column \(n-1-i\) — the elements lie on the <em>anti-diagonal</em> of an
+  \(n\times n\) square. Transpose the square: element \(i\) moves to row \(n-1-i\), column \(i\), i.e. flat position \((n-1-i)n + i\). Shrink off the first
+  \(n-1\) positions and reshape to width \(n-1\): that is row \(n-1-i\), column 0. Take column 0 — the elements come out reversed. Every step is a pure
+  index function, and once the whole chain is composed, symbolic simplification collapses the twelve ops to \(\text{buf}[5 - r_0]\) (for \(n=6\)).
+  The chain animator in §7.6 replays this with real data.</p>
+
+  <h3><code>cat</code> and <code>stack</code>: STACK is a data op, too</h3>
+  <p>The <code>STACK</code> op you met as a shape container also appears as a <em>data</em> op: <code>stack</code> stacks UOps along a new leading axis, and
+  <code>cat</code> of equal-sized pieces is <code>stack(...).flatten(dim, dim+1)</code>. Unequal pieces are padded into place and <em>summed</em> (<code>usum</code>) — padding contributes zeros, so the sum is a select.
+  During rangeify a data STACK becomes a tree of <code>WHERE</code>s on the leading range (<code>convert_stack_to_where</code>,
+  <a class="src" data-path="tinygrad/schedule/indexing.py" data-line="119"></a>).</p>
+
+  <div class="quiz" data-answer="1">
+    <div class="q">Which primitive ops does <code>x[::2]</code> on a 1-D tensor of length 6 use?</div>
+    <button class="opt">SHRINK with a stride field</button><button class="opt">RESHAPE (6→3,2), SHRINK the inner axis to 1, RESHAPE back to 3 (plus a no-op shrink)</button><button class="opt">a FLIP and a SHRINK</button><button class="opt">it is a copy kernel</button>
+    <div class="explain">Strides are not a primitive. <code>_apply_view_ops</code> pads to a multiple of the stride (unneeded here), reshapes to <code>(3, 2)</code>, shrinks to <code>(3, 1)</code> and reshapes to <code>(3,)</code>. The composed index is <code>buf[r0*2]</code> (see §7.6).</div>
+  </div>
+
+  <h2 id="indexfn"><span class="sec">7.5</span>The mental model: every movement op is an index function</h2>
+  <p>The single most important function for this chapter is <code>apply_movement_op</code> in <a class="src" data-path="tinygrad/schedule/indexing.py" data-line="162">schedule/indexing.py</a>.
+  Its comment reads <em>"this is the definition of the movement ops"</em> — and it really is: the scheduler never "executes" a movement op, it only ever
+  calls this function to translate the loop variables (<code>RANGE</code> UOps) of a consumer into index expressions for the producer.</p>
+  <div class="codecap"><b><a class="src" data-path="tinygrad/schedule/indexing.py" data-line="147">tinygrad/schedule/indexing.py:147 — _apply_reshape and apply_movement_op</a></b></div>
+  <pre><code class="language-python">@functools.cache
+def _apply_reshape(in_shape:tuple[sint,...], out_shape:tuple[sint, ...], urngs:UOp) -&gt; UOp:
+  acc:sint = 1
+  axes_in:list[UOp] = []
+  for s,src in list(zip(out_shape, urngs.src))[::-1]:
+    axes_in.append(acc*src)
+    acc *= s
+  combined_axes = UOp.const(0).usum(axes_in)
+  axes_out:list[UOp] = []
+  for s in in_shape[::-1]:
+    axes_out.append(combined_axes % s)
+    combined_axes //= s
+  # this simplify is doing a lot of heavy lifting. this is the replacement for the reshape view merging code
+  return graph_rewrite(UOp.sink(*axes_out[::-1]), symbolic+pm_simplify_valid+pm_drop_and_clauses, name=&quot;reshape&quot;)
+
+# this is the definition of the movement ops
+@functools.cache
+def apply_movement_op(op:Ops, in_shape:tuple[sint,...], arg:tuple, rngs:tuple[UOp, ...]) -&gt; tuple[UOp, ...]:
+  match op:
+    case Ops.SHRINK:  rngs = tuple(a if off == 0 else a+off for a,(off,_) in zip(rngs, arg))
+    case Ops.PERMUTE: rngs = tuple(rngs[p] for p in argsort(arg))
+    case Ops.EXPAND:  rngs = rngs[len(arg):]
+    case Ops.PAD:
+      # NOTE: the .where(r-s, i) is not inside the graph_rewrite so that `convert_pad_to_where_to_keep_behavior_local`
+      #       wraps the pad with only the newly added valid
+      rngs = tuple(r if (sz == sh and off == 0) else (r-off).valid(graph_rewrite((r &gt;= off) &amp; (r &lt; (sh+off)),
+        symbolic+pm_simplify_valid, name=&quot;pad&quot;)) for r,sh,(off,sz) in zip(rngs, in_shape, arg))
+    case Ops.RESHAPE:
+      sink = UOp.sink(*rngs).simplify() # NOTE: this applies any commutative flips to the rngs early
+      sub_array = {r:r.replace(arg=(AxisType.PLACEHOLDER, i)) for i,r in enumerate(sink.ranges)}
+      rngs = _apply_reshape(in_shape, arg, sink.substitute(sub_array)).substitute({v:k for k,v in sub_array.items()}).src
+    case _: raise RuntimeError(f&quot;{op} is not a MovementOp&quot;)
+  return rngs</code></pre>
+  <p>Inputs → transformation → outputs, precisely:</p>
+  <div class="kv">
+    <div>input</div><div>the op, the <em>input</em> shape, the decoded <code>marg</code>, and one index UOp per <em>output</em> axis (usually <code>RANGE</code>s <code>r0, r1, …</code>)</div>
+    <div>output</div><div>one index UOp per <em>input</em> axis — integer expressions of the output ranges, possibly wrapped as <code>idx.valid(cond)</code> (a <code>WHERE(cond, idx, Invalid)</code>) by PAD</div>
+    <div>direction</div><div><b>backwards</b>: from consumer to producer. You do not push data forward through a view; you pull indices backward through it.</div>
+  </div>
+  <p>Running it on symbolic ranges (part 1 of the second example):</p>
+  <div class="codecap"><b>examples/07_index_functions.py</b> — run with <code>DEV=CPU NOOPT=1 python3 examples/07_index_functions.py</code></div>
+  <pre><code class="language-python">print(&quot;=== 1. each primitive as a function of the OUTPUT ranges r0, r1, ...&quot;)
+def one(op, in_shape, arg, out_shape):
+  rngs = tuple(UOp.range(s, i) for i, s in enumerate(out_shape))         # one loop variable per output axis
+  ins = apply_movement_op(op, in_shape, arg, rngs)                       # -&gt; one index expression per INPUT axis
+  print(f&quot;{op.name:8s} in{in_shape} arg={arg} out{out_shape}:  input index = [{&#x27;, &#x27;.join(i.render() for i in ins)}]&quot;)
+one(Ops.RESHAPE, (2, 3), (3, 2), (3, 2))
+one(Ops.RESHAPE, (2, 3), (6,), (6,))
+one(Ops.PERMUTE, (2, 3, 4), (2, 0, 1), (4, 2, 3))
+one(Ops.EXPAND, (3,), (4,), (4, 3))
+one(Ops.PAD, (2, 3), ((1, 4), (0, 5)), (4, 5))
+one(Ops.SHRINK, (4, 5), ((1, 2), (2, 3)), (2, 3))</code></pre>
+  <pre class="output"><code>=== 1. each primitive as a function of the OUTPUT ranges r0, r1, ...
+RESHAPE  in(2, 3) arg=(3, 2) out(3, 2):  input index = [((r0*2+r1)//3), ((r0*2+r1)%3)]
+RESHAPE  in(2, 3) arg=(6,) out(6,):  input index = [(r0//3), (r0%3)]
+PERMUTE  in(2, 3, 4) arg=(2, 0, 1) out(4, 2, 3):  input index = [r1, r2, r0]
+EXPAND   in(3,) arg=(4,) out(4, 3):  input index = [r1]
+PAD      in(2, 3) arg=((1, 4), (0, 5)) out(4, 5):  input index = [((r0+-1) if (((r0&lt;1)==False)&amp;(r0&lt;3)) else Invalid), (r1 if (r1&lt;3) else Invalid)]
+SHRINK   in(4, 5) arg=((1, 2), (2, 3)) out(2, 3):  input index = [(r0+1), (r1+2)]</code></pre>
+  <p>In math, with \(r_i\) the output loop variables:</p>
+  \[ \textsf{RESHAPE}_{(2,3)\to(3,2)}:\; (r_0, r_1) \mapsto \Big(\big\lfloor \tfrac{2r_0 + r_1}{3} \big\rfloor,\; (2r_0+r_1) \bmod 3\Big) \]
+  \[ \textsf{PAD}:\; r \mapsto \begin{cases} r - \text{off} & \text{off} \le r < \text{off}+n \\ \text{Invalid} & \text{otherwise}\end{cases} \qquad
+     \textsf{SHRINK}:\; r \mapsto r + \text{off} \qquad \textsf{EXPAND}_k:\; (r_0,\dots,r_{d-1}) \mapsto (r_k,\dots,r_{d-1}) \]
+  <p>Notice the RESHAPE formula already got <em>simplified</em>: the generic recipe is "flatten with output strides, then <code>// stride % size</code> per input axis",
+  and for the first axis the <code>% 2</code> disappeared because \(\lfloor(2r_0+r_1)/3\rfloor\) provably lies in \([0,2)\). The comment in <code>_apply_reshape</code> says it plainly:
+  <em>"this simplify is doing a lot of heavy lifting. this is the replacement for the reshape view merging code"</em> — the range analysis of
+  <a href="06-symbolic.html">Chapter 6</a> is what makes composed views small.</p>
+
+  <div class="demo" id="demo-playground">
+    <div class="demo-title">Tensor-view playground</div>
+    <div class="demo-desc">Pick a base buffer, then stack movement ops on it — primitives with tinygrad's exact <code>marg</code> conventions, or high-level methods that expand into the
+      primitives <code>movement.py</code> would emit. The output grid shows which buffer element each cell reads (colour = buffer element, hatched = padding). <b>Hover a cell</b>
+      to see its index travel down the chain, op by op. The formula is built by a small JS mirror of <code>apply_movement_op</code> + div/mod folding (verified against tinygrad's outputs for every preset in §7.6).</div>
+    <div class="controls" id="pg-base"></div>
+    <div class="controls">
+      <select id="pg-op">
+        <option value="RESHAPE">RESHAPE (new shape)</option><option value="PERMUTE">PERMUTE (order)</option><option value="EXPAND">EXPAND (new leading dims)</option>
+        <option value="PAD">PAD ((off,size),…)</option><option value="SHRINK">SHRINK ((off,size),…)</option>
+        <option value="transpose">.transpose(d0, d1)</option><option value="expand">.expand(shape)  [broadcast]</option><option value="flip">.flip(axis)</option>
+        <option value="repeat">.repeat(reps)</option><option value="roll">.roll(shift, dim)</option><option value="pad">.pad(((b,a),…))</option><option value="shrink">.shrink(((s,e),…))</option>
+      </select>
+      <input type="text" id="pg-arg" size="22">
+      <button class="primary" id="pg-add">apply</button><button id="pg-undo">undo</button><button id="pg-reset">reset</button>
+    </div>
+    <div class="controls" id="pg-presets"><span class="ch07-lbl">presets:</span></div>
+    <div class="ch07-err" id="pg-err"></div>
+    <div class="ch07-panel"><h5>chain (bottom → top), shapes after each op</h5><div class="ch07-chips" id="pg-chain"></div></div>
+    <div class="row">
+      <div class="col">
+        <div class="ch07-lbl" id="pg-outlbl">output</div>
+        <div id="pg-out"></div>
+        <div class="ch07-lbl" style="margin-top:10px">the flat buffer (what is really in memory)</div>
+        <div id="pg-buf"></div>
+      </div>
+      <div class="col">
+        <div class="ch07-panel"><h5>composed index (as rangeify builds it)</h5><div class="ch07-formula" id="pg-formula"></div></div>
+        <div class="ch07-panel"><h5>hovered cell: the index travelling down the chain</h5><div id="pg-trace" class="ch07-lbl">hover an output cell…</div></div>
+      </div>
+    </div>
+  </div>
+
+  <h2 id="compose"><span class="sec">7.6</span>Composition: a whole chain is one index expression</h2>
+  <p>Because each op is a function from output index to input index, a chain is function composition, applied <em>top-down</em>: start with one
+  <code>RANGE</code> per axis of the final view, feed them into the topmost op's index function, feed the result into the next one, … until you reach
+  the buffer. That is exactly the loop in <code>run_rangeify</code> (<a class="src" data-path="tinygrad/schedule/indexing.py" data-line="282">indexing.py:282</a>:
+  <code>if x.op in GroupOp.Movement: rngs = apply_movement_op(x.op, x.src[0].shape, x.marg, rngs)</code>). Part 2 of the example does the same walk by hand:</p>
+  <pre><code class="language-python">print(&quot;\n=== 2. whole chains: push the output ranges through every movement op, top to bottom (what rangeify does)&quot;)
+def flat_index(t: Tensor) -&gt; str:
+  u = t.uop
+  cur, valids = tuple(UOp.range(s, i) for i, s in enumerate(u.shape)), []
+  while u.op in GroupOp.Movement:                 # walk from the view down to the buffer
+    cur = apply_movement_op(u.op, u.src[0].shape, u.marg, cur)
+    if u.op is Ops.PAD: valids += [r.get_valid() for r in cur]   # rangeify turns each PAD into a WHERE right here
+    cur = tuple(r.get_idx() for r in cur)
+    u = u.src[0]
+  out = graph_rewrite(cur[0].valid(UOp.const(True).uprod(valids)), symbolic + pm_simplify_valid, name=&quot;simplify&quot;)
+  return out.render()
+base = Tensor([0., 1, 2, 3, 4, 5]).realize()          # a flat buffer of 6 floats
+m = base.reshape(2, 3)
+for name, t in [(&quot;reshape(2,3)&quot;, m), (&quot;reshape(2,3).T&quot;, m.T), (&quot;flip(0)  [12 mops!]&quot;, base.flip(0)),
+                (&quot;reshape(2,3).flip(1)&quot;, m.flip(1)), (&quot;reshape(2,3).T.flip(0)&quot;, m.T.flip(0)),
+                (&quot;[::2]&quot;, base[::2]), (&quot;[::-1]&quot;, base[::-1]), (&quot;[1:5]&quot;, base[1:5]),
+                (&quot;reshape(1,6).expand(3,6)&quot;, base.reshape(1, 6).expand(3, 6)), (&quot;repeat(2)&quot;, base.repeat(2)),
+                (&quot;roll(2)&quot;, base.roll(2)), (&quot;reshape(2,3).pad(((1,0),(0,1)))&quot;, m.pad(((1, 0), (0, 1)))),
+                (&quot;base[:3].diag()&quot;, base[:3].diag())]:
+  print(f&quot;{name:34s} shape {str(t.shape):8s} buf[{flat_index(t)}]&quot;)</code></pre>
+  <pre class="output"><code>=== 2. whole chains: push the output ranges through every movement op, top to bottom (what rangeify does)
+reshape(2,3)                       shape (2, 3)   buf[(r0*3+r1)]
+reshape(2,3).T                     shape (3, 2)   buf[(r1*3+r0)]
+flip(0)  [12 mops!]                shape (6,)     buf[(r0*-1+5)]
+reshape(2,3).flip(1)               shape (2, 3)   buf[(r0*3+r1*-1+2)]
+reshape(2,3).T.flip(0)             shape (3, 2)   buf[(r0*-1+r1*3+2)]
+[::2]                              shape (3,)     buf[(r0*2)]
+[::-1]                             shape (6,)     buf[(r0*-1+5)]
+[1:5]                              shape (4,)     buf[(r0+1)]
+reshape(1,6).expand(3,6)           shape (3, 6)   buf[r1]
+repeat(2)                          shape (12,)    buf[(r0%6)]
+roll(2)                            shape (6,)     buf[((r0+4)%6)]
+reshape(2,3).pad(((1,0),(0,1)))    shape (3, 4)   buf[((r0*3+r1+-3) if (((r0&lt;1)==False)&amp;(r1&lt;3)) else Invalid)]
+base[:3].diag()                    shape (3, 3)   buf[(((r0*3+r1)//4) if (((r0*3+r1)%4)&lt;1) else Invalid)]</code></pre>
+  <p>Twelve primitive ops for <code>flip(0)</code> and it comes out as \(5 - r_0\). Strided slices become multiplications (<code>r0*2</code>), <code>repeat</code> and
+  <code>roll</code> become a single <code>%</code>, <code>expand</code> simply never mentions the broadcast range <code>r0</code>, and <code>diag</code> becomes a gated load that reads
+  \(\lfloor(3r_0+r_1)/4\rfloor\) only where \((3r_0+r_1) \bmod 4 = 0\) — exactly the diagonal.</p>
+
+  <div class="demo" id="demo-chain">
+    <div class="demo-title">Compose-movement-ops chain animator (real tinygrad data)</div>
+    <div class="demo-desc">Each preset was captured by <code>examples/07_capture_data.py</code>: for every intermediate UOp of the chain, its real <code>marg</code>, shape, realized values, and the index expression tinygrad's
+      own <code>apply_movement_op</code> + <code>symbolic</code> produce. Step through and watch the index expression grow messy in the middle — then collapse. The graph on the right is the real UOp chain.</div>
+    <div class="controls"><label>preset</label> <select id="ch-preset"></select> <span class="ch07-lbl" id="ch-title"></span></div>
+    <div id="ch-stepper"></div>
+    <div class="row">
+      <div class="col" style="flex:1 1 420px">
+        <div class="ch07-chips" id="ch-chips"></div>
+        <div class="ch07-lbl" id="ch-shape"></div>
+        <div id="ch-grid"></div>
+        <div class="ch07-panel"><h5>tinygrad's index expression into the base buffer at this step</h5><div class="ch07-formula" id="ch-index"></div></div>
+      </div>
+      <div class="col" style="flex:0 1 330px"><div id="ch-graph"></div></div>
+    </div>
+  </div>
+
+  <div class="quiz" data-answer="3">
+    <div class="q">Why does the flip chain's index expression get <em>longer</em> in the middle steps before collapsing to <code>5 - r0</code>?</div>
+    <button class="opt">because the intermediate views really cost more to compute</button><button class="opt">because tinygrad has a bug</button><button class="opt">because PERMUTE is not invertible</button><button class="opt">because the intermediate views contain padding: the index is only "nice" on the valid cells, and the simplifier can only drop the masks once the final SHRINK proves every remaining cell is valid</button>
+    <div class="explain">Midway the view is an \(n\times n\) square that is mostly padding; the index must say both "which element" and "is this a real element". After the last SHRINK keeps only the anti-diagonal column, the range analysis (<code>pm_simplify_valid</code>) can prove the validity conditions are always true and the nested <code>//</code>, <code>%</code> fold into a linear expression.</div>
+  </div>
+
+  <h2 id="pad"><span class="sec">7.7</span>PAD and the validity mask</h2>
+  <p>PAD is the only primitive whose index function is <em>partial</em>: outside the original window there is nothing to read. tinygrad expresses that with the
+  special constant <code>Invalid</code>: <code>(r - off).valid(cond)</code> is <code>WHERE(cond, r - off, Invalid)</code> (<code>UOp.valid</code>, <a class="src" data-path="tinygrad/uop/ops.py" data-line="636"></a>).
+  Where does the zero come from? Not from the index: during rangeify the PAD node itself is rewritten into a <code>WHERE</code> on the data:</p>
+  <div class="codecap"><b><a class="src" data-path="tinygrad/schedule/indexing.py" data-line="98">tinygrad/schedule/indexing.py:98 — PAD → WHERE</a></b></div>
+  <pre><code class="language-python">def convert_pad_to_where_to_keep_behavior_local(ctx:IndexingContext, x:UOp):
+  if x not in ctx.range_map: return None
+  if x.op is Ops.INDEX and len(ctx.range_map[x][0]) == len(ctx.range_map[x][1]): return None
+  if (bx:=create_bufferize_and_index_based_on_ranges(ctx, x)).src[0] is x: return None
+  valid: UOp = UOp.const(True).uprod([r.get_valid() for r in ctx.range_map[x][0]])
+  return valid.where(bx.src[0], UOp.const(x.dtype.const(0)))</code></pre>
+  <p>So a padded load becomes <code>valid ? load(buf[idx]) : 0</code> right at the PAD, using only the validity <em>that PAD introduced</em> (that is what the NOTE inside
+  <code>apply_movement_op</code> is about). In C you saw it already: <code>((Lidx1&lt;1)?val0:0.0f)</code>. Two consequences worth remembering:</p>
+  <ul>
+    <li><b>PAD always pads with 0.</b> <code>x.pad(…, value=v)</code> with \(v \ne 0\) is built as <code>PAD(ones_mask).where(PAD(x), v)</code> (<code>_pad_constant</code>,
+      <a class="src" data-path="tinygrad/mixin/op.py" data-line="305"></a>) — a second PAD of a boolean <code>True</code> plus a WHERE.</li>
+    <li><b>Negative padding is a SHRINK.</b> <code>_pad_constant</code> shrinks first for negative pads, then pads with the non-negative remainder.</li>
+    <li><b>reflect / replicate / circular are compositions.</b> <code>circular</code> is <code>repeat</code> + SHRINK; <code>reflect</code> and <code>replicate</code> build edge slices (negative-stride slices, i.e. flips; or SHRINK+EXPAND) and <code>cat</code> them.</li>
+  </ul>
+  <div class="demo" id="demo-pad">
+    <div class="demo-title">Pad / mask visualizer</div>
+    <div class="demo-desc">A 3×4 tensor (values 0…11). Drag the sliders (negative = crop). The hatched cells are where the validity mask is false. For <code>constant</code> mode you see the
+      exact primitive ops <code>_pad_constant</code> emits, the decoded <code>PAD</code> arg, and the mask as rangeify will gate the load. Other modes show where each output cell copies from.</div>
+    <div class="row">
+      <div class="col" style="flex:0 1 330px">
+        <div class="ch07-sl">
+          <label>top</label><input type="range" min="-2" max="3" value="1" id="pd-t"><span id="pd-tv"></span>
+          <label>bottom</label><input type="range" min="-2" max="3" value="1" id="pd-b"><span id="pd-bv"></span>
+          <label>left</label><input type="range" min="-3" max="3" value="2" id="pd-l"><span id="pd-lv"></span>
+          <label>right</label><input type="range" min="-3" max="3" value="1" id="pd-r"><span id="pd-rv"></span>
+        </div>
+        <div class="controls"><label>mode</label> <select id="pd-mode"><option>constant</option><option>reflect</option><option>replicate</option><option>circular</option></select>
+          <label>value</label> <input type="number" id="pd-val" value="0" style="width:60px"></div>
+        <div class="ch07-err" id="pd-err"></div>
+      </div>
+      <div class="col">
+        <div id="pd-grid"></div>
+        <div class="ch07-panel"><h5>what tinygrad builds</h5><div id="pd-ops" class="ch07-formula"></div></div>
+        <div class="ch07-panel"><h5>the mask rangeify puts on the load</h5><div id="pd-mask" class="ch07-formula"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <h2 id="cleanup"><span class="sec">7.8</span>Cleaning up chains before rangeify: <code>mop_cleanup</code> and <code>pm_mops</code></h2>
+  <p>Composition via index expressions makes most structural "view merging" unnecessary, but a few cheap rewrites still run on the tensor graph so it stays
+  small. They live in <a class="src" data-path="tinygrad/uop/movement.py" data-line="5">tinygrad/uop/movement.py</a>:</p>
+  <pre><code class="language-python">mop_cleanup = PatternMatcher([
+  # merge adjacent SHRINKs
+  (UPat(Ops.SHRINK, name=&quot;x&quot;).f(Ops.SHRINK, allow_any_len=True, name=&quot;s&quot;),
+   lambda s,x: x.src[0]._mop(Ops.SHRINK, tuple((o+p, n) for (o,_),(p,n) in zip(x.marg, s.marg)))),
+  # merge adjacent RESHAPES
+  (UPat(Ops.RESHAPE, src=(UPat(Ops.RESHAPE, name=&quot;x2&quot;), UPat()), name=&quot;x&quot;), lambda x,x2: x.replace(src=(x2.src[0], x.src[1]))),
+  # remove noop RESHAPEs
+  (UPat(Ops.RESHAPE, src=(UPat(name=&quot;x2&quot;), UPat()), name=&quot;x&quot;), lambda x,x2: x2 if x2._shape is not None and x2.shape == x.shape else None),
+  # merge PERMUTEs
+  (UPat(Ops.PERMUTE, src=(UPat(Ops.PERMUTE, name=&quot;x2&quot;), UPat()), name=&quot;x&quot;),
+   lambda x,x2: x2.src[0].permute(tuple(x2.marg[i] for i in x.marg))),</code></pre>
+  <p><code>mop_cleanup</code> is appended to <code>symbolic</code> (<a class="src" data-path="tinygrad/uop/symbolic.py" data-line="210">symbolic.py:210</a>) and is the first thing in
+  <code>earliest_rewrites</code>, which <code>prepare_rangeify</code> runs bottom-up before rangeify (<a class="src" data-path="tinygrad/schedule/prepare.py" data-line="188"></a>,
+  <a class="src" data-path="tinygrad/schedule/prepare.py" data-line="255"></a>). Its sibling <code>pm_mops</code> (<a class="src" data-path="tinygrad/schedule/prepare.py" data-line="76"></a>)
+  pushes an <code>INDEX</code> through a movement op by calling <code>apply_movement_op</code> — the same index function as a pattern. A quick check of what <code>mop_cleanup</code> does:</p>
+  <pre class="output"><code>reshape(2,6).reshape(6,2).reshape(12) on a 12-element buffer
+  before: RESHAPE(3,4) RESHAPE(2,6) RESHAPE(6,2) RESHAPE(12,)   after: (nothing — it is the buffer itself)
+permute(1,0).permute(1,0)
+  before: RESHAPE(3,4) PERMUTE(1,0) PERMUTE(1,0)                after: RESHAPE(3,4)
+shrink(((1,3),(0,4))).shrink(((0,1),(1,3)))
+  before: RESHAPE(3,4) SHRINK((1,2),(0,4)) SHRINK((0,1),(1,2))  after: RESHAPE(3,4) SHRINK((1,1),(1,2))</code></pre>
+  <p class="runit">(produced with <code>graph_rewrite(t.uop, mop_cleanup)</code> on those three tensors.) Note what is <em>missing</em>: there is no rule to merge PAD into PAD, or EXPAND into
+  RESHAPE, or to push a PERMUTE through a RESHAPE. None is needed — the composed index expression already says everything.</p>
+
+  <h2 id="free"><span class="sec">7.9</span>Views are free until realized; <code>contiguous()</code></h2>
+  <p>A movement op costs nothing until some kernel reads through it, and then it costs nothing <em>extra</em>: the index expression is folded into that kernel's
+  load address. Part 3 of the example prints the C code for <code>m.T.flip(0) + 1</code>:</p>
+  <pre class="output"><code>=== 3. the generated C for (m.T.flip(0) + 1): the view is only an index expression
+value: [[3.0, 6.0], [2.0, 5.0], [1.0, 4.0]]
+
+struct E_3_2_args { float* arg0; float* arg1; };
+void E_3_2(const struct E_3_2_args* args) {
+  float* data0_6 = args-&gt;arg0;
+  float* data1_6 = args-&gt;arg1;
+  for (int Lidx0 = 0; Lidx0 &lt; 3; Lidx0++) {
+    for (int Lidx1 = 0; Lidx1 &lt; 2; Lidx1++) {
+      float val0 = (*(data1_6+(((Lidx1*3)-Lidx0)+2)));
+      *(data0_6+((Lidx0&lt;&lt;1)+Lidx1)) = (val0+1.0f);
+    }
+  }
+}</code></pre>
+  <p>The whole transpose-plus-flip is the expression <code>(Lidx1*3) - Lidx0 + 2</code> inside the load — exactly <code>buf[(r0*-1+r1*3+2)]</code> from §7.6, with
+  <code>Lidx0, Lidx1</code> as <code>r0, r1</code>. Now, what about materializing a view? <code>contiguous()</code> wraps the UOp in <code>Ops.STAGE</code>:</p>
+  <div class="codecap"><b><a class="src" data-path="tinygrad/mixin/elementwise.py" data-line="59">tinygrad/mixin/elementwise.py:59 — contiguous</a></b></div>
+  <pre><code class="language-python">def contiguous(self) -&gt; Self:
+  &quot;&quot;&quot;
+  Returns a contiguous tensor.
+  &quot;&quot;&quot;
+  uop = self._uop
+  if self.dtype in dtypes.weaks or uop.op is Ops.STAGE or self.device is None or uop.has_buffer_identity(): return self
+  return self._wrap_uop(uop.alu(Ops.STAGE))</code></pre>
+  <pre class="output"><code>=== 4. kernel counts (CALLs of compiled kernels in the schedule)
+m.T                     : 0 kernels (a view of a realized buffer needs no work)
+m.reshape(3,2).contiguous(): 0 kernels (contiguous already — same memory)
+base[1:5].contiguous()  : 0 kernels (a contiguous slice is a sub-buffer view)
+m.T.contiguous()        : 1 kernel  (a real copy into a fresh buffer)
+(m.T + 1)               : 1 kernel  (the permute is fused into the add&#x27;s load)
+contiguous() is a STAGE UOp: Ops.STAGE</code></pre>
+  <p>Even <code>contiguous()</code> is lazy and smart: when the chain over a real <code>BUFFER</code> collapses to a <em>contiguous range</em> of it, the scheduler
+  (<code>contiguous_mops_to_view</code>, <a class="src" data-path="tinygrad/schedule/__init__.py" data-line="195"></a>, using <code>UOp.contiguous_view</code>) replaces it by a sub-buffer
+  view with an offset — zero kernels. Only a genuinely non-contiguous order (the transpose) produces a copy kernel. And when you use a view as an <em>input</em>
+  to a computation (<code>m.T + 1</code>), the view fuses into that kernel's loads.</p>
+  <div class="callout warn"><span class="title">When should you call contiguous() yourself?</span>
+  When one expensive view is read many times by different kernels with different access patterns, or when an index expression has become so tangled
+  (pads inside reshapes inside pads) that it blocks optimizations. Most of the time, let the scheduler decide what to materialize —
+  that is <a href="11-kernel-split.html">Chapter 11</a>'s topic.</div>
+
+  <div class="quiz" data-answer="0">
+    <div class="q"><code>a</code> is a realized 4×4 buffer. How many kernels does <code>a[1:3].contiguous().realize()</code> launch?</div>
+    <button class="opt">0 — rows 1..2 are a contiguous byte range, so it becomes a sub-buffer view</button><button class="opt">1 copy kernel</button><button class="opt">2 kernels: shrink, then copy</button>
+    <div class="explain">Same as <code>base[1:5].contiguous()</code> in the output above: <code>contiguous_mops_to_view</code> asks <code>contiguous_view()</code> whether the flattened index is <code>rng + offset</code>; if so, it returns <code>buf[offset:offset+n]</code>. A column slice <code>a[:, 1:3]</code> would need a kernel.</div>
+  </div>
+
+  <h2 id="history"><span class="sec">7.10</span>History note: from ShapeTracker to index expressions — and why</h2>
+  <div class="callout deep"><span class="title">Historical note (older tinygrad, not this checkout)</span>
+  Older versions represented a view as a <em>ShapeTracker</em>: a stack of <code>View</code>s, each with a shape, <em>strides</em>, an offset and an optional mask,
+  and a large amount of code tried to merge views (e.g. "is this reshape of this permuted view still expressible with strides?"). When merging failed, the
+  stack grew, and the final index came from walking the stack. Strides are a lossy, closed-form summary: they can express PERMUTE, EXPAND (stride 0),
+  SHRINK (offset) and simple RESHAPEs, but not every reshape of a permuted or padded view, nor <code>flip</code> without negative strides.</div>
+  <p>In this version there are no strides anywhere. The graph keeps the literal chain of movement ops, and <b>the meaning of a view is the index
+  expression rangeify builds from it</b>. The trade-offs:</p>
+  <ul>
+    <li><b>One mechanism for everything.</b> Composition is function composition; "can these two views be merged?" becomes "how small does symbolic make this
+      expression?" — and every improvement to the symbolic engine (Chapter 6) improves views for free.</li>
+    <li><b>Fewer primitives.</b> Without strides there is no reason to have FLIP or a strided SHRINK; they are compositions that simplify.</li>
+    <li><b>Symbolic shapes just work</b>, because shapes and offsets are UOps (the STACK-of-CONST args).</li>
+    <li><b>The cost</b> is that the simplifier must be strong (div/mod folding with range analysis, valid simplification) — otherwise the kernel would literally
+      compute twelve ops' worth of index math for a flip.</li>
+  </ul>
+  <p>The rest of this story — how a RANGE is created per axis, how ranges flow through reduces and multiple consumers, and what gets materialized — is
+  <a href="10-rangeify.html">Chapter 10: Rangeify</a>. When you get there, remember: every movement op you met here is consumed by one call to <code>apply_movement_op</code>,
+  and then removed (<code>remove_movement_op_after_rangeify</code>, <a class="src" data-path="tinygrad/schedule/indexing.py" data-line="126"></a>).</p>
+
+  <h2 id="again"><span class="sec">7.11</span>Hammer it again: edge cases and what breaks</h2>
+  <p>Different angle: let us predict, then check, a few cases with the playground (load the preset buttons) and with Python.</p>
+  <table>
+    <tr><th>expression</th><th>what happens</th><th>why</th></tr>
+    <tr><td><code>Tensor.empty(2,3).reshape(4,2)</code></td><td><code>ValueError: size mismatch</code> at the call site</td><td><code>reshape</code> checks <code>prod</code> before building; <code>_shape</code> would also reject it</td></tr>
+    <tr><td><code>Tensor.empty(2,3).expand(4,3)</code></td><td><code>ValueError: cannot broadcast</code></td><td>only size-1 (or new leading) axes can be expanded</td></tr>
+    <tr><td><code>t.permute(0,0)</code></td><td><code>RuntimeError: order is not a valid permutation</code></td><td>checked in <code>permute</code></td></tr>
+    <tr><td><code>t.reshape(t.shape)</code>, <code>t.permute(0,1)</code>, <code>t.pad(((0,0),(0,0)))</code></td><td>returns <code>t</code> itself — no UOp</td><td>every method short-circuits no-ops (<code>return self if ret.shape == self.shape</code>)</td></tr>
+    <tr><td><code>t.flip(0)</code> where <code>t.shape[0] == 1</code></td><td>no ops</td><td><code>if resolve(n &lt;= 1): continue</code></td></tr>
+    <tr><td><code>x[5]</code> on length 3</td><td><code>IndexError</code></td><td><code>_parse_view_index</code> bounds-checks ints; <em>tensor</em> indices out of range yield 0 instead (one-hot masks, Chapter 8)</td></tr>
+    <tr><td><code>t.pad(((−1,0),))</code></td><td>a SHRINK, not a PAD</td><td><code>_pad_constant</code> splits negative pads off as a shrink</td></tr>
+  </table>
+  <p>And the deepest "what breaks" of all: a chain whose index does <em>not</em> simplify. Try <code>reshape(4,3)</code> after <code>transpose</code> on the 3×4 base in the playground: the
+  formula keeps a <code>//</code> and a <code>%</code>. That is not a failure — it is the honest cost of reading a transposed tensor in a different shape, and it is exactly the
+  kind of view where materializing (<code>contiguous()</code>) can pay off.</p>
+
+  <div class="quiz" data-answer="2">
+    <div class="q">In this checkout, which statement about <code>x.pad(((1,1),), value=7)</code> is true?</div>
+    <button class="opt">PAD's arg stores the value 7</button><button class="opt">the kernel loads 7 from a constant buffer</button><button class="opt">it is PAD(x) combined with PAD(True-mask) through a WHERE that selects 7 outside</button><button class="opt">it is a reflect pad</button>
+    <div class="explain">PAD only knows how to produce zeros (its validity becomes <code>valid ? load : 0</code>). <code>_pad_constant</code> pads a boolean <code>True</code> mask and does <code>mask.where(padded_x, 7)</code>; the captured op counts for this case are <code>EXPAND 1, PAD 2, RESHAPE 1, WHERE 1</code> (the EXPAND broadcasts the scalar True).</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">You index a view with ranges <code>r0, r1</code> and walk down: which call do you make at each movement op?</div>
+    <button class="opt">the op's forward function on the data</button><button class="opt"><code>apply_movement_op(op, src.shape, op.marg, rngs)</code> — output-ranges in, input-indices out</button><button class="opt"><code>UOp._mop</code> again with the inverse arg</button><button class="opt">nothing: rangeify ignores movement ops</button>
+    <div class="explain">That is literally the loop in <code>run_rangeify</code>. The result is passed to the next op down; at a buffer it becomes the INDEX of the load.</div>
+  </div>
+
+  <div class="summary-box"><h3>Chapter summary</h3><ul>
+    <li>Five primitive movement ops: <b>RESHAPE, PERMUTE, EXPAND, PAD, SHRINK</b> (+ UNSHARD for multi-device). No FLIP, no strides. EXPAND prepends dims; PAD/SHRINK store <code>(offset, size)</code>.</li>
+    <li>Args are <b>UOps</b> in <code>src[1:]</code> (STACKs of CONSTs, decoded by <code>marg</code>); shapes are inferred eagerly by <code>UOp._shape</code>; buffers are flat and every shape is a RESHAPE on top.</li>
+    <li>Every Tensor movement method (view/reshape, T, flatten, squeeze, slicing, expand, repeat, roll, flip, pad modes, cat/stack) reduces to those primitives — sometimes via clever tricks (flip's anti-diagonal, strided slicing by reshape+shrink).</li>
+    <li>A movement op <b>is an index function</b>: <code>apply_movement_op</code> maps output ranges to input indices; PAD adds a validity mask that rangeify turns into <code>WHERE(valid, load, 0)</code>.</li>
+    <li>Chains compose by function composition and are collapsed by symbolic simplification (<code>flip</code>: 12 ops → <code>5 - r0</code>); <code>mop_cleanup</code> merges trivial neighbours early.</li>
+    <li>Views are free until a kernel reads them, and then they are just address arithmetic in that kernel. <code>contiguous()</code> = <code>STAGE</code>; a contiguous range of a buffer becomes a sub-buffer view with 0 kernels.</li>
+    <li>Next: <a href="08-decompositions.html">Chapter 8</a> builds matmul and conv out of these pieces; <a href="10-rangeify.html">Chapter 10</a> shows the full rangeify that consumes them.</li>
+  </ul></div>
+</main>
+</div>
+<script>
+// ---- a faithful JS mirror of the five movement ops as index functions (tinygrad/schedule/indexing.py apply_movement_op)
+// args use tinygrad's decoded marg convention: RESHAPE(newshape) PERMUTE(order) EXPAND(new leading dims)
+// PAD((offset,newsize) per axis) SHRINK((offset,size) per axis)
+const MV = {};
+MV.prod = (a) => a.reduce((x, y) => x * y, 1);
+MV.outShape = function (op, s, arg) {
+  switch (op) {
+    case "RESHAPE": if (MV.prod(arg) !== MV.prod(s)) throw new Error(`bad reshape: (${s}) -> (${arg})`); return arg.slice();
+    case "PERMUTE": if (arg.slice().sort((a, b) => a - b).join() !== s.map((_, i) => i).join()) throw new Error(`invalid permutation (${arg}) of len ${s.length}`); return arg.map((i) => s[i]);
+    case "EXPAND": return [...arg, ...s];
+    case "PAD": if (arg.length !== s.length || !arg.every(([o, n], i) => o >= 0 && o + s[i] <= n)) throw new Error(`invalid pad ${JSON.stringify(arg)} for (${s})`); return arg.map((a) => a[1]);
+    case "SHRINK": if (arg.length !== s.length || !arg.every(([o, n], i) => o >= 0 && n >= 0 && o + n <= s[i])) throw new Error(`invalid shrink ${JSON.stringify(arg)} for (${s})`); return arg.map((a) => a[1]);
+  }
+  throw new Error("unknown op " + op);
+};
+// numeric index function: output multi-index -> input multi-index, or null if it lands in padding
+MV.mapIdx = function (op, inS, arg, idx) {
+  switch (op) {
+    case "RESHAPE": { let flat = 0; for (let i = 0; i < idx.length; i++) flat = flat * arg[i] + idx[i]; const out = []; for (let i = inS.length - 1; i >= 0; i--) { out.unshift(flat % inS[i]); flat = Math.floor(flat / inS[i]); } return out; }
+    case "PERMUTE": { const out = new Array(idx.length); arg.forEach((p, i) => (out[p] = idx[i])); return out; }
+    case "EXPAND": return idx.slice(arg.length);
+    case "PAD": { const out = idx.map((r, i) => r - arg[i][0]); return out.every((v, i) => v >= 0 && v < inS[i]) ? out : null; }
+    case "SHRINK": return idx.map((r, i) => r + arg[i][0]);
+  }
+};
+// a view = base shape + list of primitive ops; build all intermediate shapes
+MV.build = function (baseShape, ops) {
+  const shapes = [baseShape.slice()];
+  for (const o of ops) shapes.push(MV.outShape(o.op, shapes[shapes.length - 1], o.arg));
+  return shapes;
+};
+// which flat base cell does output multi-index idx (of the view after k ops) read? -1 = padding
+MV.source = function (baseShape, ops, shapes, k, idx) {
+  let cur = idx;
+  for (let j = k - 1; j >= 0; j--) { cur = MV.mapIdx(ops[j].op, shapes[j], ops[j].arg, cur); if (!cur) return -1; }
+  let flat = 0; for (let i = 0; i < cur.length; i++) flat = flat * baseShape[i] + cur[i];
+  return flat;
+};
+MV.allIdx = function (shape) {
+  const out = []; const n = MV.prod(shape);
+  for (let f = 0; f < n; f++) { const idx = []; let r = f; for (let i = shape.length - 1; i >= 0; i--) { idx.unshift(r % shape[i]); r = Math.floor(r / shape[i]); } out.push(idx); }
+  return out;
+};
+
+// ---- high-level Tensor methods, mirroring tinygrad/mixin/movement.py: each returns the primitive ops it emits
+MV.hl = {
+  reshape: (s, ns) => (ns.join() === s.join() ? [] : [{ op: "RESHAPE", arg: ns }]),
+  permute: (s, order) => (order.join() === s.map((_, i) => i).join() ? [] : [{ op: "PERMUTE", arg: order }]),
+  transpose: (s, d0 = 1, d1 = 0) => { const o = s.map((_, i) => i); [o[d0], o[d1]] = [o[d1], o[d0]]; return MV.hl.permute(s, o); },
+  shrink: (s, arg) => { const a = arg.map((x, i) => (x ? [x[0], x[1] - x[0]] : [0, s[i]])); return a.every((x, i) => x[0] === 0 && x[1] === s[i]) ? [] : [{ op: "SHRINK", arg: a }]; },
+  pad: (s, arg) => { const a = arg.map((x, i) => (x ? [x[0], s[i] + x[0] + x[1]] : [0, s[i]])); return a.every((x, i) => x[0] === 0 && x[1] === s[i]) ? [] : [{ op: "PAD", arg: a }]; },
+  // _broadcast_to: squeeze the 1s being expanded, EXPAND on the left, permute back
+  expand: (s, ns) => {
+    const nleft = ns.length - s.length;
+    const shape = [...new Array(nleft).fill(1), ...s];
+    if (!shape.every((x, i) => x === ns[i] || x === 1)) throw new Error(`cannot broadcast (${s}) to (${ns})`);
+    if (s.join() === ns.join()) return [];
+    const baxes = [...Array(nleft).keys(), ...s.map((x, i) => (x === 1 && ns[nleft + i] !== 1 ? nleft + i : -1)).filter((x) => x >= 0)];
+    const expandAt = baxes.filter((i) => i >= nleft).map((i) => i - nleft);
+    const kept = s.map((_, i) => i).filter((i) => !expandAt.includes(i));
+    const ops = MV.hl.reshape(s, kept.map((i) => s[i]));
+    ops.push({ op: "EXPAND", arg: [...ns.slice(0, nleft), ...expandAt.map((i) => ns[nleft + i])] });
+    const perm = [...Array(nleft).keys(), ...s.map((_, i) => nleft + (expandAt.includes(i) ? expandAt.indexOf(i) : expandAt.length + kept.indexOf(i)))];
+    const after = MV.outShape("EXPAND", kept.map((i) => s[i]), ops[ops.length - 1].arg);
+    return ops.concat(MV.hl.permute(after, perm));
+  },
+};
+// apply a high-level method to the current shape: returns {ops, shape}
+MV.apply = function (shape, name, ...args) {
+  const ops = MV.hl[name](shape, ...args);
+  let s = shape; for (const o of ops) s = MV.outShape(o.op, s, o.arg);
+  return { ops, shape: s };
+};
+// chain helpers that need intermediate shapes
+MV.seq = function (shape, steps) { // steps: [[name, ...args] | fn(shape)->[name,...args]]
+  let ops = [], s = shape;
+  for (let st of steps) { if (typeof st === "function") st = st(s); const r = MV.apply(s, ...st); ops = ops.concat(r.ops); s = r.shape; }
+  return { ops, shape: s };
+};
+MV.hl.repeat = (s, reps) => {
+  const base = [...new Array(reps.length - s.length).fill(1), ...s];
+  const unsq = [], exp = [], fin = [];
+  reps.forEach((r, i) => { if (r === 1) { unsq.push(base[i]); exp.push(base[i]); } else { unsq.push(1, base[i]); exp.push(r, base[i]); } fin.push(r * base[i]); });
+  return MV.seq(s, [["reshape", unsq], ["expand", exp], ["reshape", fin]]).ops;
+};
+MV.hl.roll = (s, shift, dim) => {
+  const reps = s.map((_, i) => (i === dim ? 2 : 1));
+  const n = s[dim], delta = n - (((shift % n) + n) % n);
+  return MV.seq(s, [["repeat", reps], (cur) => ["shrink", cur.map((x, i) => (i === dim ? [delta, delta + n] : null))]]).ops;
+};
+// flip: tinygrad builds it from PAD/RESHAPE/PERMUTE/SHRINK by placing values on an anti-diagonal (movement.py flip)
+MV.hl.flip = (s, axis) => {
+  const n = s[axis]; if (n <= 1) return [];
+  const steps = [];
+  const nd = s.length;
+  let x = s; const tr = (cur, a, b) => ["transpose", a, b];
+  const ops = []; let cur = s;
+  const push = (r) => { ops.push(...r.ops); cur = r.shape; };
+  push(MV.apply(cur, "transpose", 0, axis));
+  const tail = cur.slice(1), m = n;
+  const tailPad = tail.map((t) => [0, t]);
+  const raw = (op, arg) => { ops.push({ op, arg }); cur = MV.outShape(op, cur, arg); };
+  raw("PAD", [[0, m], ...tailPad]); push(MV.apply(cur, "reshape", [m, 1, ...tail]));
+  raw("PAD", [[0, m], [0, m - 1], ...tailPad]); push(MV.apply(cur, "reshape", [m * (m - 1), ...tail]));
+  raw("PAD", [[m - 1, m * m], ...tailPad]); push(MV.apply(cur, "reshape", [m, m, ...tail])); push(MV.apply(cur, "transpose", 0, 1)); push(MV.apply(cur, "reshape", [m * m, ...tail]));
+  raw("SHRINK", [[m - 1, m * (m - 1)], ...tailPad]); push(MV.apply(cur, "reshape", [m, m - 1, ...tail]));
+  push(MV.apply(cur, "shrink", [null, [0, 1], ...tail.map(() => null)])); push(MV.apply(cur, "reshape", [m, ...tail]));
+  push(MV.apply(cur, "shrink", [[m - n, m], ...tail.map((t) => [0, t])])); push(MV.apply(cur, "transpose", 0, axis));
+  return ops;
+};
+
+
+// ---- a tiny symbolic index algebra, a miniature of tinygrad's symbolic.py / divandmod.py
+// An expression is a linear form  c + Σ coef·atom  where an atom is a range variable r_i (0 <= r_i < max)
+// or an opaque floor-div / mod node.  vmin/vmax come from interval arithmetic, and the div/mod folding rules are
+// the classic ones: if  x = c·q + r  with 0 <= r < c  then  x // c = q  and  x % c = r.
+const SY = {};
+SY.lin = (terms, c) => ({ terms: terms || [], c: c || 0 }); // terms: [{atom, k}]
+SY.v = (i, max) => SY.lin([{ atom: { t: "var", i, max }, k: 1 }], 0);
+SY.k = (c) => SY.lin([], c);
+SY.akey = (a) => (a.t === "var" ? "r" + a.i : `${a.t}(${SY.key(a.x)},${a.c})`);
+SY.key = (L) => L.terms.map((t) => t.k + "*" + SY.akey(t.atom)).sort().join("+") + "+" + L.c;
+SY.norm = function (L) {
+  const m = new Map();
+  for (const t of L.terms) { const kk = SY.akey(t.atom); const e = m.get(kk); if (e) e.k += t.k; else m.set(kk, { atom: t.atom, k: t.k }); }
+  return SY.lin([...m.values()].filter((t) => t.k !== 0), L.c);
+};
+SY.add = (A, B) => SY.norm(SY.lin([...A.terms, ...B.terms], A.c + B.c));
+SY.scale = (A, s) => SY.norm(SY.lin(A.terms.map((t) => ({ atom: t.atom, k: t.k * s })), A.c * s));
+SY.arange = function (a) { // [vmin, vmax] of an atom
+  if (a.t === "var") return [0, a.max - 1];
+  const [lo, hi] = SY.range(a.x);
+  if (a.t === "div") return [Math.floor(lo / a.c), Math.floor(hi / a.c)];
+  return lo >= 0 && hi < a.c ? [lo, hi] : [0, a.c - 1];
+};
+SY.range = function (L) {
+  let lo = L.c, hi = L.c;
+  for (const t of L.terms) { const [a, b] = SY.arange(t.atom); lo += Math.min(t.k * a, t.k * b); hi += Math.max(t.k * a, t.k * b); }
+  return [lo, hi];
+};
+SY.div = function (L, c) {
+  if (c === 1) return L;
+  const [lo, hi] = SY.range(L);
+  if (lo >= 0 && hi < c) return SY.k(0);
+  // split into multiples of c (quotient part) and the rest
+  let qc = 0, rc = L.c;
+  const qt = [], rt = [];
+  for (const t of L.terms) { if (t.k % c === 0) qt.push({ atom: t.atom, k: t.k / c }); else rt.push(t); }
+  qc = Math.floor(rc / c); rc = rc - qc * c;
+  const R = SY.lin(rt, rc), Q = SY.lin(qt, qc);
+  const [rlo, rhi] = SY.range(R);
+  if (rlo >= 0 && rhi < c) return SY.norm(Q);
+  // nested div: (x // a) // b = x // (a*b)
+  if (L.terms.length === 1 && L.c === 0 && L.terms[0].k === 1 && L.terms[0].atom.t === "div") return SY.div(L.terms[0].atom.x, L.terms[0].atom.c * c);
+  if (lo >= 0) {
+    if (rlo >= 0 && Q.terms.length) return SY.add(Q, SY.lin([{ atom: { t: "div", x: R, c }, k: 1 }], 0));
+    return SY.lin([{ atom: { t: "div", x: SY.norm(L), c }, k: 1 }], 0);
+  }
+  return SY.lin([{ atom: { t: "div", x: SY.norm(L), c }, k: 1 }], 0);
+};
+SY.mod = function (L, c) {
+  const [lo, hi] = SY.range(L);
+  if (lo >= 0 && hi < c) return L;
+  const rt = L.terms.filter((t) => t.k % c !== 0);
+  const R = SY.lin(rt.map((t) => ({ atom: t.atom, k: t.k })), ((L.c % c) + c) % c);
+  const [rlo, rhi] = SY.range(R);
+  if (lo >= 0 && rlo >= 0 && rhi < c) return SY.norm(R);
+  return SY.lin([{ atom: { t: "mod", x: SY.norm(lo >= 0 ? R : L), c }, k: 1 }], 0);
+};
+SY.render = function (L, top = true) {
+  const parts = [];
+  const atomStr = (a) => { if (a.t === "var") return "r" + a.i; const inner = SY.render(a.x, false); const simple = /^r\d+$/.test(inner); return `${simple ? inner : "(" + inner + ")"}${a.t === "div" ? "//" : "%"}${a.c}`; };
+  const ts = L.terms.slice().sort((a, b) => (SY.akey(a.atom) < SY.akey(b.atom) ? -1 : 1));
+  for (const t of ts) {
+    const s = atomStr(t.atom);
+    const sp = t.atom.t === "var" ? s : "(" + s + ")";
+    if (t.k === 1) parts.push(["+", s]); else if (t.k === -1) parts.push(["-", sp]);
+    else parts.push([t.k < 0 ? "-" : "+", `${sp}*${Math.abs(t.k)}`]);
+  }
+  if (L.c || !parts.length) parts.push([L.c < 0 ? "-" : "+", String(Math.abs(L.c))]);
+  return parts.map(([sg, s], i) => (i === 0 ? (sg === "-" ? "-" : "") + s : ` ${sg} ${s}`)).join("");
+};
+SY.evalL = function (L, env) {
+  let v = L.c;
+  for (const t of L.terms) {
+    const a = t.atom;
+    const av = a.t === "var" ? env[a.i] : a.t === "div" ? Math.floor(SY.evalL(a.x, env) / a.c) : ((SY.evalL(a.x, env) % a.c) + a.c) % a.c;
+    v += t.k * av;
+  }
+  return v;
+};
+// symbolic version of apply_movement_op: output exprs -> input exprs (+ new valid conditions for PAD)
+SY.apply = function (op, inS, arg, rngs) {
+  switch (op) {
+    case "SHRINK": return { rngs: rngs.map((r, i) => SY.add(r, SY.k(arg[i][0]))), valid: [] };
+    case "PERMUTE": { const out = new Array(rngs.length); arg.forEach((p, i) => (out[p] = rngs[i])); return { rngs: out, valid: [] }; }
+    case "EXPAND": return { rngs: rngs.slice(arg.length), valid: [] };
+    case "PAD": {
+      const valid = [];
+      const out = rngs.map((r, i) => {
+        const [off, sz] = arg[i], sh = inS[i];
+        if (sz === sh && off === 0) return r;
+        const [lo, hi] = SY.range(r);
+        if (lo < off) valid.push({ L: r, op: ">=", c: off });
+        if (hi >= sh + off) valid.push({ L: r, op: "<", c: sh + off });
+        return SY.add(r, SY.k(-off));
+      });
+      return { rngs: out, valid };
+    }
+    case "RESHAPE": {
+      let acc = 1, comb = SY.k(0);
+      for (let i = arg.length - 1; i >= 0; i--) { comb = SY.add(comb, SY.scale(rngs[i], acc)); acc *= arg[i]; }
+      const out = [];
+      for (let i = inS.length - 1; i >= 0; i--) { out.unshift(SY.mod(comb, inS[i])); comb = SY.div(comb, inS[i]); }
+      return { rngs: out, valid: [] };
+    }
+  }
+};
+SY.renderValid = (v) => `${SY.render(v.L)} ${v.op} ${v.c}`;
+
+
+(function () {
+  const G = Guide, el = G.el;
+  // ---------- shared helpers ----------
+  const fmt = (a) => "(" + a.map((x) => (Array.isArray(x) ? "(" + x.join(", ") + ")" : x)).join(", ") + (a.length === 1 && !Array.isArray(a[0]) ? ",)" : ")");
+  const hue = (k, n) => `hsl(${(k * 360 / Math.max(n, 1) + 190) % 360} 70% ${k % 2 ? 62 : 70}%)`;
+  // render a shaped grid of cells: shape -> rows = prod(shape[:-1]), cols = shape[-1]; blocks for >= 3D
+  function drawGrid(container, shape, cellFn) {
+    container.innerHTML = "";
+    let cols = shape.length ? shape[shape.length - 1] : 1, rows = shape.length > 1 ? MV.prod(shape.slice(0, -1)) : 1;
+    if (shape.length === 1 && cols > 12) { const w = [12, 10, 9, 8, 6].find((d) => cols % d === 0) || 12; rows = Math.ceil(cols / w); cols = w; } // wrap long 1-D views
+    const blk = shape.length >= 3 ? shape[shape.length - 2] : rows;
+    const total = MV.prod(shape);
+    const g = el("div", { class: "ch07-grid", style: `grid-template-columns: repeat(${cols}, 30px)` });
+    const cells = [];
+    for (let r = 0; r < rows; r++) {
+      if (r && r % blk === 0) for (let c = 0; c < cols; c++) g.append(el("div", { class: "ch07-gap" }));
+      for (let c = 0; c < cols; c++) { if (r * cols + c >= total) break; const e = el("div", { class: "ch07-cell" }); cellFn(e, r * cols + c); cells.push(e); g.append(e); }
+    }
+    container.append(g);
+    return cells;
+  }
+  function colorCell(e, src, n, label) {
+    if (src < 0) { e.classList.add("pad"); e.textContent = label ?? "·"; }
+    else { e.style.background = hue(src, n); e.textContent = label ?? src; }
+  }
+  function renderValid(v) { const c = v.c - v.L.c; const L = SY.lin(v.L.terms, 0); return `${SY.render(L)} ${v.op} ${c}`; }
+  function compose(base, ops, shapes) {
+    const K = ops.length, sh = shapes[K];
+    let rngs = sh.map((s, i) => SY.v(i, s)), valids = [];
+    for (let j = K - 1; j >= 0; j--) { const r = SY.apply(ops[j].op, shapes[j], ops[j].arg, rngs); rngs = r.rngs; valids = valids.concat(r.valid); }
+    // flatten to the 1-D buffer index
+    let flat = SY.k(0), acc = 1;
+    for (let i = base.length - 1; i >= 0; i--) { flat = SY.add(flat, SY.scale(rngs[i], acc)); acc *= base[i]; }
+    return { flat, valids };
+  }
+  // affine fit on valid cells: does buf index == c + sum k_i r_i hold on every valid cell?
+  function affineFit(shape, srcs) {
+    const idxs = MV.allIdx(shape);
+    const pts = idxs.map((ix, f) => [ix, srcs[f]]).filter((p) => p[1] >= 0);
+    if (pts.length < 2) return null;
+    // least squares would be overkill: pick base point and unit steps when available
+    const find = (pred) => pts.find(pred);
+    const p0 = pts[0]; const ks = [];
+    for (let a = 0; a < shape.length; a++) {
+      const q = find((p) => p[0].every((v, i) => (i === a ? v !== p0[0][i] : v === p0[0][i])));
+      if (!q) { ks.push(0); continue; }
+      ks.push((q[1] - p0[1]) / (q[0][a] - p0[0][a]));
+    }
+    const c = p0[1] - ks.reduce((s, k, i) => s + k * p0[0][i], 0);
+    const ok = pts.every((p) => Math.abs(c + ks.reduce((s, k, i) => s + k * p[0][i], 0) - p[1]) < 1e-9);
+    if (!ok || !ks.every(Number.isInteger)) return null;
+    return SY.render(SY.norm(SY.lin(ks.map((k, i) => ({ atom: { t: "var", i, max: shape[i] }, k })), c)));
+  }
+
+  // ---------- warm-up SVG ----------
+  (function intro() {
+    const svg = G.$("#intro-svg"); const N = 6;
+    const bx = 40, by = 40, cw = 44;
+    svg.append(el("text", { x: bx, y: 28, fill: "#9aa3ad", "font-size": 13 }, "buffer (flat, 6 floats)"));
+    const bufCells = [];
+    for (let i = 0; i < N; i++) {
+      const g = el("g", {}); const r = el("rect", { x: bx + i * cw, y: by, width: cw - 4, height: 34, rx: 5, fill: hue(i, N) });
+      g.append(r, el("text", { x: bx + i * cw + 20, y: by + 22, "text-anchor": "middle", fill: "#0d0f12", "font-size": 14, "font-weight": 700 }, i));
+      svg.append(g); bufCells.push(r);
+    }
+    const ox = 470, oy = 34;
+    svg.append(el("text", { x: ox, y: oy - 8, fill: "#9aa3ad", "font-size": 13 }, "buf.reshape(2,3).T   shape (3,2)"));
+    const arrow = el("path", { d: "", stroke: "#F4D345", "stroke-width": 2.5, fill: "none", "marker-end": "url(#ch07arr)" });
+    svg.prepend(el("defs", {}, el("marker", { id: "ch07arr", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: "auto" }, el("path", { d: "M0,0 L10,5 L0,10 z", fill: "#F4D345" }))));
+    svg.append(arrow);
+    const info = el("text", { x: 40, y: 190, fill: "#F4D345", "font-size": 13 }, "hover an output cell");
+    svg.append(info);
+    for (let r = 0; r < 3; r++) for (let c = 0; c < 2; c++) {
+      const src = c * 3 + r; // out[r,c] = m[c,r] = buf[c*3 + r]
+      const x = ox + c * 52, y = oy + r * 44;
+      const rect = el("rect", { x, y, width: 46, height: 38, rx: 5, fill: hue(src, N), style: "cursor:pointer" });
+      const t = el("text", { x: x + 23, y: y + 24, "text-anchor": "middle", fill: "#0d0f12", "font-size": 14, "font-weight": 700, "pointer-events": "none" }, src);
+      rect.addEventListener("mouseenter", () => {
+        const tx = bx + src * cw + 20, ty = by + 36;
+        arrow.setAttribute("d", `M${x},${y + 19} C ${x - 120},${y + 19} ${tx},${ty + 70} ${tx},${ty + 4}`);
+        info.textContent = `out[${r}, ${c}]  →  PERMUTE: m[${c}, ${r}]  →  RESHAPE: buf[${c}*3 + ${r}] = buf[${src}]`;
+        bufCells.forEach((b, i) => b.setAttribute("opacity", i === src ? 1 : 0.3));
+      });
+      rect.addEventListener("mouseleave", () => { arrow.setAttribute("d", ""); bufCells.forEach((b) => b.setAttribute("opacity", 1)); });
+      svg.append(rect, t);
+    }
+  })();
+
+  // ---------- playground ----------
+  (function playground() {
+    const BASES = [[6], [2, 3], [3, 4], [2, 2, 3], [4, 4]];
+    const HINT = { RESHAPE: "3, 2", PERMUTE: "1, 0", EXPAND: "2", PAD: "(1,4), (0,4)", SHRINK: "(0,2), (1,2)", transpose: "0, 1", expand: "2, 3, 4", flip: "1", repeat: "2, 1", roll: "1, 1", pad: "(1,1), (0,2)", shrink: "(0,2), (1,3)" };
+    let base = [3, 4], steps = []; // steps: [{name, args, ops}]
+    const opSel = G.$("#pg-op"), argIn = G.$("#pg-arg"), err = G.$("#pg-err");
+    opSel.addEventListener("change", () => (argIn.value = HINT[opSel.value]));
+    argIn.value = HINT[opSel.value];
+    const parseArg = (s) => JSON.parse("[" + s.replace(/\(/g, "[").replace(/\)/g, "]").replace(/None/g, "null").replace(/,\s*\]/g, "]") + "]");
+    const baseBar = G.$("#pg-base");
+    baseBar.append(el("span", { class: "ch07-lbl" }, "base buffer viewed as:"));
+    const baseBtns = BASES.map((b) => { const bt = el("button", { onclick: () => { base = b; steps = []; render(); } }, fmt(b)); baseBar.append(bt); return bt; });
+    function allOps() { return steps.flatMap((s) => s.ops); }
+    function curShape() { const ops = allOps(); return MV.build(base, ops).pop(); }
+    function addStep(name, args) {
+      const s = curShape();
+      let ops;
+      if (["RESHAPE", "PERMUTE", "EXPAND", "PAD", "SHRINK"].includes(name)) {
+        let a = args; if ((name === "PAD" || name === "SHRINK") && !Array.isArray(a[0])) throw new Error(`${name} takes ((offset, size), …) per axis`);
+        ops = [{ op: name, arg: a }]; MV.outShape(name, s, a);
+      } else if (name === "transpose") ops = MV.hl.transpose(s, args[0], args[1]);
+      else if (name === "expand") ops = MV.hl.expand(s, args);
+      else if (name === "flip") { if (args[0] >= s.length) throw new Error("axis out of range"); ops = MV.hl.flip(s, args[0]); }
+      else if (name === "repeat") ops = MV.hl.repeat(s, args);
+      else if (name === "roll") ops = MV.hl.roll(s, args[0], args[1]);
+      else if (name === "pad") ops = MV.hl.pad(s, args);
+      else if (name === "shrink") ops = MV.hl.shrink(s, args);
+      MV.build(s, ops); // validate
+      steps.push({ name, args, ops });
+    }
+    G.$("#pg-add").addEventListener("click", () => { try { err.textContent = ""; addStep(opSel.value, parseArg(argIn.value)); render(); } catch (e) { err.textContent = String(e.message || e); } });
+    G.$("#pg-undo").addEventListener("click", () => { steps.pop(); err.textContent = ""; render(); });
+    G.$("#pg-reset").addEventListener("click", () => { steps = []; err.textContent = ""; render(); });
+    const PRESETS = [
+      ["x.T", [3, 4], [["transpose", [0, 1]]]],
+      ["reshape → permute", [2, 3], [["RESHAPE", [3, 2]], ["PERMUTE", [1, 0]]]],
+      ["T then reshape(4,3)", [3, 4], [["transpose", [0, 1]], ["RESHAPE", [4, 3]]]],
+      ["pad", [2, 3], [["pad", [[1, 1], [2, 0]]]]],
+      ["flip(1)", [3, 4], [["flip", [1]]]],
+      ["broadcast middle axis", [6], [["RESHAPE", [2, 1, 3]], ["expand", [2, 4, 3]]]],
+      ["roll(1, 1)", [3, 4], [["roll", [1, 1]]]],
+      ["repeat(2, 2)", [2, 3], [["repeat", [2, 2]]]],
+    ];
+    const pr = G.$("#pg-presets");
+    for (const [nm, b, st] of PRESETS) pr.append(el("button", { onclick: () => { base = b; steps = []; err.textContent = ""; try { st.forEach(([n, a]) => addStep(n, a)); } catch (e) { err.textContent = e.message; } render(); } }, nm));
+    let hover = -1;
+    function render() {
+      baseBtns.forEach((bt, i) => bt.classList.toggle("active", BASES[i].join() === base.join()));
+      const ops = allOps(), shapes = MV.build(base, ops), K = ops.length, sh = shapes[K], n = MV.prod(base);
+      // chain chips
+      const chain = G.$("#pg-chain"); chain.innerHTML = "";
+      chain.append(el("span", { class: "ch07-chip grp" }, `buffer${fmt([n])} → view${fmt(base)}`));
+      let k = 0;
+      for (const s of steps) {
+        if (!["RESHAPE", "PERMUTE", "EXPAND", "PAD", "SHRINK"].includes(s.name)) chain.append(el("span", { class: "ch07-chip grp", title: "high-level method" }, `.${s.name}(${s.args.map((a) => (Array.isArray(a) ? fmt(a) : a)).join(", ")})`, el("small", {}, `${s.ops.length} op${s.ops.length === 1 ? "" : "s"}:`)));
+        for (const o of s.ops) { k++; chain.append(el("span", { class: "ch07-chip" }, `${o.op}${fmt(o.arg)}`, el("small", {}, "→" + fmt(shapes[k])))); }
+        if (!s.ops.length) chain.append(el("span", { class: "ch07-lbl" }, "(no-op: returns self)"));
+      }
+      // output grid
+      const srcs = MV.allIdx(sh).map((ix) => MV.source(base, ops, shapes, K, ix));
+      G.$("#pg-outlbl").textContent = `output view, shape ${fmt(sh)} — ${K} primitive op${K === 1 ? "" : "s"}`;
+      const outCells = drawGrid(G.$("#pg-out"), sh, (e, f) => {
+        colorCell(e, srcs[f], n);
+        e.addEventListener("mouseenter", () => { hover = f; highlight(); trace(f); });
+        e.addEventListener("mouseleave", () => { hover = -1; highlight(); });
+      });
+      const bufWrap = G.$("#pg-buf"); bufWrap.innerHTML = "";
+      const bufCells = [];
+      const fl = el("div", { class: "ch07-flat" });
+      for (let i = 0; i < n; i++) { const e = el("div", { class: "ch07-cell" }); colorCell(e, i, n); bufCells.push(e); fl.append(e); }
+      bufWrap.append(fl);
+      function highlight() {
+        outCells.forEach((e, f) => { e.classList.toggle("hot", f === hover); e.classList.toggle("dimc", hover >= 0 && srcs[f] !== srcs[hover] && f !== hover); });
+        bufCells.forEach((e, i) => { e.classList.toggle("hot", hover >= 0 && srcs[hover] === i); e.classList.toggle("dimc", hover >= 0 && srcs[hover] !== i); });
+      }
+      function trace(f) {
+        const ix = MV.allIdx(sh)[f];
+        const rows = [["view after op " + K + (K ? " (" + ops[K - 1].op + ")" : ""), `[${ix.join(", ")}]`, fmt(sh)]];
+        let cur = ix;
+        for (let j = K - 1; j >= 0; j--) {
+          const nx = MV.mapIdx(ops[j].op, shapes[j], ops[j].arg, cur);
+          rows.push([`↓ through ${ops[j].op}${fmt(ops[j].arg)}`, nx ? `[${nx.join(", ")}]` : "Invalid (padding → 0)", fmt(shapes[j])]);
+          if (!nx) break; cur = nx;
+        }
+        if (srcs[f] >= 0) rows.push(["↓ flatten into the buffer", `buf[${srcs[f]}]`, fmt([n])]);
+        const tb = el("table", { class: "ch07-trace" }, rows.map((r) => el("tr", {}, r.map((c) => el("td", {}, c)))));
+        const tr = G.$("#pg-trace"); tr.innerHTML = ""; tr.append(tb);
+      }
+      // formula
+      const { flat, valids } = compose(base, ops, shapes);
+      const fm = G.$("#pg-formula"); fm.innerHTML = "";
+      const complicated = /\/\/|%/.test(SY.render(flat)) || valids.length;
+      const fit = complicated ? affineFit(sh, srcs) : null;
+      const allValid = srcs.every((x) => x >= 0);
+      if (fit) {
+        fm.append(el("div", { style: "color:var(--green);font-size:15px" }, `buf[ ${fit} ]` + (allValid ? "" : "   (on the valid cells)")));
+        fm.append(el("div", { class: "ch07-lbl", style: "margin:2px 0 8px" }, "↑ this is the kind of collapse tinygrad's symbolic + valid-aware simplifier (pm_simplify_valid) reaches; the raw composition from this page's smaller simplifier is:"));
+      }
+      fm.append(el("div", { style: fit ? "opacity:.75;font-size:12px" : "" }, `buf[ ${SY.render(flat)} ]`));
+      if (valids.length) fm.append(el("div", { class: "v", style: fit ? "opacity:.75;font-size:12px" : "" }, "valid iff  " + valids.map(renderValid).join("  &  ")));
+      fm.append(el("div", { class: "ch07-lbl", style: "margin-top:6px" }, `ranges: ${sh.map((s, i) => `r${i} ∈ [0, ${s})`).join(", ")}`));
+    }
+    render();
+  })();
+
+  // ---------- chain animator (captured data) ----------
+  G.loadJSON("../data/ch07_chains.json").then((D) => {
+    const sel = G.$("#ch-preset");
+    const keys = Object.keys(D);
+    keys.forEach((k) => sel.append(el("option", { value: k }, k)));
+    let graph = null, stepper = null;
+    function load(k) {
+      const P = D[k];
+      G.$("#ch-title").textContent = P.title;
+      const baseN = P.steps[0].src.length && P.steps[0].op === "RESHAPE" ? P.steps[0].src.length : null;
+      const n = Math.max(...P.steps.map((s) => Math.max(...s.src))) + 1;
+      graph = G.uopGraph(G.$("#ch-graph"), P.graph, { height: 520, compact: true, legend: false, showDtype: false });
+      const steps = [{ caption: `<b>start</b>: the flat base buffer of ${n} elements (values 0…${n - 1}, so every value <em>is</em> its buffer index).` }]
+        .concat(P.steps.map((s, i) => ({ caption: `<b>${i + 1}. ${s.op}${s.marg}</b> → shape (${s.shape.join(", ")}). ` + (s.index.includes("Invalid") ? "This view contains padding (hatched)." : "Every cell reads a real buffer element.") + (i === P.steps.length - 1 ? ` <b>Final result</b>: ${JSON.stringify(P.result)}` : "") })));
+      const chips = G.$("#ch-chips"); chips.innerHTML = "";
+      const chipEls = P.steps.map((s, i) => { const c = el("span", { class: "ch07-chip", onclick: () => stepper.go(i + 1) }, `${s.op}${s.marg}`); chips.append(c); return c; });
+      G.$("#ch-stepper").innerHTML = "";
+      stepper = G.stepper(G.$("#ch-stepper"), steps, (i) => {
+        chipEls.forEach((c, j) => c.classList.toggle("hl", j === i - 1));
+        let shape, src, index;
+        if (i === 0) { shape = [n]; src = [...Array(n).keys()]; index = "r0"; }
+        else { const s = P.steps[i - 1]; shape = s.shape; src = s.src; index = s.index; }
+        G.$("#ch-shape").textContent = `shape ${fmt(shape)}` + (shape.length > 2 ? "  (leading axes stacked as row blocks)" : shape.length === 1 && shape[0] > 12 ? "  (1-D, wrapped onto rows for display)" : "");
+        drawGrid(G.$("#ch-grid"), shape, (e, f) => colorCell(e, src[f], n));
+        G.$("#ch-index").textContent = `buf[ ${index} ]`;
+        graph.highlight(i === 0 ? ["n0"] : ["n" + i]);
+        // keep the highlighted node in view inside the scrollable graph box
+        const wrap = G.$("#ch-graph .uopgraph"), node = G.$("#ch-graph .node.hl");
+        if (wrap && node) {
+          const m = /translate\(([-\d.]+)px,\s*([-\d.]+)px\)/.exec(node.style.transform);
+          const vb = graph.svg.viewBox.baseVal, scale = graph.svg.getBoundingClientRect().height / (vb.height || 1);
+          if (m) wrap.scrollTo({ top: +m[2] * scale - wrap.clientHeight / 2, behavior: "smooth" });
+        }
+      }, { autoplayMs: 1600 });
+    }
+    sel.addEventListener("change", () => load(sel.value));
+    load("flip");
+  });
+
+  // ---------- pad / mask visualizer ----------
+  G.loadJSON("../data/ch07_padmodes.json").then((PM) => {
+    const ids = ["t", "b", "l", "r"];
+    const S = [3, 4], n = 12;
+    function update() {
+      const [t, b, l, r] = ids.map((k) => +G.$("#pd-" + k).value);
+      ids.forEach((k) => (G.$(`#pd-${k}v`).textContent = G.$("#pd-" + k).value));
+      const mode = G.$("#pd-mode").value, value = +G.$("#pd-val").value;
+      const err = G.$("#pd-err"); err.textContent = "";
+      const pads = [[t, b], [l, r]];
+      const outS = S.map((s, i) => s + pads[i][0] + pads[i][1]);
+      const opsBox = G.$("#pd-ops"), maskBox = G.$("#pd-mask");
+      if (outS.some((x) => x <= 0)) { err.textContent = "cropped away everything"; G.$("#pd-grid").innerHTML = ""; return; }
+      // source of each output cell per mode
+      const srcOf = (o) => {
+        const ix = o.map((v, i) => v - pads[i][0]);
+        const mapped = ix.map((v, i) => {
+          const s = S[i];
+          if (v >= 0 && v < s) return v;
+          if (mode === "constant") return null;
+          if (mode === "replicate") return Math.min(Math.max(v, 0), s - 1);
+          if (mode === "circular") return ((v % s) + s) % s;
+          if (mode === "reflect") { return v < 0 ? -v : 2 * (s - 1) - v; }
+        });
+        return mapped.some((v) => v === null) ? -1 : mapped[0] * 4 + mapped[1];
+      };
+      if (mode === "reflect" && pads.some(([p, q], i) => p >= S[i] || q >= S[i])) err.textContent = "reflect: padding must be smaller than the size (tinygrad raises ValueError)";
+      if (mode === "circular" && pads.some(([p, q], i) => p > S[i] || q > S[i])) err.textContent = "circular: 'Padding value causes wrapping around more than once.'";
+      const idxs = MV.allIdx(outS);
+      drawGrid(G.$("#pd-grid"), outS, (e, f) => { const s = srcOf(idxs[f]); colorCell(e, s, n, s < 0 ? (mode === "constant" ? String(value) : "·") : s); if (s >= 0 && mode !== "constant" && !(idxs[f].every((v, i) => v - pads[i][0] >= 0 && v - pads[i][0] < S[i]))) e.style.outline = "2px dashed #fff8"; });
+      if (mode === "constant") {
+        const lines = [];
+        const neg = pads.some(([p, q]) => p < 0 || q < 0);
+        let cur = S.slice();
+        if (neg) {
+          const sh = pads.map(([p, q], i) => [Math.max(-p, 0), Math.min(q + S[i], S[i])]);
+          lines.push(`SHRINK${fmt(sh.map(([a, e]) => [a, e - a]))}   (negative pads → shrink first)`);
+          cur = sh.map(([a, e]) => e - a);
+        }
+        const pp = pads.map(([p, q]) => [Math.max(p, 0), Math.max(q, 0)]);
+        const parg = pp.map(([p, q], i) => [p, cur[i] + p + q]);
+        const isNoop = parg.every(([o, s2], i) => o === 0 && s2 === cur[i]);
+        if (!isNoop) lines.push(`PAD${fmt(parg)}   ← marg = (offset, new_size); you wrote pad(${fmt(pp)})`);
+        if (value !== 0 && !isNoop) lines.push(`PAD${fmt(parg)} of a broadcast True mask, then WHERE(mask, padded_x, ${value})`);
+        if (!lines.length) lines.push("nothing: returns self");
+        opsBox.innerHTML = ""; lines.forEach((l) => opsBox.append(el("div", {}, l)));
+        if (t === 1 && b === 1 && l === 2 && r === 1) opsBox.append(el("div", { class: "ch07-lbl" }, "captured from tinygrad for this exact pad: " + JSON.stringify(PM[value !== 0 ? "constant value=-1" : "constant"].ops) + (value !== 0 ? "  (captured with value=-1)" : "")));
+        // mask, symbolic
+        const vs = [];
+        parg.forEach(([o, s2], i) => { if (o > 0) vs.push(`r${i} >= ${o}`); if (o + cur[i] < s2) vs.push(`r${i} < ${o + cur[i]}`); });
+        maskBox.innerHTML = "";
+        maskBox.append(el("div", {}, vs.length ? `valid = ${vs.join(" & ")}` : "valid = True (no padding)"));
+        maskBox.append(el("div", { class: "ch07-lbl" }, vs.length ? `rangeify: WHERE(valid, load(buf[...]), 0)` + (value !== 0 ? `, then WHERE(mask, ·, ${value}) selects the fill value` : "") : ""));
+      } else {
+        opsBox.innerHTML = "";
+        const cap = PM[mode];
+        opsBox.append(el("div", {}, mode === "circular" ? "repeat(…) then SHRINK a window: X.repeat(1+bool(pB)+bool(pA)).shrink(…)" : mode === "replicate" ? "edge slices: X.shrink(first/last row).expand(p) on each side, then cat (= PADs + ADD)" : "edge slices: X[pB:0:-1] and X[s-2:s-2-pA:-1] (negative-stride slices ⇒ flips), then cat (= PADs + ADD)"));
+        opsBox.append(el("div", { class: "ch07-lbl" }, "distinct UOps tinygrad builds for pad(((1,1),(2,1))) in this mode: " + JSON.stringify(cap.ops)));
+        maskBox.innerHTML = ""; maskBox.append(el("div", {}, "dashed cells copy from the cell whose number they show; the masks live inside the cat's PADs (one per piece) and are summed"));
+      }
+    }
+    ids.forEach((k) => G.$("#pd-" + k).addEventListener("input", update));
+    G.$("#pd-mode").addEventListener("change", update); G.$("#pd-val").addEventListener("input", update);
+    update();
+  });
+})();
+</script>
+</body>
+</html>

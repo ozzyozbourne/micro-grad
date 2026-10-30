@@ -1,0 +1,1013 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2. Tensors are lazy — tinygrad internals</title>
+<link rel="stylesheet" href="../assets/vendor/hljs-dark.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/vendor/highlight.min.js"></script>
+<script src="../assets/vendor/dagre.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/chapters.js"></script>
+<script src="../assets/guide.js"></script>
+<style>
+.ch02-cols { display: grid; grid-template-columns: 300px 1fr; gap: 14px; } @media (max-width: 1000px) { .ch02-cols { grid-template-columns: 1fr; } }
+.ch02-ops { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+.ch02-ops button { font-family: var(--mono); font-size: 12.5px; padding: 5px 6px; }
+.ch02-ops button.realize { grid-column: 1 / 3; border-color: var(--green); color: var(--green); }
+.ch02-code { font-family: var(--mono); font-size: 12.5px; background: var(--bg3); border-radius: 6px; padding: 8px 10px; margin-top: 10px; max-height: 230px; overflow: auto; white-space: pre; }
+.ch02-code .new { color: var(--yellow); }
+.ch02-code .rl { color: var(--green); }
+.ch02-stat { display: flex; gap: 14px; flex-wrap: wrap; font-family: var(--mono); font-size: 12.5px; margin: 6px 0; }
+.ch02-stat b { color: var(--yellow); font-weight: 600; }
+.ch02-stat .k0 b { color: var(--green); }
+.ch02-msg { font-size: 13px; color: var(--dim); min-height: 2.6em; margin-top: 6px; }
+.ch02-bc-in { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; font-family: var(--mono); font-size: 13px; }
+.ch02-bc-in input { width: 110px; font-family: var(--mono); background: var(--bg3); color: var(--fg); border: 1px solid var(--line); border-radius: 5px; padding: 4px 6px; }
+.ch02-align { border-collapse: collapse; font-family: var(--mono); font-size: 13px; margin: 10px 0; }
+.ch02-align td { border: 1px solid var(--line); padding: 3px 10px; text-align: center; min-width: 34px; }
+.ch02-align td.lab { text-align: right; border: none; color: var(--dim); }
+.ch02-align td.pad { color: #555; font-style: italic; }
+.ch02-align td.stretch { background: rgba(244,211,69,.18); color: var(--yellow); }
+.ch02-align td.bad { background: rgba(252,98,85,.25); color: var(--red); }
+.ch02-align td.res { color: var(--green); font-weight: 700; }
+.ch02-grids { display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start; margin-top: 8px; }
+.ch02-grids h5 { margin: 0 0 4px; font-size: 12.5px; color: var(--dim); font-family: var(--mono); font-weight: 500; }
+.ch02-grids .cell { width: 40px; height: 30px; font-size: 11px; cursor: default; }
+.ch02-grids .cell.a { color: var(--blue); } .ch02-grids .cell.b { color: var(--purple); }
+.ch02-grids .cell.src { background: rgba(244,211,69,.45); border-color: var(--yellow); color: #000; }
+.ch02-chain { font-family: var(--mono); font-size: 12.5px; background: var(--bg3); border-radius: 6px; padding: 8px 10px; margin-top: 8px; white-space: pre-wrap; }
+.ch02-quiz { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; }
+.ch02-snip { font-family: var(--mono); font-size: 15px; background: var(--bg3); border-radius: 6px; padding: 12px 14px; color: var(--fg); }
+.ch02-answers button { min-width: 64px; font-family: var(--mono); }
+.ch02-answers button.right { border-color: var(--green); color: var(--green); } .ch02-answers button.wrong { border-color: var(--red); color: var(--red); }
+.ch02-score { font-family: var(--mono); font-size: 13px; color: var(--dim); }
+.ch02-hist { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; }
+.ch02-hist span { font-family: var(--mono); font-size: 11px; padding: 2px 6px; border-radius: 4px; border: 1px solid var(--line); }
+.ch02-hist span.ok { border-color: var(--green); color: var(--green); } .ch02-hist span.no { border-color: var(--red); color: var(--red); }
+.ch02-mro { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-family: var(--mono); font-size: 12px; margin: 8px 0; }
+.ch02-mro span { padding: 3px 8px; border-radius: 5px; background: var(--bg3); border: 1px solid var(--line); cursor: pointer; }
+.ch02-mro span.on { border-color: var(--yellow); color: var(--yellow); }
+.ch02-mro i { color: var(--dim); font-style: normal; }
+.ch02-mixinfo { font-size: 13.5px; background: var(--bg3); border-radius: 6px; padding: 8px 12px; min-height: 3em; }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="sidebar" id="sidebar"></nav>
+<main>
+  <h1><span class="chnum">CHAPTER 02</span>Tensors are lazy</h1>
+  <p class="lede">A tinygrad <code>Tensor</code> is a thin handle around one <code>UOp</code>. Every method you call — <code>+</code>, <code>.exp()</code>,
+  <code>.T</code>, <code>.sum()</code> — builds a <em>new</em> UOp out of the old ones and wraps it in a new Tensor. Nothing is computed. This chapter
+  opens up the handle, watches the graph grow node by node, and then finds out exactly which calls make tinygrad finally do the work, and what
+  happens to every other live Tensor when it does.</p>
+
+  <div class="callout note">All outputs are from tinygrad commit <code>6a404871</code> on <code>DEV=CPU</code>. If you remember older tinygrad, the
+  <code>LazyBuffer</code> class is gone. The <code>.lazydata</code> attribute became <code>.uop</code>, and the "lazy buffer" is now simply the tensor's
+  UOp graph. <code>requires_grad</code> no longer exists as a slot either (see 2.2).</div>
+
+  <!-- ============================================================ -->
+  <h2 id="idea"><span class="sec">2.1</span>The idea: a Tensor is a promise</h2>
+  <p>In NumPy or eager PyTorch, <code>c = a * b</code> allocates memory for <code>c</code> and fills it before the line returns. In tinygrad,
+  <code>c = a * b</code> returns in microseconds no matter how big <code>a</code> and <code>b</code> are, because all it does is make a node
+  <code>MUL(a.uop, b.uop)</code>. The tensor <code>c</code> is a <b>promise</b>: "if anyone ever asks, my value is <i>a times b</i>".</p>
+
+  <div class="callout analogy"><span class="title">Analogy: a spreadsheet formula</span>
+  Typing <code>=A1*B1+1</code> into a cell stores the formula, not a number. tinygrad Tensors are cells holding formulas that refer to other cells.
+  The twist: tinygrad doesn't recompute on every keystroke. It waits until you <em>read</em> a cell (<code>.tolist()</code>, <code>.item()</code>,
+  <code>.numpy()</code>) or explicitly say <code>.realize()</code>. Then it compiles all the formulas you need into as few kernels as possible.
+  Afterwards it replaces the formula in that cell, and every reference to it, with the number it computed.</div>
+
+  <p>That gives three questions, and this chapter answers each one with real code and real output:</p>
+  <ol>
+    <li><b>What does the promise look like?</b> It is a <code>.uop</code> graph: what each op adds, how creation works, how broadcasting is
+    represented (2.2–2.6).</li>
+    <li><b>When is it kept?</b> The calls that trigger realization, and the many that don't (2.8).</li>
+    <li><b>What happens when it is kept?</b> <code>realize()</code> → <code>linear_with_vars</code> → <code>run_linear</code>. After that, every live
+    tensor that referenced the computed value is rewritten to read the buffer instead (2.7, 2.11).</li>
+  </ol>
+
+  <!-- ============================================================ -->
+  <h2 id="holds"><span class="sec">2.2</span>What a Tensor object holds</h2>
+  <p>Open <a class="src" data-path="tinygrad/tensor.py" data-line="43">class Tensor</a> and the first surprise is how little is in it:</p>
+  <div class="codecap"><b>tinygrad/tensor.py</b> — the entire per-instance state</div>
+  <pre><code class="language-python">class Tensor(RandMixin):
+  __slots__ = "uop", "is_param", "grad"</code></pre>
+  <table>
+    <tr><th>slot</th><th>type</th><th>meaning</th></tr>
+    <tr><td><code>uop</code></td><td><code>UOp</code></td><td>the root of this tensor's graph. <b>Everything else is derived from it</b>: <code>shape</code>, <code>dtype</code>,
+    <code>device</code> are properties that read <code>self.uop.shape</code>, <code>self.uop.dtype</code>, <code>self.uop.device</code>.</td></tr>
+    <tr><td><code>grad</code></td><td><code>Tensor | None</code></td><td>filled in by <code>.backward()</code> (Chapter 20).</td></tr>
+    <tr><td><code>is_param</code></td><td><code>bool</code></td><td>always <code>True</code> at construction; used by the <code>@function</code>/JIT machinery to decide what is a
+    parameter.</td></tr>
+  </table>
+  <p>There is no <code>requires_grad</code>, no stored shape, no stored device, no data pointer. A realized tensor is simply one whose
+  <code>uop</code> is (a view of) a <code>BUFFER</code> UOp. The buffer object holds the actual memory.</p>
+  <div class="codecap"><b>examples/02_lazy_tensor.py</b> — section 1 · <code>DEV=CPU python3 examples/02_lazy_tensor.py</code></div>
+  <pre class="output"><code>### 1. what a Tensor object is
+Tensor.__slots__ = ('uop', 'is_param', 'grad')
+MRO: Tensor -&gt; RandMixin -&gt; OpMixin -&gt; ElementwiseMixin -&gt; CreationMixin -&gt; ReduceMixin -&gt; DTypeMixin -&gt; MovementMixin -&gt; object
+a.uop is a UOp | a.shape (3,) | a.dtype dtypes.f32 | a.device CPU
+a.grad = None | a.is_param = True
+shape/dtype/device are not stored on the Tensor, they are read from the UOp: True</code></pre>
+  <p>The constructor, <a class="src" data-path="tinygrad/tensor.py" data-line="56">Tensor.__init__</a>, is a dispatcher. Its only job is to turn
+  <code>data</code> into a UOp, move it to the right device, and register the new tensor in <code>all_tensors</code>:</p>
+  <div class="codecap"><b>tinygrad/tensor.py:56</b> — Tensor.__init__ (abridged: the DISK/path branch is omitted)</div>
+  <pre><code class="language-python">    if data is None:                               data = UOp.const(0.0, _dtype)
+    elif isinstance(data, get_args(ConstType)):    data = UOp.const(data, _dtype)          # Python scalar -> CONST
+    elif is_numpy_ndarray(data) and data.shape == (): data = UOp.const(data.item(), ...)
+    elif not isinstance(data, UOp):
+      if _dtype in dtypes.weaks: raise RuntimeError(f"cannot create storage for weak dtype {_dtype}")
+      if isinstance(data, bytes):            data = UOp._frompy(data, _dtype or dtypes.uint8)
+      elif isinstance(data, (list, tuple)):  data = UOp._frompy(data, _dtype or dtypes.from_py(data))  # -> BUFFER on PYTHON
+      elif is_numpy_ndarray(data):           data = _fromnp(...)                                 # -> BUFFER on NPY
+    # data might be on a different device
+    self.uop:UOp = data if data.device is None or data.device == _device else data.copy_to_device(_device)  # COPY
+    if _dtype is not None: self.uop = self.uop.cast(_dtype)
+    all_tensors[weakref.ref(self)] = None</code></pre>
+
+  <!-- ============================================================ -->
+  <h2 id="builds"><span class="sec">2.3</span>Every op builds a UOp, nothing is computed</h2>
+  <p>Every Tensor method ends in <a class="src" data-path="tinygrad/tensor.py" data-line="103">Tensor._apply_uop</a>. It unwraps the input
+  tensors to their UOps, calls a UOp-level function, and wraps the result in a brand-new Tensor. The constructor is skipped
+  (<code>Tensor.__new__</code>). The inputs are never modified:</p>
+  <div class="codecap"><b>tinygrad/tensor.py:103</b></div>
+  <pre><code class="language-python">  def _apply_uop(self, fxn:Callable[..., UOp], *x:Tensor, **kwargs) -> Tensor:
+    srcs = (self,)+x
+    new_uop: UOp = fxn(*[t.uop for t in srcs], **kwargs)
+    # directly create the Tensor
+    ret = Tensor.__new__(Tensor)
+    ret.uop, ret.grad, ret.is_param = new_uop, None, True
+    # add to all_tensors after construction succeeds
+    all_tensors[weakref.ref(ret)] = None
+    return ret
+
+  # alu, _uop, _wrap_uop and const are used by the mixins
+  def alu(self, op: Ops, *src: Tensor) -> Tensor: return self._apply_uop(lambda *u: u[0].alu(op, *u[1:]), *src)</code></pre>
+  <p>So <code>d = (a*b + 1).exp().sum()</code> is four <code>_apply_uop</code> calls, and the kernel counter stays at zero. The printout below is a
+  compact one-line-per-node view of <code>d.uop</code> (op, dtype, shape, arg). Notice that <code>exp</code> is not a primitive. It became
+  <code>EXP2(x * 1/ln 2)</code>, the first sign that the Tensor API is sugar over a small set of UOps.</p>
+  <pre class="output"><code>### 2. every op builds a UOp, nothing is computed
+kernels run so far: 0
+d.uop:
+REDUCE   dtypes.f32        ()       (Ops.ADD, 1)
+  EXP2     dtypes.f32        (3,)     
+    MUL      dtypes.f32        (3,)     
+      ADD      dtypes.f32        (3,)     
+        MUL      dtypes.f32        (3,)     
+          COPY     dtypes.f32        (3,)     CPU
+            BUFFER   dtypes.f32        (3,)     slot=0 device=PYTHON
+              CONST    dtypes.weakint    ()       3
+          COPY     dtypes.f32        (3,)     CPU
+            BUFFER   dtypes.f32        (3,)     slot=1 device=PYTHON
+              CONST    dtypes.weakint    ()       3
+        CONST    dtypes.weakfloat  ()       1.0
+      CONST    dtypes.weakfloat  ()       1.4426950408889634</code></pre>
+
+  <p>To see exactly what each method contributes, <code>examples/02_op_templates.py</code> applies <b>one</b> method to a placeholder
+  <code>X</code> of shape (2, 3) and lists only the nodes that were created, i.e. the whole sub-graph between the result and <code>X</code>:</p>
+  <div class="codecap"><b>examples/02_op_templates.py</b> — <code>--dump</code> writes the per-shape templates to <code>data/ch02_templates.json</code> for the demo below</div>
+  <pre class="output"><code>x + 1            -&gt; shape (2, 3)  adds 2 UOps: CONST ADD
+x * 2            -&gt; shape (2, 3)  adds 2 UOps: CONST MUL
+x * x            -&gt; shape (2, 3)  adds 1 UOps: MUL
+-x               -&gt; shape (2, 3)  adds 2 UOps: CONST MUL
+x.exp()          -&gt; shape (2, 3)  adds 3 UOps: CONST MUL EXP2
+x.relu()         -&gt; shape (2, 3)  adds 3 UOps: CONST CMPLT WHERE
+x.sqrt()         -&gt; shape (2, 3)  adds 1 UOps: SQRT
+x + b            -&gt; shape (2, 3)  adds 4 UOps: CONST BUFFER COPY ADD
+x.sum(axis=-1)   -&gt; shape (2,)    adds 5 UOps: CONST CONST STACK PERMUTE REDUCE
+x.T              -&gt; shape (3, 2)  adds 4 UOps: CONST CONST STACK PERMUTE
+x.reshape(-1)    -&gt; shape (6,)    adds 2 UOps: CONST RESHAPE
+x.contiguous()   -&gt; shape (2, 3)  adds 1 UOps: STAGE
+
+start tensor A = Tensor([[1.,2,3],[4,5,6]]): COPY &lt;- RESHAPE &lt;- STACK &lt;- CONST &lt;- CONST &lt;- BUFFER &lt;- CONST
+a realized (2, 3) tensor is: RESHAPE &lt;- STACK &lt;- CONST &lt;- CONST &lt;- BUFFER &lt;- CONST</code></pre>
+  <ul>
+    <li><code>x * x</code> adds <b>one</b> node with the same source twice: <code>MUL(X, X)</code>.</li>
+    <li><code>x + 1</code> adds a <code>CONST 1.0</code> with dtype <code>weakfloat</code>. Python literals stay <em>weak</em> (Chapter 3), and the CONST
+    has shape <code>()</code>. It is broadcast by the ADD's shape rule without an EXPAND (2.6).</li>
+    <li><code>relu</code> is <code>WHERE(CMPLT(0.0, x), x, 0.0)</code>: one CONST used twice. <code>-x</code> is <code>x * -1</code>.</li>
+    <li>Movement ops carry their argument as UOps: <code>x.T</code> is <code>PERMUTE(X, STACK(1, 0))</code>, and <code>reshape</code> takes a CONST/STACK shape.
+    Shapes are data in the graph, which is how symbolic shapes work (Chapter 6).</li>
+    <li><code>sum(axis=-1)</code> = <code>REDUCE(PERMUTE(X, (1,0)))</code> with arg <code>(Ops.ADD, 1)</code>. <a class="src" data-path="tinygrad/uop/ops.py" data-line="624">UOp._rop</a> permutes the reduced axes to the <em>front</em>, and the arg says "reduce the first 1 axis" (Chapter 9).</li>
+  </ul>
+
+  <div class="demo" id="demo-grow">
+    <div class="demo-title">The graph grows as you type</div>
+    <div class="demo-desc">Start from <code>t = Tensor([[1.,2,3],[4,5,6]])</code> (its real graph, captured). Every button applies one method to
+    <code>t</code>, appending exactly the nodes captured from real tinygrad for that method and input shape. New nodes flash yellow. Identical nodes are
+    shared, because UOps are hash-consed, so a second <code>t + 1</code> reuses the existing <code>CONST 1.0</code>. Kernels stay at 0 until you press
+    <b>realize</b>. Then the whole graph collapses into the buffer form a realized tensor of that shape really has.</div>
+    <div class="ch02-cols">
+      <div>
+        <div class="ch02-ops" id="grow-ops"></div>
+        <div class="ch02-stat"><span>UOps <b id="grow-n">0</b></span><span>shape <b id="grow-shape"></b></span><span class="k0">kernels run <b id="grow-k">0</b></span></div>
+        <div class="ch02-code" id="grow-code"></div>
+        <div class="ch02-msg" id="grow-msg"></div>
+        <div class="controls"><button id="grow-undo">↶ undo</button><button id="grow-reset">⟲ reset</button></div>
+      </div>
+      <div id="grow-graph"></div>
+    </div>
+  </div>
+
+  <div class="quiz" data-answer="2">
+    <div class="q">You run <code>c = a * b</code> on two 1 GB tensors. Roughly how much new device memory does that line allocate?</div>
+    <button class="opt">1 GB, the size of the output</button>
+    <button class="opt">2 GB, the inputs are copied first</button>
+    <button class="opt">None. It creates one <code>MUL</code> UOp and a Tensor wrapper (a few hundred bytes of Python objects)</button>
+    <button class="opt">It depends on <code>DEBUG</code></button>
+    <div class="explain"><code>_apply_uop</code> only calls <code>a.uop.alu(Ops.MUL, b.uop)</code>. Memory is allocated when <code>linear_with_vars</code>
+    decides an output needs storage (<code>UOp.new_buffer</code>) and the memory planner / <code>run_linear</code> allocates it.</div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="mixins"><span class="sec">2.4</span>The mixins: one API, two classes</h2>
+  <p>Where are <code>exp</code>, <code>sum</code>, <code>reshape</code> and <code>relu</code> defined? <b>Not in tensor.py.</b> They live in
+  <code>tinygrad/mixin/</code>, and both <code>Tensor</code> and <code>UOp</code> inherit them. A mixin method calls a handful of hooks
+  (<code>alu</code>, <code>_mop</code>, <code>_rop</code>, <code>const</code>, <code>_wrap_uop</code>). The Tensor implements each hook with
+  <code>_apply_uop</code>, and the UOp implements it by building the node directly. The same Python code therefore builds the same graph in both classes:</p>
+  <pre class="output"><code>### 3. Tensor and UOp share the same mixins: the Tensor graph IS the UOp graph
+(a*b+1).uop is (a.uop*b.uop+1) -&gt; True
+UOp MRO also contains: ['RandMixin', 'OpMixin', 'ElementwiseMixin', 'CreationMixin', 'ReduceMixin', 'DTypeMixin', 'MovementMixin']</code></pre>
+  <p><code>(a*b+1).uop is (a.uop*b.uop+1)</code> prints <code>True</code>, so it is the <em>same object</em>, thanks to hash-consing. The Tensor
+  graph <b>is</b> the UOp graph. Click a class in the method-resolution order to see what it owns:</p>
+  <div class="demo" id="demo-mro">
+    <div class="demo-title">Tensor's MRO, file by file</div>
+    <div class="demo-desc">The real <code>Tensor.__mro__</code> (from section 1 of the output). Line counts are from this commit (<code>wc -l</code>).</div>
+    <div class="ch02-mro" id="mro"></div>
+    <div class="ch02-mixinfo" id="mro-info"></div>
+  </div>
+
+  <div class="callout deep"><span class="title">Why share the mixins?</span>
+  The scheduler and codegen also need to write <code>x.reshape(...)</code>, <code>x + 1</code> or <code>x.where(a, b)</code> on raw UOps while rewriting
+  graphs. Sharing one implementation means a pattern written in the compiler and a line written by a user produce identical nodes. It also means
+  hash-consing dedups them, and there is no separate "Tensor op" layer to keep in sync. The old <code>LazyBuffer</code> layer existed only to bridge
+  that gap, and it is gone.</div>
+
+  <!-- ============================================================ -->
+  <h2 id="creation"><span class="sec">2.5</span>Creation: which UOps appear</h2>
+  <p>Creation is where real data enters the graph, and each constructor leaves a distinct fingerprint:</p>
+  <pre class="output"><code>### 4. creation: which UOps appear
+-- Tensor([1,2,3]):  dtype=dtypes.i32 device=CPU
+  COPY     dtypes.i32        (3,)     CPU
+    BUFFER   dtypes.i32        (3,)     slot=2 device=PYTHON
+      CONST    dtypes.weakint    ()       3
+-- Tensor([1,2], device='PYTHON'):  dtype=dtypes.i32 device=PYTHON
+  BUFFER   dtypes.i32        (2,)     slot=3 device=PYTHON
+    CONST    dtypes.weakint    ()       2
+-- Tensor(3.5):  dtype=dtypes.weakfloat device=None
+  CONST    dtypes.weakfloat  ()       3.5
+-- Tensor.empty(2,2):  dtype=dtypes.f32 device=CPU
+  RESHAPE  dtypes.f32        (2, 2)   
+    ALLOC    dtypes.f32        (4,)     slot=4 device=CPU
+      CONST    dtypes.weakint    ()       4
+    STACK    dtypes.weakint    (2,)     
+      CONST    dtypes.weakint    ()       2
+      CONST    dtypes.weakint    ()       2
+-- Tensor.ones(2):  dtype=dtypes.f32 device=CPU
+  AFTER    dtypes.f32        (2,)     
+    ALLOC    dtypes.f32        (2,)     slot=5 device=CPU
+      CONST    dtypes.weakint    ()       2
+    STORE    dtypes.void       (2,)     
+      ALLOC    dtypes.f32        (2,)     slot=5 device=CPU (shared, see above)
+      EXPAND   dtypes.weakfloat  (2,)     
+        CONST    dtypes.weakfloat  ()       1.0
+        CONST    dtypes.weakint    ()       2
+-- Tensor.full((2,3), 7, buffer=False):  dtype=dtypes.weakint device=None
+  EXPAND   dtypes.weakint    (2, 3)   
+    CONST    dtypes.weakint    ()       7
+    STACK    dtypes.weakint    (2,)     
+      CONST    dtypes.weakint    ()       2
+      CONST    dtypes.weakint    ()       3
+-- Tensor.rand(3): 101 UOps (a threefry PRNG graph), top op = AFTER</code></pre>
+  <div class="tabs">
+    <div class="tabpane" data-title="Python list">
+      <p><a class="src" data-path="tinygrad/uop/ops.py" data-line="829">UOp._frompy</a> packs the list with <code>struct.pack</code> into a
+      <code>BUFFER</code> on the <b>PYTHON</b> device (host memory), already allocated and filled. Then <code>__init__</code> calls
+      <code>copy_to_device("CPU")</code>, which adds a <code>COPY</code>. The data does not reach the CPU device until a copy kernel runs. That copy is
+      the one kernel <code>Tensor([1., 2.]).realize()</code> runs (2.8). With <code>device="PYTHON"</code> there is no COPY. dtype comes from
+      <code>dtypes.from_py</code>: ints → <code>int32</code>, floats → <code>float32</code> (<code>DEFAULT_INT</code>/<code>DEFAULT_FLOAT</code>).
+      bfloat16/fp8 have no struct format, so they are packed as float32 and given a <code>CAST</code>.</p>
+    </div>
+    <div class="tabpane" data-title="Python scalar">
+      <p><code>Tensor(3.5)</code> is just <code>UOp.const(3.5)</code>: a <code>CONST</code> with <b>no device</b> (<code>device=None</code>) and the weak dtype
+      <code>weakfloat</code>. It has no storage and never will on its own. To read it (<code>.item()</code>), <code>_buffer</code> first clones it to
+      CPU (<code>x.clone("CPU")</code>), and that clone commits the weak dtype to <code>float32</code>.</p>
+    </div>
+    <div class="tabpane" data-title="numpy">
+      <div class="codecap"><b>tinygrad/tensor.py:37</b></div>
+      <pre><code class="language-python">def _fromnp(x: 'numpy.ndarray') -> UOp:
+  ret = UOp.new_buffer("NPY", x.size, _from_np_dtype(x.dtype))
+  # fake realize
+  ret.buffer.allocate(x)
+  return ret.reshape(x.shape)</code></pre>
+      <p>A <code>BUFFER</code> on the <b>NPY</b> device whose memory <em>is</em> the numpy array (zero copy), reshaped, then <code>COPY</code>'d to the default
+      device like a list. (numpy is not installed in the environment used for this guide, so this case is read from the source, not run.)</p>
+    </div>
+    <div class="tabpane" data-title="empty">
+      <p><code>Tensor.empty(2,2)</code> is <code>RESHAPE(ALLOC(4))</code>. <code>ALLOC</code> "declares unbound global storage". It has a size and a device
+      but no <code>Buffer</code> yet. Its arg carries <code>bind_on_realize</code>, so <code>linear_with_vars</code> swaps it for a real
+      <code>BUFFER</code> when it is realized. Its contents are undefined.</p>
+    </div>
+    <div class="tabpane" data-title="ones / full">
+      <div class="codecap"><b>tinygrad/mixin/creation.py:68</b> — Tensor.full (the body)</div>
+      <pre><code class="language-python">    dt = to_dtype(dtype) if dtype is not None else fill_value.dtype if isinstance(fill_value, UOp) else dtypes.from_py(fill_value)
+    val = cls.const(fill_value, dt).expand(new_shape)
+    if not buffer: return val
+    ...
+    else: ret = val.empty_like(None if dt in dtypes.weaks else dt, device)
+    return cls._wrap_uop(ret._uop.after(ret._uop.store(val._uop)))</code></pre>
+      <p><code>ones</code>/<code>zeros</code>/<code>full</code> are <code>EXPAND(CONST)</code>, a broadcast scalar that costs nothing. By default
+      (<code>buffer=True</code>) it is stored into a fresh <code>ALLOC</code>: <code>AFTER(ALLOC, STORE(ALLOC, EXPAND(CONST)))</code>, which means "this
+      allocation, after the store into it". That is why <code>Tensor.ones(4).realize()</code> runs one kernel. With <code>buffer=False</code> you get the
+      bare <code>EXPAND(CONST)</code>, still weak and deviceless.</p>
+    </div>
+    <div class="tabpane" data-title="rand">
+      <p><code>Tensor.rand(3)</code> builds a <b>101-UOp</b> graph: a threefry counter-based PRNG written in UOps
+      (<a class="src" data-path="tinygrad/mixin/rand.py" data-line="50">RandMixin.rand</a>). The key and counter live in per-device state
+      buffers, so realizing it runs 5 kernels (counter update + the random bits + conversion to float). Random numbers are just more lazy graph (Chapter 8).</p>
+    </div>
+  </div>
+
+  <div class="quiz" data-answer="1">
+    <div class="q">What is the graph of <code>Tensor([1, 2, 3])</code> on a default <code>DEV=CPU</code> machine, and what dtype does it have?</div>
+    <button class="opt"><code>CONST</code>, dtype <code>weakint</code></button>
+    <button class="opt"><code>COPY(BUFFER on PYTHON)</code> to CPU, dtype <code>int32</code></button>
+    <button class="opt"><code>BUFFER</code> on CPU, already filled, dtype <code>int64</code></button>
+    <button class="opt"><code>AFTER(ALLOC, STORE(...))</code>, dtype <code>float32</code></button>
+    <div class="explain">Lists go through <code>_frompy</code> into a host buffer on the PYTHON device. The tensor's device is CPU, so <code>__init__</code>
+    adds a COPY. <code>dtypes.from_py</code> of a list of ints is <code>DEFAULT_INT</code> = int32. Only scalars become CONSTs, and only they stay weak.</div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="broadcast"><span class="sec">2.6</span>Broadcasting: a shape rule, not an op</h2>
+  <p>Broadcasting in tinygrad uses two separate mechanisms, and confusing them is a common source of misreading graphs:</p>
+  <ol>
+    <li><b>ALU ops broadcast implicitly.</b> <code>x + y</code> with shapes (3,1) and (4,) produces an <code>ADD</code> whose srcs have their
+    <em>original</em> shapes. No EXPAND is inserted. The <a class="src" data-path="tinygrad/uop/ops.py" data-line="315">UOp._shape</a> property
+    computes the output shape with <code>_broadcast_shape</code>. "Broadcasting lives in _shape property now", as the source puts it. Set
+    <code>DISALLOW_BROADCAST=1</code> to turn this into an error and find accidental broadcasts.</li>
+    <li><b>Explicit <code>expand</code></b> (and <code>_broadcast_to</code>, used by <code>assign</code> and friends) emits real movement ops:
+    <code>RESHAPE</code> to squeeze away the size-1 dims being stretched, <code>EXPAND</code> which only adds dims <em>on the left</em>, and a
+    <code>PERMUTE</code> to put the new dims where they belong.</li>
+  </ol>
+  <div class="codecap"><b>tinygrad/uop/ops.py:76</b> — the rule</div>
+  <pre><code class="language-python">def _align_left(*shapes:tuple[sint, ...]) -> tuple[tuple[sint, ...], ...]:
+  max_dim = max(len(s) for s in shapes)
+  return tuple((1,)*(max_dim-len(s))+s for s in shapes)
+def _broadcast_shape(*shapes:tuple[sint, ...]) -> tuple[sint, ...]:
+  if all_same(shapes): return shapes[0]
+  # per right-aligned dim: sizes of 1 broadcast to the others, which must all agree
+  ret = []
+  for sizes in zip(*_align_left(*shapes)):
+    if len(rest:=dedup([s for s in sizes if isinstance(s, UOp) or s != 1])) > 1:
+      raise IndexError(f"shape mismatch: objects cannot be broadcast to a single shape {shapes}")
+    ret.append(rest[0] if rest else 1)
+  return tuple(ret)</code></pre>
+  <div class="codecap"><b>tinygrad/mixin/movement.py:128</b> — explicit broadcast (body after the checks)</div>
+  <pre><code class="language-python">    # EXPAND only adds dims on the left. squeeze 1s that need expanding, EXPAND on left, permute back.
+    n_left = len(new_shape) - len(self.shape)
+    expand_at = tuple(i-n_left for i in broadcast_axes(self.shape, new_shape) if i >= n_left)
+    kept = tuple(i for i in range(len(self.shape)) if i not in expand_at)
+    squeezed = self.reshape(tuple(self.shape[i] for i in kept))
+    expanded = squeezed._mop(Ops.EXPAND, arg=new_shape[:n_left] + tuple(new_shape[n_left+i] for i in expand_at))
+    # expanded shape = [left] + [expand_at dims] + [kept dims], permute to new_shape
+    perm = tuple(range(n_left)) + tuple(
+      n_left + (expand_at.index(i) if i in expand_at else len(expand_at) + kept.index(i)) for i in range(len(self.shape)))
+    return expanded.permute(perm)</code></pre>
+  <div class="codecap"><b>examples/02_broadcast.py</b> — <code>DEV=CPU python3 examples/02_broadcast.py</code></div>
+  <pre class="output"><code>### 1. implicit broadcasting in ALU ops: only the shape rule changes
+(3, 1)     + (4,)     -&gt; (3, 4)   z.uop.op=ADD srcs=[(3, 1), (4,)]
+(2, 1, 4)  + (3, 1)   -&gt; (2, 3, 4)   z.uop.op=ADD srcs=[(2, 1, 4), (3, 1)]
+(5,)       + ()       -&gt; (5,)   z.uop.op=ADD srcs=[(5,), ()]
+(2, 3)     + (3, 2)   -&gt; IndexError: shape mismatch: objects cannot be broadcast to a single shape ((2, 3), (3, 2))
+
+### 2. the rule, step by step: _align_left then per-dim 'the non-1 sizes must agree'
+_align_left (2, 1, 4) (3, 1) = ((2, 1, 4), (1, 3, 1)) -&gt; _broadcast_shape = (2, 3, 4)
+
+### 3. explicit _broadcast_to: RESHAPE -&gt; EXPAND(left) -&gt; PERMUTE
+(3, 1)     -&gt; (3, 5)     broadcast_axes=(1,)     : PERMUTE(3, 5) &lt;- EXPAND(5, 3) &lt;- RESHAPE(3,)
+(3,)       -&gt; (4, 3)     broadcast_axes=(0,)     : EXPAND(4, 3)
+(1, 3)     -&gt; (2, 4, 3)  broadcast_axes=(0, 1)   : EXPAND(2, 4, 3) &lt;- RESHAPE(3,)
+(2, 1, 4)  -&gt; (2, 3, 4)  broadcast_axes=(1,)     : PERMUTE(2, 3, 4) &lt;- EXPAND(3, 2, 4) &lt;- RESHAPE(2, 4)
+(1,)       -&gt; (5,)       broadcast_axes=(0,)     : EXPAND(5,) &lt;- RESHAPE()
+(3, 1)     -&gt; (2, 3, 4)  broadcast_axes=(0, 2)   : PERMUTE(2, 3, 4) &lt;- EXPAND(2, 4, 3) &lt;- RESHAPE(3,)
+()         -&gt; (2, 3)     broadcast_axes=(0, 1)   : EXPAND(2, 3)</code></pre>
+
+  <div class="demo" id="demo-bc">
+    <div class="demo-title">Broadcasting visualizer</div>
+    <div class="demo-desc">Type two shapes. The table right-aligns them exactly like <code>_align_left</code>, marks the dims that stretch (yellow) or clash (red),
+    and computes <code>_broadcast_shape</code>. For results with ≤ 2 dims, hover an output cell to see which input elements it reads. Below, the explicit
+    <code>a._broadcast_to(out)</code> chain is computed with a line-by-line JS port of <code>movement.py:128</code>. It reproduces every row of the output above.</div>
+    <div class="ch02-bc-in">a.shape <input id="bc-a" value="3,1"> b.shape <input id="bc-b" value="4">
+      <span id="bc-presets"></span></div>
+    <div id="bc-table"></div>
+    <div class="ch02-grids" id="bc-grids"></div>
+    <div class="ch02-chain" id="bc-chain"></div>
+  </div>
+
+  <p><b>Hammer it again.</b> The UOp printout of the same two cases shows both mechanisms side by side. <code>x + y</code> is an <code>ADD</code> directly over
+  <code>RESHAPE(ALLOC)</code> and <code>ALLOC</code>. <code>x.expand(3,5)</code> is the RESHAPE → EXPAND(5,3) → PERMUTE(1,0) chain. The shape arguments
+  appear as <code>STACK</code>s of CONSTs, which is why the tree is so tall:</p>
+  <pre class="output"><code>### 5. broadcasting lives in the shape rule of the ALU op
+x.shape (3, 1) + y.shape (4,) -&gt; (3, 4)
+ADD      dtypes.f32        (3, 4)   
+  RESHAPE  dtypes.f32        (3, 1)   
+    ALLOC    dtypes.f32        (3,)     slot=10 device=CPU
+      CONST    dtypes.weakint    ()       3
+    STACK    dtypes.weakint    (2,)     
+      CONST    dtypes.weakint    ()       3
+      CONST    dtypes.weakint    ()       1
+  ALLOC    dtypes.f32        (4,)     slot=11 device=CPU
+    CONST    dtypes.weakint    ()       4
+explicit x.expand(3,5):
+PERMUTE  dtypes.f32        (3, 5)   
+  EXPAND   dtypes.f32        (5, 3)   
+    RESHAPE  dtypes.f32        (3,)     
+      RESHAPE  dtypes.f32        (3, 1)   
+        ALLOC    dtypes.f32        (3,)     slot=10 device=CPU
+          CONST    dtypes.weakint    ()       3
+        STACK    dtypes.weakint    (2,)     
+          CONST    dtypes.weakint    ()       3
+          CONST    dtypes.weakint    ()       1
+      CONST    dtypes.weakint    ()       3
+    CONST    dtypes.weakint    ()       5
+  STACK    dtypes.weakint    (2,)     
+    CONST    dtypes.weakint    ()       1
+    CONST    dtypes.weakint    ()       0</code></pre>
+
+  <div class="quiz" data-answer="3">
+    <div class="q">What is <code>Tensor.empty(2,1,4) + Tensor.empty(3,1)</code>'s shape, and how many EXPAND UOps does the ADD's graph contain?</div>
+    <button class="opt">Error: the shapes have different lengths</button>
+    <button class="opt">(2, 3, 4), with two EXPANDs (one per input)</button>
+    <button class="opt">(2, 3, 4), with one EXPAND for the smaller input</button>
+    <button class="opt">(2, 3, 4), with zero EXPANDs: the ADD's shape is computed by <code>_broadcast_shape</code></button>
+    <div class="explain">Aligned: (2,1,4) and (1,3,1). Per dim the non-1 sizes are {2}, {3}, {4}, so the result is (2,3,4). Section 1 of
+    <code>02_broadcast.py</code> prints <code>srcs=[(2, 1, 4), (3, 1)]</code>, the original shapes. Rangeify (Chapter 10) later turns the broadcast into
+    index math.</div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="realize"><span class="sec">2.7</span><code>realize()</code>: keeping the promise</h2>
+  <div class="codecap"><b>tinygrad/tensor.py:217</b></div>
+  <pre><code class="language-python">  @disable_gc()
+  def realize(self, *lst:Tensor, do_update_stats=True) -> Tensor:
+    """Triggers the computation needed to create these Tensor(s)."""
+    to_realize = [x for x in (self,)+lst if x.uop.base.needs_storage()]
+    if len(to_realize):
+      linear, var_vals = Tensor.linear_with_vars(*to_realize)
+      run_linear(linear, var_vals, update_stats=do_update_stats)
+    return self</code></pre>
+  <p>Three lines carry the weight:</p>
+  <ul>
+    <li><code>needs_storage()</code> filters out tensors that are already buffers (or views of one), which is why <code>a.realize()</code> on a realized
+    tensor runs 0 kernels.</li>
+    <li><a class="src" data-path="tinygrad/tensor.py" data-line="166">linear_with_vars</a> is the whole scheduler entry point (Chapters 10–12). The part
+    that belongs to <em>this</em> chapter is the start and the end of it:
+      <ol>
+        <li>It refuses to realize a weak dtype that lives on a device ("weakness ends where storage begins").</li>
+        <li>For each output that needs storage, it builds <code>buf = UOp.new_buffer(device, size, dtype)</code> and replaces the compute by
+        <code>buf.after(buf.store(compute))</code>. A pending <code>ALLOC</code> with <code>bind_on_realize</code> becomes a real <code>BUFFER</code>.</li>
+        <li>It drops the AFTERs (<code>pm_drop_after</code>) to get <code>becomes_map</code>: <i>compute UOp → its storage</i>.</li>
+        <li>It calls <code>_apply_map_to_tensors(becomes_map | tensor_map, name="bufferize")</code> <b>before anything runs</b>, so every live tensor
+        already points at the buffer that is about to be filled.</li>
+        <li>It returns <code>create_linear_with_vars(sink)</code>: the <code>LINEAR</code> of CALLs.</li>
+      </ol></li>
+    <li><code>run_linear</code> executes the CALLs and fills the buffers (Chapter 17).</li>
+  </ul>
+  <div class="codecap"><b>tinygrad/tensor.py:18</b> — the rewrite that reaches every live tensor</div>
+  <pre><code class="language-python">all_tensors: dict[weakref.ref[Tensor], None] = {}
+def _apply_map_to_tensors(applied_map:dict[UOp, UOp], name:str) -> None:
+  with cpu_profile(TracingKey(name), "TINY"):
+    # get tensors in scope
+    in_scope: dict[UOp, bool] = {}
+    def visitor(node: UOp) -> bool: return True if node in applied_map else any(in_scope.get(s, False) for s in node.src)
+    scope_tensors: list[Tensor] = [t for tref in list(all_tensors) if (t:=tref()) is not None and t.uop.topovisit(visitor, in_scope)]
+
+    # get all Tensors and apply the map. always walk: replace exactly the nodes the map names, values are final
+    sink = UOp.sink(*[t.uop for t in scope_tensors])
+    new_sink = sink.substitute(applied_map, name=f"substitute {name}", walk=True)
+
+    # set the relevant uop to the realized UOps
+    for t,ns in zip(scope_tensors, new_sink.src):
+      ...  # t.uop = ns</code></pre>
+  <p>The visitor marks a node "in scope" if it is a key of the map or has an in-scope source. Only tensors whose graph touches a replaced node get
+  rewritten. All of them are substituted in one batched <code>substitute</code> over a SINK, so shared sub-graphs are rewritten once. Here it is on
+  real tensors: <code>e = a*b</code>, <code>f = e+1</code>, then <code>e.realize()</code>:</p>
+  <pre class="output"><code>### 6. realize() swaps graphs for buffers in EVERY live tensor (all_tensors + _apply_map_to_tensors)
+live tensors tracked in tensor.all_tensors: 13
+f before e.realize():
+ADD      dtypes.f32        (3,)     
+  MUL      dtypes.f32        (3,)     
+    COPY     dtypes.f32        (3,)     CPU
+      BUFFER   dtypes.f32        (3,)     slot=0 device=PYTHON
+        CONST    dtypes.weakint    ()       3
+    COPY     dtypes.f32        (3,)     CPU
+      BUFFER   dtypes.f32        (3,)     slot=1 device=PYTHON
+        CONST    dtypes.weakint    ()       3
+  CONST    dtypes.weakfloat  ()       1.0
+e after realize:
+BUFFER   dtypes.f32        (3,)     slot=12 device=CPU
+  CONST    dtypes.weakint    ()       3
+f after e.realize() (f was rewritten too, it now reads e's BUFFER):
+ADD      dtypes.f32        (3,)     
+  BUFFER   dtypes.f32        (3,)     slot=12 device=CPU
+    CONST    dtypes.weakint    ()       3
+  CONST    dtypes.weakfloat  ()       1.0</code></pre>
+
+  <div class="demo" id="demo-rw">
+    <div class="demo-title">Step through e.realize(): who points where</div>
+    <div class="demo-desc">Green boxes are the Python <code>Tensor</code> objects <code>e</code> and <code>f</code>. The arrow from a Tensor is its <code>.uop</code>
+    pointer. Graphs are the real ones above. Step 2 shows the bufferized form <code>linear_with_vars</code> builds (tensor.py:199).</div>
+    <div id="rw-step"></div>
+    <div id="rw-graph"></div>
+  </div>
+
+  <div class="callout aha"><span class="title">The consequence</span>
+  <code>f</code> was never realized, yet its graph shrank from 8 UOps to 4: it no longer mentions <code>a</code>, <code>b</code> or the MUL. Realization is
+  <b>global</b>. When you realize one tensor, every tensor that depended on it is rewritten to read its buffer. Later realizing <code>f</code> computes
+  only <code>buf + 1</code> instead of recomputing <code>a*b</code>. This is also what makes a training loop's memory stay flat: after
+  <code>optimizer.step()</code> realizes the new weights, nothing references the old graph.</div>
+
+  <!-- ============================================================ -->
+  <h2 id="triggers"><span class="sec">2.8</span>What forces realization (and what doesn't)</h2>
+  <p>Reading data ends in <a class="src" data-path="tinygrad/tensor.py" data-line="273">Tensor._buffer</a>, the single choke point:</p>
+  <div class="codecap"><b>tinygrad/mixin/op.py:22,35 → tinygrad/tensor.py:284,273</b> — the chain item → tolist → data → _buffer</div>
+  <pre><code class="language-python">  def item(self) -> PyConst:
+    assert self.numel() == 1, "must have one element for item"
+    return self.reshape(()).tolist()
+  def tolist(self) -> PyConst|list[Any]:
+    if self.dtype in (dtypes.half, dtypes.bfloat16, *dtypes.fp8s): return self.cast(dtypes.float32).tolist()
+    ...
+    return self.data().tolist()
+  def data(self) -> memoryview:                               # tensor.py:284
+    if self.dtype in dtypes.weaks: return self.cast(self.commit_dtype()).data()
+    ...
+    buf = self._buffer()
+    return buf.as_memoryview().cast(fmt, self.shape)
+  def _buffer(self) -> Buffer:                                # tensor.py:273
+    ...  # (refuses inside a TinyJit capture)
+    x = self.contiguous()
+    if self.uop.device is None or isinstance(self.device, tuple): x = x.clone("CPU")
+    return cast(Buffer, x.realize().uop.buffer).ensure_allocated()</code></pre>
+  <p><code>numpy()</code> takes the same <code>_buffer()</code> path. The subtle part is the line <code>x = self.contiguous()</code>. What gets realized is
+  <b>a new tensor <code>x</code></b> (a <code>STAGE</code> of <code>self</code>), not <code>self</code>. The result is copied out and <code>x</code> dies, but
+  <code>self.uop</code> still holds the lazy graph. Reading an unrealized tensor twice therefore computes it twice:</p>
+  <pre class="output"><code>### 7. tolist()/item()/numpy() force realization -- but of a COPY, not in place
+g.tolist() #1: ran 3 kernels, g.uop.op is still ADD
+g.tolist() #2: ran 3 kernels, g.uop.op is still ADD
+g.realize(): ran 3 kernels, g.uop.op is now BUFFER
+g.tolist() = [11.0, 22.0, 33.0] ran 0 kernels
+Tensor(5).item() = 5 (a CONST with no device is cloned to CPU first)
+bool(a) -&gt; TypeError __bool__ on Tensor is not defined</code></pre>
+  <p>Each <code>tolist()</code> ran 3 kernels: the two COPYs of <code>a</code> and <code>b</code> from the PYTHON device (still pending, since they were
+  never realized) plus the ADD. After an explicit <code>g.realize()</code> the tensor is a BUFFER and reads are free. <b>Rule of thumb: <code>realize()</code>
+  a tensor you will read more than once.</b> <code>bool()</code> is deliberately undefined, so <code>if t:</code> can't hide a sync.</p>
+
+  <div class="demo" id="demo-trig">
+    <div class="demo-title">Realize-trigger quiz</div>
+    <div class="demo-desc">For each snippet, guess how many kernels it runs. Answers are the real counts measured by <code>examples/02_realize_triggers.py</code> (printed below the quiz, so try it first).
+    <code>a</code>, <code>b</code> are realized 4-element float tensors.</div>
+    <div class="ch02-quiz"><div class="ch02-snip" id="trig-snip"></div><div class="ch02-score" id="trig-score"></div></div>
+    <div class="controls ch02-answers" id="trig-ans"></div>
+    <div class="ch02-msg" id="trig-msg"></div>
+    <div class="controls"><button class="primary" id="trig-next">next ▶</button><button id="trig-restart">⟲ restart</button></div>
+    <div class="ch02-hist" id="trig-hist"></div>
+  </div>
+  <p>The full list, measured. <code>examples/02_realize_triggers.py</code> runs each snippet on fresh, already-realized <code>a</code> and <code>b</code>
+  and counts kernels with <code>GlobalCounters.kernel_count</code>:</p>
+  <pre class="output"><code>c = a + b                            -&gt; 0 kernel(s)
+c = (a * b).sum()                    -&gt; 0 kernel(s)
+c = a + b; c.shape                   -&gt; 0 kernel(s)
+c = a + b; c.dtype                   -&gt; 0 kernel(s)
+c = a.reshape(2, 2).T                -&gt; 0 kernel(s)
+c = a + b; c.realize()               -&gt; 1 kernel(s)
+c = a + b; c.tolist()                -&gt; 1 kernel(s)
+(a * b).sum().item()                 -&gt; 1 kernel(s)
+c = a + b; c.contiguous()            -&gt; 0 kernel(s)
+c = a.exp(); str(c)  (repr)          -&gt; 0 kernel(s)
+a.assign(a + 1)                      -&gt; 0 kernel(s)
+a.assign(a + 1).realize()            -&gt; 1 kernel(s)
+a.realize()  (already a buffer)      -&gt; 0 kernel(s)
+Tensor.ones(4)                       -&gt; 0 kernel(s)
+Tensor.ones(4).realize()             -&gt; 1 kernel(s)
+Tensor.rand(4)                       -&gt; 0 kernel(s)
+Tensor.rand(4).realize()             -&gt; 5 kernel(s)
+Tensor([1., 2.]).realize()           -&gt; 1 kernel(s)
+c = (a + b)[1]                       -&gt; 0 kernel(s)
+(a + b)[1].item()                    -&gt; 1 kernel(s)
+Tensor(3) + 4  (no device)           -&gt; 0 kernel(s)
+(Tensor(3) + 4).item()               -&gt; 1 kernel(s)</code></pre>
+
+  <ul>
+    <li><code>.shape</code>, <code>.dtype</code>, <code>repr</code>, indexing, <code>contiguous()</code>, <code>assign()</code>: all <b>0</b>. They read or extend the graph.</li>
+    <li><code>Tensor.rand(4).realize()</code>: <b>5</b>. Besides the random values themselves, the per-device PRNG key/counter state has to be materialized and advanced (Chapter 8 traces it).</li>
+    <li><code>(Tensor(3) + 4).item()</code>: <b>1</b>. The deviceless expression is cloned to CPU by <code>_buffer</code> and computed by a single kernel.</li>
+  </ul>
+
+  <div class="quiz" data-answer="0">
+    <div class="q"><code>t = (a @ w).relu()</code>, then <code>print(t.tolist()); print(t.tolist())</code>. What happens on the second call?</div>
+    <button class="opt">The whole graph is scheduled and run again, because <code>tolist</code> realized a STAGE copy, not <code>t</code></button>
+    <button class="opt">Nothing is run, since <code>t</code> was realized by the first call</button>
+    <button class="opt">It raises an error because <code>t</code> was consumed</button>
+    <div class="explain">Section 7 of the example: <code>g.tolist() #2: ran 3 kernels, g.uop.op is still ADD</code>. Compiled programs are cached, so the
+    second run is cheaper, but kernels still run. Call <code>t.realize()</code> first.</div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="contiguous"><span class="sec">2.9</span><code>contiguous()</code>: a STAGE marker</h2>
+  <div class="codecap"><b>tinygrad/mixin/elementwise.py:59</b></div>
+  <pre><code class="language-python">  def contiguous(self) -> Self:
+    uop = self._uop
+    if self.dtype in dtypes.weaks or uop.op is Ops.STAGE or self.device is None or uop.has_buffer_identity(): return self
+    return self._wrap_uop(uop.alu(Ops.STAGE))</code></pre>
+  <p><code>contiguous()</code> computes nothing. It wraps the graph in <code>STAGE</code>, which tells the scheduler "materialize this value into its own
+  buffer here; don't fuse it into consumers as index math". It is a no-op if the tensor already is a buffer (<code>has_buffer_identity</code>), is weak, or has no device.</p>
+  <pre class="output"><code>### 8. contiguous() adds a STAGE: 'materialize me here'
+STAGE    dtypes.f32        (3,)     
+  ADD      dtypes.f32        (3,)     
+    COPY     dtypes.f32        (3,)     CPU
+      BUFFER   dtypes.f32        (3,)     slot=0 device=PYTHON
+        CONST    dtypes.weakint    ()       3
+    COPY     dtypes.f32        (3,)     CPU
+      BUFFER   dtypes.f32        (3,)     slot=1 device=PYTHON
+        CONST    dtypes.weakint    ()       3</code></pre>
+  <p>Inside <code>linear_with_vars</code>, a STAGE output gets fresh storage (or, if the STAGE only wraps movement ops of an existing buffer, a view through
+  <code>contiguous_mops_to_view</code>). Chapter 11 shows how STAGE splits kernels.</p>
+
+  <!-- ============================================================ -->
+  <h2 id="assign"><span class="sec">2.10</span><code>assign()</code>: STORE wrapped in AFTER</h2>
+  <p>Mutation in a pure, hash-consed graph has to be modeled as data. <code>w.assign(x)</code> doesn't write anything. It replaces <code>w.uop</code> with
+  "<code>w</code>'s buffer, <em>after</em> storing <code>x</code> into it":</p>
+  <div class="codecap"><b>tinygrad/tensor.py:234</b> — Tensor.assign (key lines)</div>
+  <pre><code class="language-python">    if self.dtype in dtypes.weaks: raise RuntimeError("cannot assign into a weak tensor; it has no storage")
+    if not isinstance(x, Tensor): x = Tensor(x, device=..., dtype=self.dtype)
+    if self.uop is x.uop: return self  # a self assign is a NOOP
+    x = x._broadcast_to(self.shape)                      # explicit broadcast (2.6)
+    if x.dtype in dtypes.weaks: x = x.cast(least_upper_dtype(self.dtype, x.dtype))
+    if x.dtype != self.dtype: raise RuntimeError(f"assign dtype mismatch {self.dtype} != {x.dtype}")
+    ...
+    # assigning to a pending value that views no other live tensor is initialization, not a write
+    if not assigned_to.has_buffer_identity() and not any(_tensor_holds(u) for u in views[1:]):
+      self.uop = (x.uop.src[0] if x.uop.op is Ops.STAGE else x.uop).clone()
+      return self
+    ...
+    else:
+      # simple assign
+      self.uop = self.uop.after(self.uop.store(x.uop))</code></pre>
+  <pre class="output"><code>### 9. assign(): a STORE wrapped in AFTER
+AFTER    dtypes.i32        (3,)     
+  BUFFER   dtypes.i32        (3,)     slot=35 device=CPU
+    CONST    dtypes.weakint    ()       3
+  STORE    dtypes.void       (3,)     
+    BUFFER   dtypes.i32        (3,)     slot=35 device=CPU (shared, see above)
+    ADD      dtypes.i32        (3,)     
+      BUFFER   dtypes.i32        (3,)     slot=35 device=CPU (shared, see above)
+      CONST    dtypes.weakint    ()       1
+w after realize: [2, 3, 4] | w.uop.op = BUFFER</code></pre>
+  <ul>
+    <li><code>STORE(buf, value)</code> has dtype <code>void</code>. It is a pure <em>effect</em>.</li>
+    <li><code>AFTER(buf, STORE)</code> has <code>buf</code>'s dtype and shape. It is the value "buf, but only after the store happened". That gives the scheduler an
+    explicit ordering edge. Anything reading <code>w</code> afterwards reads the AFTER, so it cannot be scheduled before the write.</li>
+    <li>The value <code>ADD(BUFFER, 1)</code> reads the <em>same</em> buffer it writes (shared node). The scheduler handles that read-before-write
+    (WAR hazard) in Chapter 12.</li>
+    <li>Assigning to a view (<code>w[1:].assign(...)</code>) takes the other branch. The STORE goes into the view and every live tensor sharing the base
+    storage is rewritten to read <code>target.after(store)</code>.</li>
+  </ul>
+
+  <div class="quiz" data-answer="2">
+    <div class="q">After <code>w.assign(w + 1)</code> (no realize), what is <code>w.uop.op</code> and how many kernels have run?</div>
+    <button class="opt"><code>BUFFER</code>, 1 kernel</button>
+    <button class="opt"><code>STORE</code>, 0 kernels</button>
+    <button class="opt"><code>AFTER</code>, 0 kernels</button>
+    <button class="opt"><code>ASSIGN</code>, 0 kernels</button>
+    <div class="explain">The printout shows <code>AFTER</code> at the top, and the trigger table shows <code>a.assign(a + 1) → 0 kernel(s)</code>. There is no
+    <code>ASSIGN</code> op in this version: assignment is spelled STORE + AFTER. A STORE can't be the tensor's UOp because it is void and has no value to read.</div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="weakrefs"><span class="sec">2.11</span><code>all_tensors</code>: weak references to every live tensor</h2>
+  <p><code>all_tensors</code> is a module-level <code>dict[weakref.ref[Tensor], None]</code>, used as an ordered set. Both <code>__init__</code> and
+  <code>_apply_uop</code> add the new tensor, and <code>__del__</code> removes it. Weak references mean the registry never keeps a tensor alive. As soon as
+  Python drops your last reference, the tensor leaves the registry and <code>_apply_map_to_tensors</code> stops considering it:</p>
+  <pre class="output"><code>### 10. weak references: dead tensors leave all_tensors
+after creating tmp: 1 new live tensors
+after del tmp: weakref is dead -&gt; True | net new live tensors: 0</code></pre>
+  <p>Why the registry exists at all: graph rewrites happen on UOps, but users hold Tensors. Without it, realizing <code>e</code> could not reach the
+  <code>f</code> you are holding (2.7). The same mechanism serves <code>assign</code> on views, multi-device sharding and gradient bookkeeping. Every
+  "rewrite the world" step goes through <code>_apply_map_to_tensors</code>. Running <code>VIZ=1</code> shows these steps as
+  <code>substitute bufferize</code> entries.</p>
+  <details class="deep-dive"><summary>Deep dive: why <code>realize</code> is decorated with <code>@disable_gc()</code></summary>
+  <p><code>_apply_map_to_tensors</code> iterates over <code>list(all_tensors)</code> and dereferences each weakref. If Python's cyclic GC ran in the middle of a
+  realize, tensors could vanish between the scope scan and the assignment, and <code>__del__</code> would mutate <code>all_tensors</code> while it is being
+  walked. <code>disable_gc()</code> (helpers.py) turns off the cyclic collector for the duration, which also avoids random GC pauses inside the scheduler.
+  Reference-count frees still happen, which is why the dict is copied with <code>list(...)</code> first.</p></details>
+
+  <div class="quiz" data-answer="1">
+    <div class="q">You hold only <code>f = (a*b) + 1</code>; the tensor for <code>a*b</code> was a temporary and is gone. You call <code>f.realize()</code>.
+    Which tensors does <code>_apply_map_to_tensors</code> rewrite?</div>
+    <button class="opt"><code>f</code> and the dead <code>a*b</code> tensor</button>
+    <button class="opt">Every live tensor whose graph contains a replaced node: here <code>f</code> (<code>a</code> and <code>b</code> are already buffers and are not keys of the map)</button>
+    <button class="opt">All tensors in <code>all_tensors</code>, unconditionally</button>
+    <div class="explain">The visitor only selects tensors whose graph reaches a key of <code>applied_map</code>. Dead tensors were removed from
+    <code>all_tensors</code> by <code>__del__</code>, and their weakrefs would be <code>None</code> anyway.</div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="lifecycle"><span class="sec">2.12</span>The full life cycle in one picture</h2>
+  <table>
+    <tr><th>you write</th><th><code>t.uop</code> becomes</th><th>kernels</th><th>where</th></tr>
+    <tr><td><code>t = Tensor([1.,2,3])</code></td><td><code>COPY(BUFFER@PYTHON)</code></td><td>0</td><td>__init__, _frompy</td></tr>
+    <tr><td><code>t = t * 2 + 1</code></td><td><code>ADD(MUL(COPY…, CONST 2.0), CONST 1.0)</code></td><td>0</td><td>_apply_uop via mixins</td></tr>
+    <tr><td><code>u = t.exp()</code></td><td>u: <code>EXP2(MUL(t.uop, CONST))</code></td><td>0</td><td>elementwise mixin</td></tr>
+    <tr><td><code>t.realize()</code></td><td><code>BUFFER@CPU</code>, and <code>u</code> becomes <code>EXP2(MUL(BUFFER, …))</code></td><td>2 (the COPY + one fused mul-add)</td><td>linear_with_vars → _apply_map_to_tensors → run_linear</td></tr>
+    <tr><td><code>u.tolist()</code></td><td>u unchanged (a STAGE copy is realized)</td><td>1 each call</td><td>tolist → data → _buffer</td></tr>
+    <tr><td><code>t.assign(u)</code></td><td><code>AFTER(BUFFER, STORE(BUFFER, u))</code></td><td>0</td><td>assign</td></tr>
+    <tr><td><code>t.realize()</code></td><td><code>BUFFER@CPU</code> (same buffer)</td><td>1</td><td>realize</td></tr>
+  </table>
+  <p>The kernel counts were measured with <code>GlobalCounters.kernel_count</code> for exactly this sequence (why <code>*2+1</code> is one kernel is Chapter 11's subject).
+  Next: <a href="03-dtypes.html">Chapter 3</a> explains where those <code>weakint</code>/<code>weakfloat</code> labels come from and when they commit.
+  <a href="04-uop.html">Chapter 4</a> opens the UOp itself.</p>
+
+  <div class="summary-box"><h3>Chapter summary</h3><ul>
+    <li>A <code>Tensor</code> has three slots: <code>uop</code>, <code>grad</code>, <code>is_param</code>. Shape, dtype and device are read from the UOp.</li>
+    <li>Every method goes through <code>_apply_uop</code> and builds a new UOp. The methods are shared mixins (<code>tinygrad/mixin/</code>) used by both Tensor and UOp,
+    so the Tensor graph <em>is</em> the UOp graph (hash-consed, identical objects).</li>
+    <li>Creation fingerprints: list → <code>COPY(BUFFER@PYTHON)</code>; scalar → weak deviceless <code>CONST</code>; empty → <code>RESHAPE(ALLOC)</code>;
+    ones/full → <code>AFTER(ALLOC, STORE(ALLOC, EXPAND(CONST)))</code>; rand → a ~100-UOp threefry graph.</li>
+    <li>ALU broadcasting is implicit in <code>UOp._shape</code> (<code>_broadcast_shape</code>). Explicit expand is RESHAPE → EXPAND(left) → PERMUTE.</li>
+    <li><code>realize()</code> = <code>linear_with_vars</code> (bufferize + <code>_apply_map_to_tensors</code> + schedule) + <code>run_linear</code>.
+    Realization rewrites <em>every</em> live tensor that depended on the result.</li>
+    <li><code>tolist/item/numpy/data</code> realize a <code>contiguous()</code> copy via <code>_buffer</code>, not the tensor itself. <code>contiguous()</code> = STAGE,
+    <code>assign()</code> = AFTER(STORE). <code>all_tensors</code> holds weak references to every live tensor.</li>
+  </ul></div>
+</main>
+</div>
+<script>
+(async function () {
+  const G = Guide, el = G.el;
+  function fitGraph(ctl, minScale = 0.6) {
+    const svg = ctl.svg, vb = svg.getAttribute("viewBox").split(" ").map(Number), wrap = svg.parentElement;
+    const s = Math.max(minScale, Math.min(1, (wrap.clientWidth - 4) / vb[2]));
+    svg.style.maxWidth = "none"; svg.style.width = vb[2] * s + "px"; svg.style.height = vb[3] * s + "px";
+  }
+  const short = (d) => String(d || "").replace("dtypes.", "");
+
+  // ---------------- demo 1: graph grows ----------------
+  const T = await G.loadJSON("../data/ch02_templates.json");
+  const LABELS = ["x + 1", "x * 2", "x * x", "-x", "x.exp()", "x.relu()", "x.sqrt()", "x + b", "x.sum(axis=-1)", "x.T", "x.reshape(-1)", "x.contiguous()"];
+  let st, history;
+  // hash-consing: a node's id is its structure (op, dtype, arg, shape, src ids), so identical nodes merge
+  function addNodes(state, list, X) {
+    const ids = [], fresh = [];
+    for (const n of list) {
+      const src = n.src.map((s) => (s === "X" ? X : ids[s]));
+      const id = [n.op, n.dtype, n.arg, n.shape, src.join(",")].join("|");
+      if (!state.nodes.has(id)) { state.nodes.set(id, { id, op: n.op, dtype: n.dtype, shape: n.shape, arg: n.arg, src }); fresh.push(id); }
+      ids.push(id);
+    }
+    return { root: ids[ids.length - 1], fresh };
+  }
+  function graphOf(state) {
+    // only nodes reachable from the root: what t.uop actually references
+    const keep = new Set(), stack = [state.root];
+    while (stack.length) { const id = stack.pop(); if (keep.has(id)) continue; keep.add(id); stack.push(...state.nodes.get(id).src); }
+    const nodes = [...keep].map((id) => { const n = state.nodes.get(id); return { id, op: n.op, dtype: n.dtype, shape: n.shape, arg: n.arg }; });
+    const edges = [];
+    for (const id of keep) state.nodes.get(id).src.forEach((s, i) => edges.push([s, id, i]));
+    return { nodes, edges, n: keep.size };
+  }
+  let gctl = null;
+  function startState() {
+    const s = { nodes: new Map(), root: null, shape: "(2, 3)", kernels: 0, realized: false, code: [["b = Tensor([10., 20., 30.])", ""], ["t = Tensor([[1.,2,3],[4,5,6]])", ""]] };
+    s.root = addNodes(s, T.start, null).root;
+    return s;
+  }
+  function cloneState(s) { return { ...s, nodes: new Map(s.nodes), code: s.code.slice() }; }
+  function renderGrow(fresh, msg) {
+    const g = graphOf(st);
+    G.$("#grow-n").textContent = g.n; G.$("#grow-shape").textContent = st.shape; G.$("#grow-k").textContent = st.kernels;
+    const code = G.$("#grow-code"); code.innerHTML = "";
+    st.code.forEach(([line, cls], i) => code.append(el("div", { class: i === st.code.length - 1 && history.length ? cls || "new" : cls }, line)));
+    code.scrollTop = code.scrollHeight;
+    G.$("#grow-msg").innerHTML = msg || "";
+    if (!gctl) gctl = G.uopGraph("#grow-graph", g, { height: 560, compact: true });
+    else gctl.setGraph(g, { animate: true });
+    fitGraph(gctl);
+    gctl.highlight(fresh || []);
+    G.$$("#grow-ops button[data-op]").forEach((b) => (b.disabled = !T.templates[`${b.dataset.op}|${st.shape}`]));
+  }
+  function apply(label) {
+    const tpl = T.templates[`${label}|${st.shape}`];
+    if (!tpl) return;
+    history.push(st); st = cloneState(st);
+    const line = "t = " + label.replace(/\bx\b/g, "t");
+    if (label === "x.contiguous()" && st.atRealized) {   // contiguous() of a buffer returns self (has_buffer_identity)
+      st.code.push([line + "  # = t", "new"]);
+      return renderGrow([], "<code>contiguous()</code> on a realized buffer is a no-op: <code>uop.has_buffer_identity()</code> is true, so it returns <code>self</code>.");
+    }
+    const { root, fresh } = addNodes(st, tpl.nodes, st.root);
+    st.root = root; st.shape = tpl.shape; st.atRealized = false;
+    st.code.push([line, "new"]);
+    const reused = tpl.nodes.length - fresh.length;
+    renderGrow(fresh, `<b>${label.replace(/\bx\b/g, "t")}</b> created ${fresh.length} new UOp${fresh.length === 1 ? "" : "s"}: ${tpl.nodes.map((n) => n.op).join(", ")}` +
+      (reused ? ` (${reused} already existed and ${reused === 1 ? "was" : "were"} reused: hash-consing)` : "") + ". No kernel ran.");
+  }
+  function realize() {
+    const r = T.realized[st.shape];
+    history.push(st); st = cloneState(st);
+    const before = graphOf(st).n;
+    st.nodes = new Map(); st.root = addNodes(st, r, null).root; st.kernels += 1; st.realized = true; st.atRealized = true;
+    st.code.push(["t.realize()", "rl"]);
+    renderGrow([], `<b>realize()</b>: ${before} UOps were scheduled, compiled and run. <code>_apply_map_to_tensors</code> then pointed <code>t</code> at its storage: a <code>BUFFER</code>` +
+      (r.length > 2 ? " seen through a RESHAPE to " + st.shape : "") + `. (The kernel counter shows realize calls; how many kernels each needs is Chapter 11.)`);
+  }
+  const opsBox = G.$("#grow-ops");
+  for (const l of LABELS) opsBox.append(el("button", { "data-op": l, onclick: () => apply(l) }, l.replace(/\bx\b/g, "t")));
+  opsBox.append(el("button", { class: "realize", onclick: realize }, "t.realize()"));
+  G.$("#grow-undo").onclick = () => { if (history.length) { st = history.pop(); renderGrow([], "undone"); } };
+  G.$("#grow-reset").onclick = () => { history = []; st = startState(); renderGrow([], ""); };
+  history = []; st = startState(); renderGrow([], "Pick an op. (Buttons are disabled when that method does not apply to the current shape, e.g. <code>t + b</code> needs a last dim of 3.)");
+
+  // ---------------- MRO ----------------
+  const MRO = [
+    ["Tensor", "tinygrad/tensor.py", 43, "the handle: __slots__, __init__, _apply_uop, realize, linear_with_vars, assign, data/_buffer, backward, the hooks alu/_mop/_rop/const for the mixins"],
+    ["RandMixin", "tinygrad/mixin/rand.py", 10, "327 lines · rand, randn, randint, normal, uniform, dropout … built on a threefry PRNG written in UOps"],
+    ["OpMixin", "tinygrad/mixin/op.py", 19, "2019 lines · the big one: item/tolist, __getitem__/__setitem__ indexing, matmul/dot, conv2d, pooling, softmax, losses, cat/stack, gather …"],
+    ["ElementwiseMixin", "tinygrad/mixin/elementwise.py", 15, "1091 lines · _broadcasted/_binop, add/mul/…, exp/log/sin, relu/sigmoid/gelu …, where, comparisons, cast helpers, contiguous (→ STAGE)"],
+    ["CreationMixin", "tinygrad/mixin/creation.py", 10, "172 lines · empty, full, zeros, ones, arange, eye, *_like"],
+    ["ReduceMixin", "tinygrad/mixin/reduce.py", 9, "138 lines · _reduce → _rop: sum, prod, max, min, mean, var, std, any/all (sum_acc_dtype decides the accumulator)"],
+    ["DTypeMixin", "tinygrad/mixin/dtype.py", 8, "142 lines · cast, bitcast, float()/half()/int()…, element_size, commit_dtype (Chapter 3)"],
+    ["MovementMixin", "tinygrad/mixin/movement.py", 12, "656 lines · reshape, expand/_broadcast_to, permute, pad, shrink, flip, transpose, flatten, squeeze … (Chapter 7)"],
+    ["object", "", 0, "Python's root class"],
+  ];
+  const mroBox = G.$("#mro"), info = G.$("#mro-info");
+  const spans = MRO.map(([name, path, line, what], i) => {
+    const s = el("span", { onclick: () => pick(i) }, name);
+    mroBox.append(s); if (i < MRO.length - 1) mroBox.append(el("i", {}, "→"));
+    return s;
+  });
+  function pick(i) {
+    spans.forEach((s, j) => s.classList.toggle("on", i === j));
+    const [name, path, line, what] = MRO[i];
+    info.innerHTML = "";
+    info.append(el("b", {}, name + " "), path ? el("a", { class: "src", href: G.src(path, line), target: "_blank" }, `${path}:${line}`) : "", el("div", { style: "margin-top:4px" }, what));
+  }
+  pick(3);
+
+  // ---------------- demo 2: broadcasting ----------------
+  function parseShape(s) { s = s.trim().replace(/[()\[\]]/g, ""); if (!s) return []; return s.split(",").map((x) => x.trim()).filter((x) => x !== "").map(Number); }
+  const fmt = (sh) => "(" + sh.join(", ") + (sh.length === 1 ? ",)" : ")");
+  const alignLeft = (...shapes) => { const m = Math.max(...shapes.map((s) => s.length)); return shapes.map((s) => Array(m - s.length).fill(1).concat(s)); };
+  function broadcastShape(a, b) {
+    const [A, B] = alignLeft(a, b), ret = [];
+    for (let i = 0; i < A.length; i++) {
+      const rest = [...new Set([A[i], B[i]].filter((s) => s !== 1))];
+      if (rest.length > 1) return { err: i };
+      ret.push(rest.length ? rest[0] : 1);
+    }
+    return { shape: ret };
+  }
+  const broadcastAxes = (src, out) => { const nl = out.length - src.length; const r = []; for (let i = 0; i < nl; i++) r.push(i); src.forEach((s, i) => { if (s === 1 && out[nl + i] !== 1) r.push(nl + i); }); return r; };
+  function broadcastTo(shape, ns) {  // port of MovementMixin._broadcast_to: returns list of [op, shape]
+    if (shape.join() === ns.join()) return [];
+    const nLeft = ns.length - shape.length;
+    const expandAt = broadcastAxes(shape, ns).filter((i) => i >= nLeft).map((i) => i - nLeft);
+    const kept = shape.map((_, i) => i).filter((i) => !expandAt.includes(i));
+    const out = [];
+    const sq = kept.map((i) => shape[i]);
+    if (sq.join() !== shape.join() || sq.length !== shape.length) out.push(["RESHAPE", sq]);
+    const earg = ns.slice(0, nLeft).concat(expandAt.map((i) => ns[nLeft + i]));
+    const eshape = earg.concat(sq);
+    out.push(["EXPAND", eshape]);
+    const perm = [...Array(nLeft).keys()].concat(shape.map((_, i) => nLeft + (expandAt.includes(i) ? expandAt.indexOf(i) : expandAt.length + kept.indexOf(i))));
+    if (perm.some((p, i) => p !== i)) out.push(["PERMUTE", ns, perm]);
+    return out;
+  }
+  function drawBC() {
+    const a = parseShape(G.$("#bc-a").value), b = parseShape(G.$("#bc-b").value);
+    const tbl = G.$("#bc-table"), grids = G.$("#bc-grids"), chain = G.$("#bc-chain");
+    tbl.innerHTML = grids.innerHTML = chain.innerHTML = "";
+    if (a.some(isNaN) || b.some(isNaN)) { tbl.textContent = "shapes must be comma separated integers"; return; }
+    const [A, B] = alignLeft(a, b), res = broadcastShape(a, b);
+    const t = el("table", { class: "ch02-align" });
+    const row = (lab, full, orig, cls) => {
+      const tr = el("tr", {}, el("td", { class: "lab" }, lab));
+      full.forEach((s, i) => {
+        const padded = i < full.length - orig.length;
+        let c = padded ? "pad" : "";
+        if (res.err === i) c += " bad";
+        else if (res.shape && s === 1 && res.shape[i] !== 1) c += " stretch";
+        tr.append(el("td", { class: c + (cls ? " " + cls : "") }, s));
+      });
+      return tr;
+    };
+    t.append(row(`a ${fmt(a)} aligned`, A, a), row(`b ${fmt(b)} aligned`, B, b));
+    if (res.shape) t.append(row("_broadcast_shape", res.shape, res.shape, "res"));
+    tbl.append(t);
+    if (res.err !== undefined) {
+      tbl.append(el("div", { style: "color:var(--red);font-family:var(--mono);font-size:12.5px" }, `IndexError: shape mismatch: objects cannot be broadcast to a single shape (${fmt(a)}, ${fmt(b)}) — dim ${res.err}: ${A[res.err]} vs ${B[res.err]}`));
+      return;
+    }
+    const out = res.shape;
+    // grids for <=2 dims
+    if (out.length <= 2 && out.reduce((x, y) => x * y, 1) <= 64) {
+      const two = (sh) => (sh.length === 2 ? sh : sh.length === 1 ? [1, sh[0]] : [1, 1]);
+      const mk = (title, sh, cls, label) => {
+        const [r, c] = two(sh), g = el("div", { class: "grid-cells", style: `grid-template-columns:repeat(${c},40px)` });
+        const cells = [];
+        for (let i = 0; i < r; i++) for (let j = 0; j < c; j++) { const e = el("div", { class: "cell " + cls }, label(i, j, c)); g.append(e); cells.push(e); }
+        grids.append(el("div", {}, el("h5", {}, title), g));
+        return { cells, r, c };
+      };
+      const A2 = alignLeft(a, out)[0], B2 = alignLeft(b, out)[0];
+      const ga = mk("a " + fmt(a), a, "a", (i, j, c) => "a" + (i * c + j)), gb = mk("b " + fmt(b), b, "b", (i, j, c) => "b" + (i * c + j));
+      const [R, C] = two(out);
+      const srcIdx = (full, sh, i, j) => { const f2 = two(full.slice(-2).length ? full : []); const fr = full.length === 2 ? full[0] : 1, fc = full.length >= 1 ? full[full.length - 1] : 1; const ii = fr === 1 ? 0 : i, jj = fc === 1 ? 0 : j; return ii * fc + jj; };
+      const go = mk("a + b " + fmt(out), out, "", (i, j) => "");
+      go.cells.forEach((e, k) => {
+        const i = Math.floor(k / C), j = k % C, ia = srcIdx(A2, a, i, j), ib = srcIdx(B2, b, i, j);
+        e.innerHTML = `<span class="a" style="color:var(--blue)">a${ia}</span>+<span style="color:var(--purple)">b${ib}</span>`;
+        e.style.fontSize = "9.5px";
+        e.onmouseenter = () => { ga.cells.forEach((c, m) => c.classList.toggle("src", m === ia)); gb.cells.forEach((c, m) => c.classList.toggle("src", m === ib)); e.classList.add("hot"); };
+        e.onmouseleave = () => { ga.cells.forEach((c) => c.classList.remove("src")); gb.cells.forEach((c) => c.classList.remove("src")); e.classList.remove("hot"); };
+      });
+    } else grids.append(el("div", { style: "color:var(--dim);font-size:13px" }, "(cell grids are drawn for results with ≤ 2 dims and ≤ 64 elements)"));
+    // explicit chains
+    const describe = (name, sh) => {
+      const ops = broadcastTo(sh, out);
+      if (!ops.length) return `${name}._broadcast_to(${fmt(out)}) : (nothing: same shape, returns self)`;
+      const nl = out.length - sh.length, ea = broadcastAxes(sh, out).filter((i) => i >= nl).map((i) => i - nl);
+      return `${name}._broadcast_to(${fmt(out)})   n_left=${nl} broadcast_axes=${fmt(broadcastAxes(sh, out))} expand_at=${fmt(ea)}\n   ` +
+        ops.slice().reverse().map(([op, s, p]) => `${op}${fmt(s)}` + (p ? ` perm=${fmt(p)}` : "")).join(" <- ");
+    };
+    chain.textContent = "ALU op (a + b): no ops added, ADD.shape = " + fmt(out) + " via _broadcast_shape\n\nexplicit:\n" + describe("a", a) + "\n" + describe("b", b);
+  }
+  G.$("#bc-a").oninput = G.$("#bc-b").oninput = drawBC;
+  const presets = [["3,1", "4"], ["2,1,4", "3,1"], ["3", "4,3"], ["1,3", "2,4,3"], ["2,3", "3,2"], ["", "2,3"]];
+  presets.forEach(([x, y]) => G.$("#bc-presets").append(el("button", { onclick: () => { G.$("#bc-a").value = x; G.$("#bc-b").value = y; drawBC(); } }, `(${x}) + (${y})`)));
+  drawBC();
+
+  // ---------------- demo 3: e.realize() rewriting ----------------
+  const N = (id, op, extra) => [id, op, extra];
+  const tensorNode = (id, name) => [id, "TENSOR", { label: "Tensor " + name, sub: ".uop →", color: "#83C167" }];
+  const base = [N("c3", "CONST", { arg: "3", dtype: "weakint" }), N("b0", "BUFFER", { arg: "slot=0 PYTHON", dtype: "f32", shape: "(3,)" }), N("b1", "BUFFER", { arg: "slot=1 PYTHON", dtype: "f32", shape: "(3,)" }),
+    N("cp0", "COPY", { arg: "CPU", dtype: "f32" }), N("cp1", "COPY", { arg: "CPU", dtype: "f32" }), N("mul", "MUL", { dtype: "f32", shape: "(3,)" }), N("one", "CONST", { arg: "1.0", dtype: "weakfloat" }), N("add", "ADD", { dtype: "f32", shape: "(3,)" })];
+  const baseE = [["c3", "b0"], ["c3", "b1"], ["b0", "cp0"], ["b1", "cp1"], ["cp0", "mul", 0], ["cp1", "mul", 1], ["mul", "add", 0], ["one", "add", 1]];
+  const RW = [
+    { caption: "Before: <code>e.uop</code> is the MUL, <code>f.uop</code> is the ADD that contains it. 8 UOps, nothing computed. Both tensors are in <code>all_tensors</code>.",
+      g: G.mkGraph([...base, tensorNode("te", "e"), tensorNode("tf", "f")], [...baseE, ["mul", "te"], ["add", "tf"]]), hl: ["mul"] },
+    { caption: "<code>linear_with_vars(e)</code>: e's value needs storage, so it builds <code>buf = UOp.new_buffer('CPU', 3, f32)</code> and <code>buf.after(buf.store(MUL))</code>. This bufferized graph is what gets scheduled.",
+      g: G.mkGraph([...base.filter((n) => n[0] !== "add" && n[0] !== "one"), N("nb", "BUFFER", { arg: "slot=12 CPU", dtype: "f32", shape: "(3,)" }), N("st", "STORE", { dtype: "void" }), N("af", "AFTER", { dtype: "f32" })],
+        [...baseE.filter((e) => e[1] !== "add"), ["c3", "nb"], ["nb", "st", 0], ["mul", "st", 1], ["nb", "af", 0], ["st", "af", 1]]), hl: ["nb", "st", "af"] },
+    { caption: "<code>pm_drop_after</code> yields <code>becomes_map = {MUL: BUFFER slot=12}</code>. <code>_apply_map_to_tensors</code> scans <code>all_tensors</code>: e's graph and f's graph both contain the MUL, so both are in scope.",
+      g: G.mkGraph([...base, N("nb", "BUFFER", { arg: "slot=12 CPU", dtype: "f32", shape: "(3,)" }), tensorNode("te", "e"), tensorNode("tf", "f")], [...baseE, ["c3", "nb"], ["mul", "te"], ["add", "tf"]]), hl: ["mul", "add", "nb"] },
+    { caption: "One batched <code>substitute</code> later, e points at the BUFFER and f at <code>ADD(BUFFER, 1.0)</code>. MUL, the COPYs and a, b's buffers are unreferenced by e and f. Then <code>run_linear</code> fills slot 12. This matches the printout exactly.",
+      g: G.mkGraph([N("c3", "CONST", { arg: "3", dtype: "weakint" }), N("nb", "BUFFER", { arg: "slot=12 CPU", dtype: "f32", shape: "(3,)" }), N("one", "CONST", { arg: "1.0", dtype: "weakfloat" }), N("add2", "ADD", { dtype: "f32", shape: "(3,)" }), tensorNode("te", "e"), tensorNode("tf", "f")],
+        [["c3", "nb"], ["nb", "add2", 0], ["one", "add2", 1], ["nb", "te"], ["add2", "tf"]]), hl: ["nb", "add2"] },
+  ];
+  let rctl = null;
+  G.stepper("#rw-step", RW, (i, s) => {
+    if (!rctl) rctl = G.uopGraph("#rw-graph", s.g, { height: 480, compact: true, legend: false });
+    else rctl.setGraph(s.g, { animate: true });
+    fitGraph(rctl); rctl.highlight(s.hl);
+  }, { autoplayMs: 3200 });
+
+  // ---------------- demo 4: trigger quiz ----------------
+  const TR = await G.loadJSON("../data/ch02_triggers.json");
+  let qi = 0, score = 0, answered = false, order = [];
+  const choices = [0, 1, 2, 3, 5];
+  function shuffle() { order = TR.map((_, i) => i); for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; } }
+  function showQ() {
+    answered = false;
+    const q = TR[order[qi]];
+    G.$("#trig-snip").textContent = q.code;
+    G.$("#trig-score").textContent = `question ${qi + 1}/${TR.length} · score ${score}`;
+    G.$("#trig-msg").textContent = "";
+    const box = G.$("#trig-ans"); box.innerHTML = "";
+    box.append(el("span", { style: "color:var(--dim);font-size:13px" }, "kernels run:"));
+    choices.forEach((c) => box.append(el("button", { onclick: (ev) => answer(c, ev.target) }, String(c))));
+    G.$("#trig-next").disabled = true;
+  }
+  function answer(c, btn) {
+    if (answered) return; answered = true;
+    const q = TR[order[qi]], ok = c === q.kernels;
+    if (ok) score++;
+    G.$$("#trig-ans button").forEach((b) => { if (Number(b.textContent) === q.kernels) b.classList.add("right"); });
+    if (!ok) btn.classList.add("wrong");
+    G.$("#trig-msg").innerHTML = (ok ? "✔ correct. " : `✘ it runs <b>${q.kernels}</b>. `) + (q.kernels === 0 ? "Only the graph was built or read." : "Something needed the data (or an explicit realize).");
+    G.$("#trig-hist").append(el("span", { class: ok ? "ok" : "no", title: q.code }, `${q.code.slice(0, 26)} → ${q.kernels}`));
+    G.$("#trig-score").textContent = `question ${qi + 1}/${TR.length} · score ${score}`;
+    G.$("#trig-next").disabled = qi >= TR.length - 1;
+    if (qi >= TR.length - 1) G.$("#trig-msg").innerHTML += ` <b>Done: ${score}/${TR.length}.</b>`;
+  }
+  G.$("#trig-next").onclick = () => { if (qi < TR.length - 1) { qi++; showQ(); } };
+  G.$("#trig-restart").onclick = () => { qi = 0; score = 0; G.$("#trig-hist").innerHTML = ""; shuffle(); showQ(); };
+  shuffle(); showQ();
+})();
+</script>
+</body>
+</html>

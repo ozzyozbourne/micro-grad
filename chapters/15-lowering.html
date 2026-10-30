@@ -1,0 +1,1988 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>15. Lowering: expand, devectorize, decompose — tinygrad internals</title>
+<link rel="stylesheet" href="../assets/vendor/hljs-dark.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/vendor/highlight.min.js"></script>
+<script src="../assets/vendor/dagre.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/chapters.js"></script>
+<script src="../assets/guide.js"></script>
+<style>
+.ch15-kbtns { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:6px; }
+.ch15-kdesc { font-size:13px; color:var(--dim); margin:4px 0 6px; font-family:var(--mono); }
+.ch15-strip .pipeline { gap:3px; }
+.ch15-strip .pipeline .stage { padding:4px 7px; font-size:11.5px; }
+.ch15-strip .pipeline .stage small { font-size:10px; }
+.ch15-strip .pipeline .arrow { font-size:10px; }
+.ch15-strip .pipeline .stage.ch15-same { opacity:.42; }
+.ch15-strip .pipeline .stage.ch15-big { border-color: var(--red); }
+.ch15-spark { display:block; margin:4px 0 8px; cursor:pointer; }
+.ch15-spark rect.sel { fill: var(--yellow); }
+#ex-graph .uopgraph svg { max-width:100%; height:auto; }
+.ch15-explorer { display:grid; grid-template-columns: minmax(0,1.55fr) minmax(0,1fr); gap:12px; }
+@media (max-width: 1100px) { .ch15-explorer { grid-template-columns: 1fr; } }
+.ch15-info { background:var(--bg3); border-radius:8px; padding:10px 12px; font-size:13.5px; max-height:640px; overflow:auto; }
+.ch15-info h4 { margin:2px 0 6px; color:var(--yellow); font-family:var(--mono); font-size:14px; }
+.ch15-info .kv { font-size:13px; }
+.ch15-rules { margin-top:8px; }
+.ch15-rule { display:grid; grid-template-columns: 34px 1fr; gap:6px; padding:4px 0; border-top:1px solid var(--line); font-size:12px; }
+.ch15-rule .n { color:var(--yellow); font-family:var(--mono); text-align:right; }
+.ch15-rule code { color:#cfd8dc !important; background:none !important; padding:0 !important; white-space:pre-wrap; word-break:break-all; font-size:11.5px; }
+.ch15-badge { display:inline-block; font-size:11px; padding:1px 7px; border-radius:10px; background:var(--bg2); border:1px solid var(--line); color:var(--dim); margin-left:6px; }
+.ch15-badge.on { color:var(--green); border-color:var(--green); }
+.ch15-plot canvas { width:100%; background:#0d0f12; border:1px solid var(--line); border-radius:8px; display:block; }
+.ch15-readout { font-family:var(--mono); font-size:12.5px; background:var(--bg3); border-radius:6px; padding:8px 10px; white-space:pre; overflow:auto; min-height:8.5em; }
+.ch15-grid2 { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+@media (max-width: 900px) { .ch15-grid2 { grid-template-columns: 1fr; } }
+.ch15-out { font-family:var(--mono); font-size:13px; background:var(--bg3); border-radius:6px; padding:10px 12px; white-space:pre-wrap; }
+.ch15-out b { color:var(--yellow); }
+.ch15-ok { color:var(--green); } .ch15-bad { color:var(--red); }
+table.ch15-stages td:first-child { font-family:var(--mono); color:var(--dim); }
+table.ch15-stages td:nth-child(2) { font-family:var(--mono); color:var(--yellow); white-space:nowrap; }
+table.ch15-stages td { font-size:12.5px; }
+.ch15-phase td { background: rgba(88,196,221,.07); color: var(--blue) !important; font-weight:700; }
+.ch15-dims { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+.ch15-dimbox { display:inline-flex; flex-direction:column; align-items:center; border:1px solid var(--line); border-radius:6px; padding:4px 10px; background:var(--bg3); font-family:var(--mono); font-size:12.5px; }
+.ch15-dimbox b { color:var(--yellow); font-size:15px; }
+.ch15-dimbox.g { border-color: var(--blue); } .ch15-dimbox.l { border-color: var(--teal); }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="sidebar" id="sidebar"></nav>
+<main>
+  <h1><span class="chnum">CHAPTER 15</span>Lowering: expand, devectorize, decompose</h1>
+  <p class="lede">After <a href="14-optimizations.html">Chapter 14</a> a kernel is an <em>optimized AST</em>: a small DAG of
+  RANGEs, INDEXes, a REDUCE, a STORE, with some ranges tagged UPCAST/LOCAL/GLOBAL. A C compiler cannot eat that. This chapter
+  follows <code>full_rewrite_to_sink</code> through every one of its ~30 named <code>graph_rewrite</code> stages and shows,
+  with real captured graphs, how the AST becomes a renderer-ready graph: vectors expanded and split into lanes, loads
+  re-coalesced into <code>float4</code>s, reductions turned into accumulators, integer division turned into multiply+shift,
+  <code>exp2</code>/<code>sin</code> turned into polynomials, hardware loops turned into <code>gidx</code>/<code>lidx</code>.</p>
+
+  <!-- ============================================================== -->
+  <h2 id="intuition"><span class="sec">15.1</span>Intuition: compiling for a specific kitchen</h2>
+  <p>Think of the optimized AST as a recipe written by a chef who assumes an ideal kitchen: "for each of the 4 rows, sum the 8
+  values of the row — and do the 8 at once (UPCAST)". Lowering is the sous-chef who rewrites that recipe for the
+  <em>actual</em> kitchen, one rule at a time: "we have no 8-wide adder, but we can load 4 floats at once; we have no
+  <code>exp2</code> instruction, so here is a polynomial; there is no division unit worth using, so multiply by a magic number
+  and shift".</p>
+  <div class="callout analogy"><span class="title">Analogy</span>The <b>renderer</b> is the kitchen inventory. Every stage
+  below looks at it: <code>ren.code_for_op</code> (which ALU ops can be printed directly), <code>ren.supports_float4</code>,
+  <code>ren.has_local</code>, <code>ren.global_max</code>/<code>local_max</code>, <code>ren.supported_dtypes()</code>,
+  <code>ren.extra_matcher</code>. The <em>same</em> AST lowers to different graphs for Clang and for OpenCL.</div>
+  <p>Mechanically, lowering is boring in the best way: <a class="src" data-path="tinygrad/codegen/__init__.py" data-line="253">full_rewrite_to_sink</a>
+  is a straight line of <code>sink = graph_rewrite(sink, &lt;PatternMatcher&gt;, name="…")</code> calls. Each one takes a
+  SINK and returns a SINK. There is no other IR, no side tables: the <em>input form</em> and <em>output form</em> of every
+  stage is a UOp graph (<a href="04-uop.html">Chapter 4</a>), and each stage is a PatternMatcher (<a href="05-pattern-matching.html">Chapter 5</a>).</p>
+  <div class="callout aha"><span class="title">The key idea</span>Each stage establishes an <b>invariant</b> the later ones
+  rely on. After "expander": no UPCAST RANGE exists. After "remove reduces": no REDUCE exists. After "devectorize2": every
+  ALU op is scalar. After "lower all index dtypes": no <code>weakint</code> index math remains. After "late decompositions":
+  every ALU op is in <code>ren.code_for_op</code>. After "range to special": only loop RANGEs remain. The final
+  <code>type_verify(sink, spec_program)</code> checks the end state.</div>
+
+  <!-- ============================================================== -->
+  <h2 id="map"><span class="sec">15.2</span>The whole pipeline on one page</h2>
+  <p>Here is the function, verbatim. Read it once top to bottom; the rest of the chapter is a commentary on these lines.</p>
+  <div class="codecap"><b>tinygrad/codegen/__init__.py:253-377</b> — <a class="src" data-path="tinygrad/codegen/__init__.py" data-line="253">full_rewrite_to_sink</a></div>
+  <pre><code class="language-python">def full_rewrite_to_sink(ast:UOp, ren:Renderer, optimize:bool=True) -&gt; UOp:
+  if DEBUG &gt;= 5: print(render_uir(ast))
+  if SPEC: type_verify(ast, spec_tensor)
+
+  # resolve UNSHARDs (multi-device UNSHARDs are already resolved by the scheduler; this handles in-kernel shards, e.g. fragments)
+  sink = graph_rewrite(ast, multi_pm, name=&quot;multi_pm&quot;)
+
+  # preprocess
+  sink = graph_rewrite(sink, pm_mops, name=&quot;early movement ops&quot;, bottom_up=True)
+
+  # first we optimize
+  if optimize:
+    # collapse loads reduce (indexing by a tensor)
+    sink = graph_rewrite(sink, pm_load_collapse, name=&quot;load collapse&quot;)
+
+    # split ranges
+    sink = graph_rewrite(sink, pm_split_ranges+pm_flatten_range, init_ctx=MapCtx, name=&quot;split ranges&quot;)
+
+    # symbolic (NOTE: this is a requirement for pm_simplify_ranges to be correct)
+    sink = graph_rewrite(sink, sym+pm_flatten_range, name=&quot;initial symbolic&quot;)
+
+    # optimize (schedule) the AST
+    sink = graph_rewrite(sink, pm_flatten_range+pm_simplify_ranges, init_ctx=MapCtx, name=&quot;simplify ranges&quot;)
+
+    # do postrange optimization, BEAM or hand_coded_optimizations
+    sink = apply_opts(sink, ren, beam=ast.arg.beam)
+
+  # ** expander (expand_rewrite) **
+  # reduce_unparented: a REDUCE whose src folded to a CONST (e.g. x*0) has no parented ranges, collapse it before the expander
+  sink = graph_rewrite(sink, sym+pm_move_where_on_load+pm_flatten_range+pm_reduce_unparented, name=&quot;postopt symbolic&quot;)
+
+  # expand
+  sink = graph_rewrite(sink, expander, ctx=build_range_map(sink), name=&quot;expander&quot;)
+
+  slots = itertools.count(max([u.arg.slot+1 for u in sink.toposort() if u.op in {Ops.BUFFER, Ops.ALLOC}], default=0))
+
+  # remove reduce
+  sink = graph_rewrite(sink, mop_cleanup+pm_reduce_local, ctx=slots, name=&quot;remove reduces&quot;)
+
+  # add locals
+  sink = graph_rewrite(sink, pm_add_local_buffers, ctx=slots, name=&quot;add local buffers&quot;)
+
+  # group GPU dimensions early so their index arithmetic goes through normal lowering
+  sink = graph_rewrite(sink, pm_group_gpudims, ctx=ren, name=&quot;group gpudims&quot;, walk=True)
+
+  # **** optimizations are done, now we lower to actual code ****
+
+  sink = graph_rewrite(sink, symbolic_simple+pm_expand_broadcast+pm_add_loads, name=&quot;*** expand broadcast / add loads&quot;)
+
+  # devectorize
+  sink = graph_rewrite(sink, symbolic_simple+devectorizer2+indexing_simplify, name=&quot;devectorize2&quot;)
+
+  # some coalescing misses without this
+  sink = graph_rewrite(sink, sym, name=&quot;early symbolic&quot;)
+
+  # do memory coalescing (late)
+  sink = memory_coalescing(sink, ren)
+  # an image is read_only or write_only, so a PARAM that is both loaded and stored stays a buffer
+  loaded, stored = [{u.src[0].buf_uop for u in sink.toposort() if u.op is op} for op in (Ops.LOAD, Ops.STORE)]
+  sink = graph_rewrite(sink, pm_simplify_add_image, name=&quot;add images&quot;, ctx=({}, ren, loaded &amp; stored), bottom_up=True)
+
+  # extra symbolic before decomp. crashes without this?
+  # NOTE: also run indexing_simplify here, while the index is still weakint and (x+y)*c -&gt; x*c+y*c applies
+  # commit widths minted in this fixpoint before lowering inspects INDEX shapes
+  sink = graph_rewrite(sink, sym+indexing_simplify+pm_commit_weak, name=&quot;extra symbolic&quot;)
+
+  # the boundary: required compute dtypes settle here; derivable const edges may stay bare
+  # NOTE: we need indexing_simplify to remove the cast to long using the Invalid
+  # NOTE: symbolic must NOT be composed here -- pm_data_invalid pushes the weak result CAST into a gated WHERE, remaking the weak node, and it cycles
+  sink = graph_rewrite(sink, pm_lower_weak+indexing_simplify, name=&quot;lower all index dtypes&quot;)
+
+  # final symbolic before decomp
+  sink = graph_rewrite(sink, symbolic, name=&quot;final symbolic&quot;)
+
+  sink = graph_rewrite(sink, pm_cast_float_alu, name=&quot;cast float alu operands&quot;)
+
+  # **** decomps ****
+
+  # floordiv+mod / dtype decomp (early)
+  supported_ops = tuple(ren.code_for_op.keys())
+  pm_decomp = symbolic_simple+get_simplifying_rewrite_patterns(supported_ops)
+  sink = graph_rewrite(sink, pm_decomp, name=&quot;early decompositions&quot;)
+
+  # late decomps + move gates from unrenderable INVALID where
+  pm_decomp = pm_decomp+\
+    get_late_rewrite_patterns(supported_ops, bool(DISABLE_FAST_IDIV))+\
+    get_transcendental_patterns(supported_ops, TRANSCENDENTAL&gt;=2)
+  sink = graph_rewrite(sink, pm_decomp, ctx=ren, name=&quot;late decompositions&quot;)
+  # Transcendental decompositions can introduce unsupported dtypes, e.g. uint64 in Payne-Hanek reduction.
+  sink = graph_rewrite(sink, pm_dtype_decomps+pm_commit_weak, ctx=DTypeDecompCtx(ren), name=&quot;decomp dtypes&quot;)
+  sink = graph_rewrite(sink, pm_move_gates_from_index, name=&quot;move gates from index&quot;)
+
+  # final rules for the renderer (without sym)
+  extra_matcher = ren.extra_matcher if ren.extra_matcher is not None else PatternMatcher([])
+  pm_final_rewrite = pm_commit_weak+pm_decomp+extra_matcher+pm_split_ends
+  sink = graph_rewrite(sink, pm_final_rewrite+pm_remove_invalid, ctx=ren, name=&quot;final rewrite&quot;)
+
+  # commit every const still bare so no renderer reads one
+  sink = graph_rewrite(sink, pm_cast_const, name=&quot;cast consts&quot;, walk=True)
+
+  # add implicit barriers (stores/loads through LOCAL memory ordered by AFTER or across loop iterations need workgroup barriers)
+  sink = graph_rewrite(sink, pm_implicit_barriers, name=&quot;add implicit barriers&quot;)
+
+  # hardware ranges are no longer loops; preserve their already lowered bounds
+  sink = graph_rewrite(sink, pm_range_to_special, name=&quot;range to special&quot;)
+
+  # this was the linearizer
+  sink = graph_rewrite(sink, pm_add_control_flow, ctx=CFGContext(sink), name=&quot;add control flow&quot;, bottom_up=True)
+
+  # put the variables in slots
+  num_params = max([x.arg.slot + 1 for x in sink.toposort() if x.op is Ops.PARAM and x.arg.slot != -1], default=0)
+  sink = graph_rewrite(sink, pm_number_params, ctx=(num_params, {}), name=&quot;number variables&quot;, walk=True)
+
+  if VIZ: graph_rewrite(sink, PatternMatcher([]), name=&quot;View Output AST&quot;)
+  if SPEC:
+    import os
+    if os.environ.get(&quot;DBGTV&quot;):
+      try: type_verify(sink, spec_program)
+      except RuntimeError:
+        print(render_uir(sink))
+        raise
+    else: type_verify(sink, spec_program)
+
+  # return the rewritten sink
+  return sink</code></pre>
+
+  <p>And here is every stage with what goes in, which PatternMatchers are composed (<code>+</code> concatenates their rule
+  lists), and what comes out. The bold rows are phases.</p>
+  <table class="ch15-stages">
+    <tr><th>#</th><th>name=</th><th>PatternMatchers composed</th><th>input form → output form</th></tr>
+    <tr class="ch15-phase"><td colspan="4">Phase A · preprocess and optimize (only if not <code>ast.arg.optimized</code>; covered in <a href="14-optimizations.html">ch.14</a>)</td></tr>
+    <tr><td>0</td><td>multi_pm</td><td>multi_pm</td><td>kernel AST, maybe with in-kernel UNSHARD → no UNSHARD (<a href="19-multi.html">ch.19</a>)</td></tr>
+    <tr><td>1</td><td>early movement ops</td><td>pm_mops (bottom_up)</td><td>leftover movement ops pushed into INDEX</td></tr>
+    <tr><td>2</td><td>load collapse</td><td>pm_load_collapse</td><td>REDUCE over a one-hot "gather" → a direct load</td></tr>
+    <tr><td>3</td><td>split ranges</td><td>pm_split_ranges + pm_flatten_range</td><td><code>r % c</code> with c | len(r): r → (r//c)*c + r' (two ranges)</td></tr>
+    <tr><td>4</td><td>initial symbolic</td><td>sym + pm_flatten_range</td><td>index algebra simplified (<a href="06-symbolic.html">ch.6</a>)</td></tr>
+    <tr><td>5</td><td>simplify ranges</td><td>pm_flatten_range + pm_simplify_ranges</td><td>adjacent ranges merged (16×16 → 256) if it doesn't add div/mod</td></tr>
+    <tr><td>6</td><td>apply_opts()</td><td>Scheduler: heuristic or BEAM (not a graph_rewrite)</td><td>ranges retagged GLOBAL / LOCAL / UPCAST / …</td></tr>
+    <tr><td>7</td><td>postopt symbolic</td><td>sym + pm_move_where_on_load + pm_flatten_range + pm_reduce_unparented</td><td>clean optimized AST</td></tr>
+    <tr class="ch15-phase"><td colspan="4">Phase B · expand: from "shape-level" code to explicit vectors and accumulators</td></tr>
+    <tr><td>8</td><td>expander</td><td>expander (+pm_flatten_range+mop_cleanup), ctx=build_range_map</td><td>UPCAST RANGE → CONST tuple with a shape; REDUCE gains "horizontal" axes</td></tr>
+    <tr><td>9</td><td>remove reduces</td><td>mop_cleanup + pm_reduce_local (+pm_wmma_add, pm_clean_up_group_sink)</td><td>REDUCE → chain of ALU ops, or ALLOC(REG) accumulator + STORE/AFTER/END</td></tr>
+    <tr><td>10</td><td>add local buffers</td><td>pm_add_local_buffers (+pm_mops)</td><td>STAGE → ALLOC(LOCAL) + store + index</td></tr>
+    <tr><td>11</td><td>group gpudims</td><td>pm_group_gpudims (+pm_device_to_var), walk=True</td><td>GLOBAL/LOCAL ranges regrouped to fit the hardware's 3 dims</td></tr>
+    <tr class="ch15-phase"><td colspan="4">Phase C · devectorize and re-coalesce memory</td></tr>
+    <tr><td>12</td><td>*** expand broadcast / add loads</td><td>symbolic_simple + pm_expand_broadcast + pm_add_loads</td><td>implicit broadcasts → EXPAND; INDEX of real memory → LOAD(INDEX)</td></tr>
+    <tr><td>13</td><td>devectorize2</td><td>symbolic_simple + devectorizer2 (+pm_mops) + indexing_simplify</td><td>every shaped op → per-lane scalar ops + STACK</td></tr>
+    <tr><td>14</td><td>early symbolic</td><td>sym</td><td>tidy</td></tr>
+    <tr><td>15</td><td>memory_coalescing()</td><td>a function: groups loads/stores by base + const offset</td><td>N scalar loads → SHRINK(buf, idx, 4) vector loads</td></tr>
+    <tr><td>16</td><td>add images</td><td>pm_simplify_add_image (bottom_up)</td><td>with IMAGE=1 on QCOM/CL: buffers → 2D images</td></tr>
+    <tr class="ch15-phase"><td colspan="4">Phase D · commit dtypes, then decompose to what the renderer can print</td></tr>
+    <tr><td>17</td><td>extra symbolic</td><td>sym + indexing_simplify + pm_commit_weak</td><td>weak consts committed where a sibling states a width</td></tr>
+    <tr><td>18</td><td>lower all index dtypes</td><td>pm_lower_weak + indexing_simplify</td><td><code>weakint</code> index math → concrete int32 (or int64 if needed)</td></tr>
+    <tr><td>19</td><td>final symbolic</td><td>symbolic</td><td>tidy at concrete dtypes</td></tr>
+    <tr><td>20</td><td>cast float alu operands</td><td>pm_cast_float_alu</td><td>SIN/LOG2/EXP2/SQRT/RECIP get a float operand</td></tr>
+    <tr><td>21</td><td>early decompositions</td><td>symbolic_simple + get_simplifying_rewrite_patterns(code_for_op)</td><td>floor DIV/MOD → SHR / AND / TRUNCDIV / TRUNCMOD; THREEFRY → ALU</td></tr>
+    <tr><td>22</td><td>late decompositions</td><td>… + get_late_rewrite_patterns + get_transcendental_patterns, ctx=ren</td><td>MAX→WHERE, MUL→SHL, fast idiv, MULACC, EXP2/LOG2/SIN → polynomials</td></tr>
+    <tr><td>23</td><td>decomp dtypes</td><td>pm_dtype_decomps + pm_commit_weak, ctx=DTypeDecompCtx(ren)</td><td>unsupported long/half/bf16/fp8 → emulated</td></tr>
+    <tr><td>24</td><td>move gates from index</td><td>pm_move_gates_from_index</td><td>INDEX(buf, valid.where(i, Invalid)) → gated LOAD/STORE</td></tr>
+    <tr><td>25</td><td>final rewrite</td><td>pm_commit_weak + pm_decomp + ren.extra_matcher + pm_split_ends + pm_remove_invalid</td><td>renderer quirks; END with many ranges → nested ENDs</td></tr>
+    <tr><td>26</td><td>cast consts</td><td>pm_cast_const, walk=True</td><td>every bare const → CAST(CONST) at a concrete dtype</td></tr>
+    <tr class="ch15-phase"><td colspan="4">Phase E · structure for the linearizer</td></tr>
+    <tr><td>27</td><td>add implicit barriers</td><td>pm_implicit_barriers</td><td>BARRIER where LOCAL memory is written then read</td></tr>
+    <tr><td>28</td><td>range to special</td><td>pm_range_to_special (+pm_split_ends)</td><td>GLOBAL/LOCAL RANGE → SPECIAL("gidx0"/"lidx0"), their ENDs vanish</td></tr>
+    <tr><td>29</td><td>add control flow</td><td>pm_add_control_flow, ctx=CFGContext, bottom_up</td><td>sibling loops ordered by AFTER on their bound (<a href="16-linearize-render.html">ch.16</a>)</td></tr>
+    <tr><td>30</td><td>number variables</td><td>pm_number_params, walk=True</td><td>DEFINE_VAR-style PARAMs get slots after the buffers</td></tr>
+    <tr><td>✓</td><td>spec check</td><td>type_verify(sink, spec_program)</td><td>raises if anything illegal survived (SPEC=1 by default)</td></tr>
+  </table>
+
+  <p>Let's watch it happen. The script below wraps the <code>graph_rewrite</code> that <code>codegen/__init__.py</code>
+  imported, so every call inside <code>full_rewrite_to_sink</code> is recorded as (name, input sink, output sink); it also
+  sets <code>TRACK_MATCH_STATS=2</code>, which turns every PatternMatcher into a <code>TrackedPatternMatcher</code> that logs
+  each successful rule (input UOp, output UOp, UPat source location) into <code>tinygrad.uop.ops.tracked_ctxs</code>.</p>
+  <div class="codecap"><b>examples/15_pass_explorer.py</b> — run with <code>DEV=CPU python3 examples/15_pass_explorer.py</code> (add <code>--json</code> to regenerate the demo data)</div>
+  <pre><code class="language-python">os.environ[&quot;TRACK_MATCH_STATS&quot;] = &quot;2&quot;      # must be set before tinygrad is imported
+os.environ[&quot;PRINT_MATCH_STATS&quot;] = &quot;0&quot;      # ...but don&#x27;t print the giant global table at exit
+from dataclasses import replace
+from tinygrad import Tensor
+from tinygrad.helpers import Target, printable
+from tinygrad.uop import ops as uops_mod
+import tinygrad.codegen as cg
+from tinygrad.renderer.cstyle import ClangRenderer, OpenCLRenderer
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), &quot;..&quot;, &quot;tools&quot;))
+from uop2json import uop_to_graph
+
+TG_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(cg.__file__)))  # the repo root
+
+# ---- recording wrappers -------------------------------------------------------------------------------------------
+LOG: list[dict] = []
+def _matches_since(start_counts):
+  # every TrackedGraphRewrite appended (to any group) since `start_counts` — includes nested sub-rewrites
+  out = []
+  for gi, grp in enumerate(uops_mod.tracked_ctxs):
+    for tgr in grp[start_counts.get(gi, 0):]: out.extend(tgr.matches)
+  return out
+def _snapshot(): return {gi: len(g) for gi, g in enumerate(uops_mod.tracked_ctxs)}
+
+def record(stage, fn, sink, *args, **kwargs):
+  snap = _snapshot()
+  ret = fn(sink, *args, **kwargs)
+  rules = collections.Counter((m[2][0], m[2][1]) for m in _matches_since(snap))
+  LOG.append({&quot;name&quot;: stage, &quot;in&quot;: sink, &quot;out&quot;: ret, &quot;rules&quot;: rules,
+              &quot;bottom_up&quot;: kwargs.get(&quot;bottom_up&quot;, False), &quot;walk&quot;: kwargs.get(&quot;walk&quot;, False)})
+  return ret
+
+_graph_rewrite, _memory_coalescing, _apply_opts = cg.graph_rewrite, cg.memory_coalescing, cg.apply_opts
+cg.graph_rewrite = lambda sink, pm, *a, name=None, **kw: record(name, _graph_rewrite, sink, pm, *a, name=name, **kw)
+cg.memory_coalescing = lambda sink, ren: record(&quot;memory_coalescing()&quot;, _memory_coalescing, sink, ren)
+cg.apply_opts = lambda sink, ren, beam=0: record(&quot;apply_opts()&quot;, _apply_opts, sink, ren, beam=beam)
+
+def rule_text(loc):
+  path, line = loc
+  rel = os.path.relpath(path, TG_ROOT) if path.startswith(TG_ROOT) else os.path.basename(path)
+  return rel, line, printable(loc)[:150]</code></pre>
+  <pre class="output"><code>kernel: Tensor.empty(4,8).sum(1) on CPU/Clang (heuristic UPCASTs the reduce)
+renderer: ClangRenderer   final name: r_4_8   opts: (Opt(op=OptOps.SPLIT, axis=1, arg=(0, AxisType.UPCAST)),)
+
+ # stage (name=)                                nodes  top rules fired (count × file:line)
+ 0 multi_pm                                 15 →   15  (unchanged)
+ 1 early movement ops                       15 →   15  (unchanged)
+ 2 load collapse                            15 →   15  (unchanged)
+ 3 split ranges                             15 →   15  (unchanged)
+ 4 initial symbolic                         15 →   15  (unchanged)
+ 5 simplify ranges                          15 →   15  (unchanged)
+ 6 apply_opts()                             15 →   19  1×ops.py:1860, 1×simplify.py:15
+ 7 postopt symbolic                         19 →   15  1×symbolic.py:288, 1×symbolic.py:165, 1×symbolic.py:126
+ 8 expander                                 15 →   23  1×__init__.py:78, 1×__init__.py:77
+ 9 remove reduces                           23 →   44  8×movement.py:26, 1×__init__.py:199
+10 add local buffers                        44 →   44  (unchanged)
+11 group gpudims                            44 →   44  (unchanged)
+12 *** expand broadcast / add loads         44 →   54  7×__init__.py:206, 2×__init__.py:111
+13 devectorize2                             54 →   47  10×prepare.py:78, 8×movement.py:20, 2×__init__.py:137
+14 early symbolic                           47 →   47  (unchanged)
+15 memory_coalescing()                      47 →   35  8×ops.py:1860
+16 add images                               35 →   35  (unchanged)
+17 extra symbolic                           35 →   35  (unchanged)
+18 lower all index dtypes                   35 →   40  15×weak.py:85
+19 final symbolic                           40 →   40  (unchanged)
+20 cast float alu operands                  40 →   40  (unchanged)
+21 early decompositions                     40 →   40  (unchanged)
+22 late decompositions                      40 →   39  1×op.py:88
+23 decomp dtypes                            39 →   39  (unchanged)
+24 move gates from index                    39 →   39  (unchanged)
+25 final rewrite                            39 →   39  (unchanged)
+26 cast consts                              39 →   39  2×weak.py:106
+27 add implicit barriers                    39 →   39  (unchanged)
+28 range to special                         39 →   39  (unchanged)
+29 add control flow                         39 →   39  (unchanged)
+30 number variables                         39 →   39  (unchanged)
+rewrote 1 graphs and matched 103 times, saved to /tmp/rewrites.pkl.user</code></pre>
+  <p>Read the node counts as a story: the optimizer adds an UPCAST split (15→19), the expander turns it into a vector
+  (15→23), removing the REDUCE unrolls 8 lanes of adds (→44), loads appear (→54), memory coalescing folds 8 loads into 2
+  (47→35), committing index dtypes adds CASTs (→40), and a single decomposition turns <code>*8</code> into <code>&lt;&lt;3</code>.
+  Half of the stages do nothing for this kernel — they exist for other kernels and other renderers.</p>
+
+  <!-- ============================================================== -->
+  <h2 id="explorer"><span class="sec">15.3</span>Demo: the stage-by-stage pass explorer</h2>
+  <div class="demo" id="demo-explorer">
+    <div class="demo-title">Pass explorer: every graph_rewrite of full_rewrite_to_sink, captured from real kernels</div>
+    <div class="demo-desc">Pick a kernel, then click a stage in the strip (or a bar in the node-count chart). The graph shows the
+    stage's <b>input</b>, then morphs into its <b>output</b> (nodes are keyed by UOp identity, so unchanged nodes stay put;
+    new nodes glow). On the right: the stage's PatternMatchers and the rules that actually fired, with counts and source
+    links. Dimmed stages returned their input unchanged. Use ← → keys to step.</div>
+    <div class="ch15-kbtns" id="ex-kernels"></div>
+    <div class="ch15-kdesc" id="ex-kdesc"></div>
+    <svg class="ch15-spark" id="ex-spark" height="46"></svg>
+    <div class="ch15-strip" id="ex-strip"></div>
+    <div class="controls"><button id="ex-before">show input</button><button id="ex-after">show output</button>
+      <button class="primary" id="ex-morph">▶ morph input → output</button><button id="ex-zoom">zoom: fit</button><span id="ex-count" class="ch15-badge"></span></div>
+    <div class="ch15-explorer">
+      <div id="ex-graph"></div>
+      <div class="ch15-info" id="ex-info"></div>
+    </div>
+  </div>
+  <div class="callout note">The four kernels: <b>sum·CPU</b> (<code>Tensor.empty(4,8).sum(1)</code>, Clang, heuristic UPCAST
+  of the reduce axis), <b>exp·CPU</b> (<code>Tensor.empty(8).exp()</code>, Clang, no opts — Clang has no <code>EXP2</code>, so
+  "late decompositions" explodes 14 → 78 UOps; with the heuristic's UPCAST-by-4 on <code>Tensor.empty(4).exp()</code> the same stage goes 31 → 211, one polynomial per lane), <b>add·GPU</b> (16×16 add on the OpenCL renderer: GLOBAL+LOCAL+UPCAST,
+  float4), <b>sum·GPU</b> (16×16 sum(1) on OpenCL: a grouped reduce through LOCAL memory, with a barrier). We never run the
+  OpenCL code; rendering doesn't need a GPU.</div>
+
+  <!-- ============================================================== -->
+  <h2 id="phaseA"><span class="sec">15.4</span>Phase A: preprocess, simplify ranges, optimize</h2>
+  <p>These stages belong to the optimizer (<a href="14-optimizations.html">Chapter 14</a>), but two of them are pure range
+  algebra from <a class="src" data-path="tinygrad/codegen/simplify.py" data-line="1">codegen/simplify.py</a> and set the stage for
+  everything else:</p>
+  <ul>
+    <li><b>split ranges</b> (<a class="src" data-path="tinygrad/codegen/simplify.py" data-line="70">pm_split_ranges</a>): if a
+    RANGE <code>r</code> of constant length appears as <code>r % c</code> with <code>c</code> dividing the length, it is
+    replaced by two ranges <code>r0*c + r1</code> (axis ids get an extra <code>0</code>/<code>1</code>). The mod disappears.</li>
+    <li><b>simplify ranges</b> (<a class="src" data-path="tinygrad/codegen/simplify.py" data-line="20">simplify_merge_adjacent</a>):
+    tries to merge two adjacent ranges of the same type into one of length <code>s0*s1</code>, substituting
+    <code>r0 → r//s1</code>, <code>r1 → r%s1</code>, and keeps the merge only if the number of DIV/MOD in the result does
+    not grow. It also shrinks ranges guarded by <code>r &lt; c</code> (<code>mark_gated</code>).</li>
+  </ul>
+  <p>Real output for the 16×16 add on OpenCL: two ranges and <code>r0*16+r1</code> become one range of 256.</p>
+  <div class="codecap"><b>examples/15_gpu_lowering.py</b> — run with <code>DEV=CPU python3 examples/15_gpu_lowering.py</code></div>
+  <pre class="output"><code>OpenCLRenderer: has_local=True global_max=(2415919103, 2415919103, 2415919103) local_max=(2415919103, 2415919103, 2415919103) supports_float4=True
+
+##### A: Tensor.empty(16,16) + Tensor.empty(16,16): final kernel name E_2_32_4, opts (Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST)), Opt(op=OptOps.SPLIT, axis=0, arg=(32, AxisType.LOCAL)))
+=== before &#x27;simplify ranges&#x27;
+%0 = param 256 : dtype=f32 slot=0 device=CPU
+%1 = range 16 : WEAK 0
+%2 = mul %1, 16
+%3 = range 16 : WEAK 1
+%4 = add %2, %3
+%5 = index %0, %4
+%6 = param 256 : dtype=f32 slot=1 device=CPU
+%7 = index %6, %4
+%8 = param 256 : dtype=f32 slot=2 device=CPU
+%9 = index %8, %4
+%10 = add %7, %9
+%11 = store %5, %10
+%12 = end %11, %1, %3
+%13 = sink %12 : test
+=== after &#x27;simplify ranges&#x27;
+%0 = param 256 : dtype=f32 slot=0 device=CPU
+%1 = range 256 : WEAK 0
+%2 = index %0, %1
+%3 = param 256 : dtype=f32 slot=1 device=CPU
+%4 = index %3, %1
+%5 = param 256 : dtype=f32 slot=2 device=CPU
+%6 = index %5, %1
+%7 = add %4, %6
+%8 = store %2, %7
+%9 = end %8, %1
+%10 = sink %9 : test</code></pre>
+  <p><code>apply_opts</code> then splits that 256 into <code>2 (GLOBAL) × 32 (LOCAL) × 4 (UPCAST)</code>; "postopt symbolic"
+  cleans up. From here on the optimizer's decisions are frozen into the axis types of the RANGEs.</p>
+
+  <!-- ============================================================== -->
+  <h2 id="expander"><span class="sec">15.5</span>The expander: UPCAST ranges become vectors</h2>
+  <p>An UPCAST range means "don't loop over me — do all my iterations at once, in registers". The expander implements that
+  literally: it replaces the RANGE by a <b>constant vector</b> of its values, with a <em>shape</em>. A UOp with a shape is a
+  little tensor (<a href="04-uop.html">Chapter 4</a>): ALU ops on shaped UOps broadcast like numpy.</p>
+  <div class="codecap"><b>tinygrad/codegen/__init__.py:40-82</b> — <a class="src" data-path="tinygrad/codegen/__init__.py" data-line="76">expander</a></div>
+  <pre><code class="language-python">def build_range_map(sink:UOp) -&gt; dict[tuple, int]:
+  ctx: dict[tuple, int] = {}
+  for x in sink.toposort():
+    if x.op is Ops.RANGE and x.axis_type is AxisType.UPCAST:
+      ctx[x.arg] = len(ctx)
+  return ctx
+
+def expand_reduce(r:UOp):
+  range_srcs = []
+  new_axes = []
+  for u in r.src[1:]:
+    if u.op == Ops.RANGE:
+      range_srcs.append(u)
+    else:
+      for i,s in enumerate(u.shape):
+        if s &gt; 1: new_axes.append(i)
+  if len(new_axes) == 0: return None
+  assert r.arg[1] == 0
+  # permute so new_axes come to front, then reduce
+  perm = tuple(new_axes) + tuple(i for i in range(len(r.src[0].shape)) if i not in new_axes)
+  out_shape = tuple([1 if i in new_axes else s for i,s in enumerate(r.src[0].shape)])
+  return r.src[0].permute(perm).reduce(*range_srcs, arg=(r.arg[0], len(new_axes))).reshape(out_shape)
+...
+expander = PatternMatcher([
+  (UPat(Ops.REDUCE, name=&quot;r&quot;), expand_reduce),
+  (UPat(Ops.RANGE, name=&quot;r&quot;),
+   lambda ctx, r: UOp.const(tuple(range(r.vmax+1)), r.dtype) \
+    .reshape(tuple([r.vmax+1 if i == ctx[r.arg] else 1 for i in range(len(ctx))])) if r.arg in ctx else None),
+  (UPat(Ops.WMMA, name=&quot;u&quot;), expand_wmma),
+])+pm_flatten_range+mop_cleanup</code></pre>
+  <ul>
+    <li><code>build_range_map(sink)</code> numbers the UPCAST ranges: the k-th one owns dimension k of every vector.</li>
+    <li>The RANGE rule: <code>RANGE(8, UPCAST)</code> → <code>CONST((0,1,…,7)).reshape(8)</code> (with two UPCAST ranges you
+    get shapes <code>(n,1)</code> and <code>(1,m)</code>, and broadcasting builds the outer product of lanes for free).</li>
+    <li><code>expand_reduce</code>: a REDUCE whose input now has a shape folds those axes "horizontally":
+    <code>arg=(ADD, 1)</code> means "the first axis is reduced in-register", the remaining srcs are loop ranges.</li>
+  </ul>
+  <div class="codecap"><b>examples/15_stage_snapshots.py</b> — run with <code>DEV=CPU python3 examples/15_stage_snapshots.py</code> (render_uir is the DEBUG≥5 printer)</div>
+  <pre class="output"><code>===== after &#x27;postopt symbolic&#x27;  (15 UOps)
+%0 = param 4 : dtype=f32 slot=0 device=CPU
+%1 = range 4 : WEAK 1
+%2 = index %0, %1
+%3 = param 32 : dtype=f32 slot=1 device=CPU
+%4 = mul %1, 8
+%5 = range 8 : UPCAST 2
+%6 = add %4, %5
+%7 = index %3, %6
+%8 = reduce %7, %5 : op=add
+%9 = store %2, %8
+%10 = end %9, %1
+%11 = sink %10 : r_4_8
+===== after &#x27;expander&#x27;  (23 UOps)
+%0 = param 4 : dtype=f32 slot=0 device=CPU
+%1 = range 4 : WEAK 1
+%2 = index %0, %1
+%3 = param 32 : dtype=f32 slot=1 device=CPU
+%4 = mul %1, 8
+%5 = add %4, (0, 1, 2, 3, 4, 5, 6, 7)
+%6 = index %3, %5
+%7 = reduce %6 : op=add pop=1
+%8 = reshape %7, 1
+%9 = store %2, %8
+%10 = end %9, %1
+%11 = sink %10 : r_4_8</code></pre>
+  <p>Before: <code>%5 = range 8 : UPCAST 2</code> and <code>%8 = reduce %7, %5</code>. After: the range is gone, the index
+  is <code>add %4, (0, 1, 2, 3, 4, 5, 6, 7)</code> — one UOp of shape (8,) — and <code>reduce %6 : op=add pop=1</code>
+  reduces one horizontal axis and no loop ranges.</p>
+
+  <h3>Remove reduces: REDUCE → ALU chain or register accumulator</h3>
+  <div class="codecap"><b>tinygrad/codegen/__init__.py:182-201</b> — <a class="src" data-path="tinygrad/codegen/__init__.py" data-line="182">lower_reduce</a></div>
+  <pre><code class="language-python">def lower_reduce(ctx:itertools.count, r:UOp):
+  # horizontal: int, how many leading axes of inp are reduced in place, the rest of the reduce is over the ranges in src[1:]
+  inp, (op, horizontal) = r.src[0], r.arg
+  vals = [inp.index(*idx) for idx in itertools.product(*[range(inp.max_shape[a]) for a in range(horizontal)])] if horizontal else [inp]
+  ret = functools.reduce(lambda x,y: x.alu(op, y), vals)
+  if len(r.src) == 1: return ret
+  acc = UOp.alloc_like(r, next(ctx), AddrSpace.REG)
+  input_ranges = tuple(x for x in inp.ranges if x not in r.src[1:])
+  acc_init = acc.after(*input_ranges).store(UOp.const(identity_element(op, r.dtype)))
+  acc_initted = acc.after(acc_init, *r.src[1:])
+  acc_out = acc_initted.store(acc_initted.alu(op, ret)).end(*r.src[1:])
+  return acc.after(acc_out)
+
+pm_reduce_local = pm_wmma_add+PatternMatcher([
+  # fix group for reduce
+  (UPat(Ops.REDUCE, name=&quot;x&quot;), fix_group_for_reduce),
+  # remove reduces
+  (UPat(Ops.REDUCE, name=&quot;r&quot;), lower_reduce),
+  (UPat(Ops.SINK, name=&quot;sink&quot;), merge_reduce_ends),
+])+pm_clean_up_group_sink</code></pre>
+  <p>Two cases, both visible in real kernels:</p>
+  <ul>
+    <li><b>Purely horizontal</b> (sum·CPU: every reduce axis was upcast): <code>vals</code> are the 8 lanes, folded with
+    <code>functools.reduce</code> into a chain of 7 ADDs, and since <code>len(r.src)==1</code> there is no loop and <b>no
+    accumulator at all</b>:</li>
+  </ul>
+  <pre class="output"><code>===== after &#x27;remove reduces&#x27;  (44 UOps)
+%0 = param 4 : dtype=f32 slot=0 device=CPU
+%1 = range 4 : WEAK 1
+%2 = index %0, %1
+%3 = param 32 : dtype=f32 slot=1 device=CPU
+%4 = mul %1, 8
+%5 = add %4, (0, 1, 2, 3, 4, 5, 6, 7)
+%6 = index %5, 0
+%7 = index %3, %6
+%8 = index %5, 1
+%9 = index %3, %8
+%10 = add %7, %9
+%11 = index %5, 2
+%12 = index %3, %11
+%13 = add %10, %12
+%14 = index %5, 3
+%15 = index %3, %14
+%16 = add %13, %15
+%17 = index %5, 4
+%18 = index %3, %17
+%19 = add %16, %18
+%20 = index %5, 5
+%21 = index %3, %20
+%22 = add %19, %21
+%23 = index %5, 6
+%24 = index %3, %23
+%25 = add %22, %24
+%26 = index %5, 7
+%27 = index %3, %26
+%28 = add %25, %27
+%29 = reshape %28, 1
+%30 = store %2, %29
+%31 = end %30, %1
+%32 = sink %31 : r_4_8</code></pre>
+  <ul>
+    <li><b>With loop ranges</b> (exp·CPU has none; sum·GPU does): <code>acc = UOp.alloc_like(r, slot, AddrSpace.REG)</code>
+    — a 1-element register buffer — is initialized with the identity (<code>0.0</code> for ADD, <code>-inf</code> for MAX)
+    <em>after</em> the enclosing ranges, updated inside the reduce loop, and the loop is closed with <code>.end(...)</code>.
+    <code>AFTER</code> is the ordering edge: "this value of acc, after these stores".</li>
+  </ul>
+  <p><code>fix_group_for_reduce</code> handles reductions over LOCAL/WARP ranges (GROUP-style opts): the partial result is
+  <code>bufferize</code>d into LOCAL memory (a <code>STAGE</code> UOp), and a second reduce over a fresh WEAK range (axis id
+  +100) finishes it. Real output for sum·GPU — look for <code>stage … AddrSpace.LOCAL</code> and <code>range 16 : WEAK 102</code>:</p>
+  <pre class="output"><code>##### B: Tensor.empty(16,16).sum(1): final kernel name r_16_16, opts (Opt(op=OptOps.SPLIT, axis=1, arg=(16, AxisType.LOCAL, True)),)
+=== after &#x27;postopt symbolic&#x27;
+%0 = param 16 : dtype=f32 slot=0 device=CPU
+%1 = range 16 : GLOBAL 1
+%2 = index %0, %1
+%3 = param 256 : dtype=f32 slot=1 device=CPU
+%4 = mul %1, 16
+%5 = range 16 : LOCAL 2
+%6 = add %4, %5
+%7 = index %3, %6
+%8 = reduce %7, %5 : op=add
+%9 = store %2, %8
+%10 = end %9, %1
+%11 = sink %10 : r_16_16
+=== after &#x27;remove reduces&#x27;
+%0 = param 16 : dtype=f32 slot=0 device=CPU
+%1 = range 16 : GLOBAL 1
+%2 = index %0, %1
+%3 = alloc 1 : dtype=f32 slot=0 addrspace=REG
+%4 = reshape %3, ()
+%5 = after %4, %1
+%6 = store %5, 0.0
+%7 = range 16 : WEAK 102
+%8 = after %4, %6, %7
+%9 = param 256 : dtype=f32 slot=1 device=CPU
+%10 = mul %1, 16
+%11 = range 16 : LOCAL 2
+%12 = add %10, %11
+%13 = index %9, %12
+%14 = stage %13, %11 : BufferizeOpts(device=None, addrspace=AddrSpace.LOCAL, removable=True)
+%15 = index %14, %7
+%16 = add %8, %15
+%17 = store %8, %16
+%18 = end %17, %7
+%19 = after %4, %18
+%20 = store %2, %19
+%21 = end %20, %1
+%22 = sink %21 : r_16_16</code></pre>
+  <p><code>merge_reduce_ends</code> then merges ENDs that close the same range in the same context, so each RANGE maps to
+  one END (the linearizer relies on that, <a href="16-linearize-render.html">Chapter 16</a>).</p>
+
+  <div class="quiz" data-answer="2">
+    <div class="q">For <code>Tensor.empty(4,8).sum(1)</code> on Clang, the heuristic UPCASTs the whole 8-long reduce axis. What does "remove reduces" produce?</div>
+    <button class="opt">A REG accumulator initialised to 0.0 and a loop of 8 iterations</button>
+    <button class="opt">A WMMA instruction</button>
+    <button class="opt">A chain of 7 ADD UOps over the 8 lanes, no accumulator and no loop</button>
+    <button class="opt">A LOCAL buffer and a barrier</button>
+    <div class="explain">All reduce axes became horizontal (vector) axes, so <code>lower_reduce</code> takes the
+    <code>functools.reduce</code> path and returns early because <code>len(r.src) == 1</code>. You can see it in the
+    snapshot: <code>%10 = add %7, %9 … %28 = add %25, %27</code>.</div>
+  </div>
+
+  <!-- ============================================================== -->
+  <h2 id="gpudims"><span class="sec">15.6</span>Locals and GPU dimensions</h2>
+  <p><b>add local buffers</b> (<a class="src" data-path="tinygrad/codegen/__init__.py" data-line="211">add_local_buffer</a>)
+  turns each <code>STAGE</code> into a real <code>ALLOC</code> in LOCAL (or REG) address space, a store of the staged value
+  into it inside its ranges, and an INDEX to read it back.</p>
+  <p><b>group gpudims</b> (<a class="src" data-path="tinygrad/codegen/gpudims.py" data-line="44">group_gpudims</a>) runs
+  once on the SINK. It collects GLOBAL ranges and LOCAL/WARP ranges, and asks
+  <a class="src" data-path="tinygrad/codegen/gpudims.py" data-line="28">get_grouped_dims</a> to fit them into the renderer's
+  limits (<code>global_max</code>, <code>local_max</code>, at most 3 dims each): too many dims → merge neighbours
+  (<code>_group_dims</code>), a dim too big → split by its smallest factor into the next dim (<code>_split_dims</code>).
+  The new ranges keep their hardware dimension as axis id; the old ranges are substituted by
+  <code>flat // prod(dims[i+1:]) % dims[i]</code> expressions over them. Global dims are assigned in <em>reverse</em> (the
+  last, fastest-moving axis gets <code>gidx0</code>). It also masks global stores that don't depend on some local range so
+  only <code>lidx==0</code> writes (you'll see <code>cmpeq %15, 0</code> gating the final store of sum·GPU below).</p>
+  <div class="codecap"><b>tinygrad/codegen/gpudims.py:9-42</b></div>
+  <pre><code class="language-python">def _group_dims(dims:tuple[sint, ...], max_sizes:tuple[int, ...]):
+  while len(dims) &gt; len(max_sizes) or any(_dim_max(d) &gt; m for d,m in zip(dims, max_sizes)):
+    for i,m in enumerate(max_sizes):
+      if i &lt; (len(dims)-1) and _dim_max(dims[i]) * _dim_max(dims[i+1]) &lt;= m:
+        dims = dims[:i] + (dims[i]*dims[i+1],) + dims[i+2:]
+        break
+    else: return None
+  return dims
+
+def _split_dims(dims, max_sizes):
+  if all(d &lt;= m for d,m in zip(dims, max_sizes)): return dims
+  _dims = list(dims) + [1]*(3-len(dims))
+  for i in range(len(_dims)):
+    while _dims[i] &gt; max_sizes[i]:
+      div = next((d for d in range(2, math.ceil(math.sqrt(_dims[i])) + 1) if (_dims[i] % d) == 0), 1)
+      if div == 1: raise RuntimeError(f&quot;cannot limit dim {dims=}, {max_sizes=}&quot;)
+      _dims[i], _dims[(i+1)%len(_dims)] = _dims[i]//div, _dims[(i+1)%len(_dims)]*div
+  return tuple(_dims[:2] if _dims[2] == 1 else _dims)
+
+def get_grouped_dims(prefix, dims:tuple[sint, ...], max_sizes:tuple[int, ...]|None, reverse=False) -&gt; list[UOp]:
+  if reverse: return get_grouped_dims(prefix, dims[::-1], max_sizes)[::-1]
+  if max_sizes is None: limited = dims
+  else:
+    # try to group first: (a, b, c, d) -&gt; (ab, c, d)
+    limited = grouped if (grouped := _group_dims(dims, max_sizes)) else dims
+    # check if grouping failed
+    if len(limited) &gt; len(max_sizes): raise RuntimeError(f&quot;cannot limit dim {dims=}, {max_sizes=}&quot;)
+    # try to split up dims: (a,) -&gt; (b, c)
+    if limited == dims: limited = _split_dims(dims, max_sizes)
+  # Keep hardware axes as ranges through index lowering. The axis id is the hardware dimension.
+  axis_type = AxisType.GLOBAL if prefix == &quot;gidx&quot; else AxisType.LOCAL
+  raw_idxs = [UOp.range(s, i, axis_type) for i,s in enumerate(limited)]
+  flat = sum(idx * math.prod(limited[i+1:]) for i,idx in enumerate(raw_idxs))
+  return [ssimplify(flat // math.prod(dims[i+1:])) if i == 0 else ssimplify((flat // math.prod(dims[i+1:])) % dims[i]) for i in range(len(dims))]</code></pre>
+  <div class="demo" id="demo-dims">
+    <div class="demo-title">GPU dims calculator (a JS port of _group_dims / _split_dims / get_grouped_dims)</div>
+    <div class="demo-desc">Type the kernel's GLOBAL (or LOCAL) range sizes and pick the renderer's limits. See which dims get
+    merged or split, and the index expression each original range is replaced by. tinygrad simplifies these with
+    <code>ssimplify</code>; the calculator has a tiny simplifier for exactly this mixed-radix form (checked against tinygrad for the presets).</div>
+    <div class="controls">
+      <label>dims <input type="text" id="dims-in" value="3, 5, 7, 11" size="22"></label>
+      <label>limits <select id="dims-max">
+        <option value="2147483647,65535,65535">CUDA/HIP global_max (2147483647, 65535, 65535)</option>
+        <option value="1024,1024,64">CUDA local_max (1024, 1024, 64)</option>
+        <option value="65535,65535,65535">WGSL global_max (65535, 65535, 65535)</option>
+        <option value="256,256,64">WGSL local_max (256, 256, 64)</option>
+        <option value="2415919103,2415919103,2415919103">Renderer default (0x8FFFFFFF ×3)</option>
+        <option value="16,16,16">toy limits (16, 16, 16)</option>
+      </select></label>
+      <label><input type="checkbox" id="dims-rev" checked> global (reverse order)</label>
+    </div>
+    <div class="row">
+      <div class="col"><div class="ch15-out" id="dims-out"></div></div>
+    </div>
+  </div>
+  <p>Real output for add·GPU on OpenCL: the LOCAL range keeps its id 2 before grouping and becomes hardware dim 0
+  (<code>LOCAL 0</code>) after it. Much later, "range to special" turns both into <code>SPECIAL</code>s:</p>
+  <pre class="output"><code>=== after &#x27;group gpudims&#x27;
+%0 = param 256 : dtype=f32 slot=0 device=CPU
+%1 = range 2 : GLOBAL 0
+%2 = mul %1, 128
+%3 = range 32 : LOCAL 0
+%4 = mul %3, 4
+%5 = add %2, %4
+%6 = add %5, (0, 1, 2, 3)
+%7 = index %0, %6
+%8 = param 256 : dtype=f32 slot=1 device=CPU
+%9 = index %8, %6
+%10 = param 256 : dtype=f32 slot=2 device=CPU
+%11 = index %10, %6
+%12 = add %9, %11
+%13 = store %7, %12
+%14 = end %13, %1, %3
+%15 = sink %14 : E_2_32_4</code></pre>
+
+  <!-- ============================================================== -->
+  <h2 id="devec"><span class="sec">15.7</span>Expand broadcast, add loads, devectorize</h2>
+  <p>After the expander, the graph mixes shapes: <code>mul %1, 8</code> is a scalar, <code>add %4, (0..7)</code> is shape
+  (8,). Two stages make it uniform and then scalar:</p>
+  <ul>
+    <li><b>pm_expand_broadcast</b> (<a class="src" data-path="tinygrad/codegen/__init__.py" data-line="84">expand_broadcast</a>):
+    if the srcs of a Binary/Ternary/STORE have different shapes, EXPAND them to the broadcast shape explicitly.</li>
+    <li><b>pm_add_loads</b> (<a class="src" data-path="tinygrad/codegen/__init__.py" data-line="204">maybe_load</a>): up to
+    here, an <code>INDEX</code> of a buffer stood for "the value at that address". Now every elementwise consumer of an INDEX
+    into GLOBAL/LOCAL/REG memory gets an explicit <code>LOAD(INDEX)</code>. Loads are born this late on purpose: earlier
+    passes could move indexes around freely.</li>
+    <li><b>devectorizer2</b> (<a class="src" data-path="tinygrad/codegen/__init__.py" data-line="115">do_devectorize</a>):
+    every shaped elementwise op/LOAD/STORE with matching src shapes becomes one scalar op per lane, glued by
+    <code>UOp.stack</code> (or <code>UOp.group</code> for stores); <code>INDEX(STACK, i)</code> then picks lanes, and
+    pm_mops/mop_cleanup fold the bookkeeping away.</li>
+  </ul>
+  <pre class="output"><code>===== after &#x27;*** expand broadcast / add loads&#x27;  (54 UOps)
+%0 = param 4 : dtype=f32 slot=0 device=CPU
+%1 = range 4 : WEAK 1
+%2 = index %0, %1
+%3 = expand %2, 1
+%4 = param 32 : dtype=f32 slot=1 device=CPU
+%5 = mul %1, 8
+%6 = expand %5, 8
+%7 = add %6, (0, 1, 2, 3, 4, 5, 6, 7)
+%8 = index %7, 0
+%9 = index %4, %8
+%10 = load %9
+%11 = index %7, 1
+%12 = index %4, %11
+%13 = load %12
+%14 = add %10, %13
+%15 = index %7, 2
+%16 = index %4, %15
+%17 = load %16
+%18 = add %14, %17
+%19 = index %7, 3
+%20 = index %4, %19
+%21 = load %20
+%22 = add %18, %21
+%23 = index %7, 4
+%24 = index %4, %23
+%25 = load %24
+%26 = add %22, %25
+%27 = index %7, 5
+%28 = index %4, %27
+%29 = load %28
+%30 = add %26, %29
+%31 = index %7, 6
+%32 = index %4, %31
+%33 = load %32
+%34 = add %30, %33
+%35 = index %7, 7
+%36 = index %4, %35
+%37 = load %36
+%38 = add %34, %37
+%39 = reshape %38, 1
+%40 = store %3, %39
+%41 = end %40, %1
+%42 = sink %41 : r_4_8
+===== after &#x27;devectorize2&#x27;  (47 UOps)
+%0 = param 4 : dtype=f32 slot=0 device=CPU
+%1 = range 4 : WEAK 1
+%2 = index %0, %1
+%3 = param 32 : dtype=f32 slot=1 device=CPU
+%4 = mul %1, 8
+%5 = index %3, %4
+%6 = load %5
+%7 = add %4, 1
+%8 = index %3, %7
+%9 = load %8
+%10 = add %6, %9
+%11 = add %4, 2
+%12 = index %3, %11
+%13 = load %12
+%14 = add %10, %13
+%15 = add %4, 3
+%16 = index %3, %15
+%17 = load %16
+%18 = add %14, %17
+%19 = add %4, 4
+%20 = index %3, %19
+%21 = load %20
+%22 = add %18, %21
+%23 = add %4, 5
+%24 = index %3, %23
+%25 = load %24
+%26 = add %22, %25
+%27 = add %4, 6
+%28 = index %3, %27
+%29 = load %28
+%30 = add %26, %29
+%31 = add %4, 7
+%32 = index %3, %31
+%33 = load %32
+%34 = add %30, %33
+%35 = store %2, %34
+%36 = end %35, %1
+%37 = sink %36 : r_4_8</code></pre>
+  <div class="callout aha"><span class="title">Why devectorize at all, if we want float4 loads?</span>Because vectors in
+  the graph are "logical" (any shape, from the optimizer), while vectors in hardware are "physical" (4 contiguous floats,
+  aligned). tinygrad first scalarizes <em>everything</em>, lets symbolic simplify each lane's index (<code>add %4, 3</code>),
+  and only then rebuilds the vector accesses that the hardware can actually do. ALU ops stay scalar (C compilers
+  autovectorize well); memory is where width matters.</div>
+
+  <!-- ============================================================== -->
+  <h2 id="coalesce"><span class="sec">15.8</span>Memory coalescing and images</h2>
+  <p><a class="src" data-path="tinygrad/codegen/late/coalesce.py" data-line="106">memory_coalescing</a> is a plain function, not
+  a PatternMatcher. It buckets every LOAD/STORE by (op, buffer, index-without-constant-offset, valid, arg) and records the
+  constant offset; runs of consecutive offsets are cut into groups of the allowed lengths (<code>[4, 2]</code> when
+  <code>ren.supports_float4</code> and the dtype is float/half/int/uint/fp8, <code>[4]</code> for images,
+  <code>[128…4]</code> on DSP, else <code>[1]</code>), each group start must be divisible by the length (alignment), and
+  each group becomes one <code>SHRINK(buf, start, len)</code> LOAD (lanes read back with <code>INDEX(load, i)</code>) or one
+  STORE of a <code>STACK</code>.</p>
+  <div class="codecap"><b>tinygrad/codegen/late/coalesce.py:106-165</b></div>
+  <pre><code class="language-python">def memory_coalescing(sink:UOp, ctx:Renderer) -&gt; UOp:
+  if getenv(&quot;DMC&quot;): return sink
+
+  # collect
+  memory: defaultdict[tuple[Ops, UOp, UOp|str, UOp, object], dict[int, list[UOp]]] = defaultdict(dict)
+  for u in sink.toposort():
+    # TODO: this should handle images too, it&#x27;s just memory coalescing
+    if u.op in {Ops.LOAD, Ops.STORE}:
+      assert len(u.src) == (2 if u.op is Ops.STORE else 1), &quot;memory coalescing does not support gated loads/stores&quot;
+      assert u.src[0].op is Ops.INDEX, f&quot;memory coalescing should be on INDEX, not {u.src[0].op}&quot;
+      buf, idx_u = u.src[0].src
+      if buf.addrspace == AddrSpace.REG: continue
+      if buf.buf_uop.op is Ops.PARAM and buf.buf_uop.arg.volatile: continue # volatile accesses never merge
+      idx, valid = idx_u.get_idx(), idx_u.get_valid()
+      if idx.is_invalid: continue
+      root_src: UOp|str
+      if idx.op is Ops.ADD and idx.src[1].op is Ops.CONST: root_src, arg = idx.src[0], idx.src[1].val
+      elif idx.op is Ops.ADD and idx.src[0].op is Ops.CONST: root_src, arg = idx.src[1], idx.src[0].val
+      elif idx.op is Ops.CONST: root_src, arg = &quot;CONST&quot;, idx.val
+      else: root_src, arg = idx, 0
+      # loads/stores only coalesce with others carrying the same arg (e.g. the nontemporal flag)
+      memory[(u.op, buf, root_src, valid, u.arg)].setdefault(arg, []).append(u)
+
+  # build replacements
+  replacements = {}
+  for (op,buf,_,_,ld_arg),offsets in memory.items():
+    # allowed lengths (copied in)
+    lengths = []
+    must_divide = True
+    if ctx.target.device == &quot;DSP&quot;:
+      lengths = [128,64,32,16,8,4]
+      must_divide = False
+    elif is_image_shape(buf._shape):
+      lengths = [4]
+    elif buf.dtype in (dtypes.float, dtypes.half, dtypes.int, dtypes.uint, *dtypes.fp8s) and ctx.supports_float4:
+      # TODO: a better way to get this than ctx
+      lengths = [8,4,2] if buf.dtype == dtypes.half and getenv(&quot;ALLOW_HALF8&quot;) else [4,2]
+    lengths.append(1)  # worst case, it&#x27;s not folded
+    # do the grouping
+    grouped_offsets = [[x for _,x in group] for _,group in itertools.groupby(enumerate(sorted(offsets.keys())), lambda x: x[1]-x[0])]
+    for full_grp in grouped_offsets:
+      while len(full_grp):
+        # the group starts at its first access&#x27;s index, valid included
+        offset = offsets[full_grp[0]][0].src[0].src[1]
+        length = [l for l in lengths if l &lt;= len(full_grp) and (not must_divide or offset.get_idx().divides(l) is not None)][0]
+        grp, full_grp = full_grp[:length], full_grp[length:]
+        assert op is not Ops.STORE or all(len(offsets[g]) == 1 for g in grp), &quot;attempting multiple stores&quot;
+        if length == 1: continue
+        idx = UOp(Ops.SHRINK, src=(buf, offset, UOp.const(length)))
+        if op == Ops.STORE:
+          datas = [offsets[g][0].src[1] for g in grp]
+          store = idx.store(UOp.stack(*datas))
+          for g in grp: replacements[offsets[g][0]] = store
+        else:
+          ld = idx.load(arg=ld_arg)
+          for i,g in enumerate(grp):
+            for oo in offsets[g]: replacements[oo] = ld.index(i)
+
+  # apply
+  return sink.substitute(replacements, name=&quot;memory coalescing&quot;)</code></pre>
+  <pre class="output"><code>===== after &#x27;memory_coalescing()&#x27;  (35 UOps)
+%0 = param 4 : dtype=f32 slot=0 device=CPU
+%1 = range 4 : WEAK 1
+%2 = index %0, %1
+%3 = param 32 : dtype=f32 slot=1 device=CPU
+%4 = mul %1, 8
+%5 = shrink %3, %4, 4
+%6 = load %5
+%7 = index %6, 0
+%8 = index %6, 1
+%9 = add %7, %8
+%10 = index %6, 2
+%11 = add %9, %10
+%12 = index %6, 3
+%13 = add %11, %12
+%14 = add %4, 4
+%15 = shrink %3, %14, 4
+%16 = load %15
+%17 = index %16, 0
+%18 = add %13, %17
+%19 = index %16, 1
+%20 = add %18, %19
+%21 = index %16, 2
+%22 = add %20, %21
+%23 = index %16, 3
+%24 = add %22, %23
+%25 = store %2, %24
+%26 = end %25, %1
+%27 = sink %26 : r_4_8</code></pre>
+  <p>8 scalar loads at <code>8*r+0…7</code> became <code>shrink %3, %4, 4</code> and <code>shrink %3, %4+4, 4</code> — the two
+  <code>float4</code> loads in the final C. On WGSL (<code>supports_float4 = False</code>) nothing is coalesced.</p>
+  <p><b>add images</b> (<a class="src" data-path="tinygrad/codegen/late/coalesce.py" data-line="74">transform_to_image</a>)
+  only acts with <code>IMAGE=1</code> on QCOM/CL/PYTHON/NULL targets: a buffer read in float4 groups (and not both loaded and
+  stored) is reshaped into a 2D image whose width/height are chosen to drop the most bounds checks
+  (<code>_drop_valid_stmts</code>); its INDEX gets (y, x) coordinates.</p>
+
+  <!-- ============================================================== -->
+  <h2 id="weak"><span class="sec">15.9</span>Weak dtypes, symbolic passes and committed consts</h2>
+  <p>All index arithmetic so far was in <code>dtypes.weakint</code> — an "integer of unspecified width" (<a href="03-dtypes.html">Chapter 3</a>).
+  Before decompositions can look at dtypes (fast idiv needs <code>x.dtype.max</code>!), widths must be decided:</p>
+  <ul>
+    <li><b>extra symbolic</b> runs <code>sym + indexing_simplify + pm_commit_weak</code>:
+    <a class="src" data-path="tinygrad/uop/weak.py" data-line="36">pm_commit_weak</a> commits a weak const at the dtype a sibling
+    src already states (e.g. <code>float_val + 1</code> → the 1 becomes float32).</li>
+    <li><b>lower all index dtypes</b> (<a class="src" data-path="tinygrad/uop/weak.py" data-line="72">pm_lower_weak</a>):
+    each weak node is resolved at the narrowest dtype covering its own vmin/vmax and its srcs' (<code>commit_dtype</code>,
+    defaulting to int32); a gated long index into a small buffer narrows to int.</li>
+    <li><b>final symbolic</b> and, at the very end, <b>cast consts</b> (<a class="src" data-path="tinygrad/uop/weak.py" data-line="106">pm_cast_const</a>):
+    every remaining bare <code>CONST</code> becomes <code>CAST(CONST)</code> at a concrete width, because
+    <code>spec_program</code> forbids a bare CONST as a src of anything but a CAST.</li>
+  </ul>
+  <pre class="output"><code>===== after &#x27;lower all index dtypes&#x27;  (40 UOps)
+%0 = param 4 : dtype=f32 slot=0 device=CPU
+%1 = cast 4 : i32
+%2 = range %1 : WEAK 1
+%3 = index %0, %2
+%4 = param 32 : dtype=f32 slot=1 device=CPU
+%5 = mul %2, 8
+%6 = shrink %4, %5, %1
+%7 = load %6
+%8 = cast 0 : i32
+%9 = index %7, %8
+%10 = cast 1 : i32
+%11 = index %7, %10
+%12 = add %9, %11
+%13 = cast 2 : i32
+%14 = index %7, %13
+%15 = add %12, %14
+%16 = cast 3 : i32
+%17 = index %7, %16
+%18 = add %15, %17
+%19 = add %5, 4
+%20 = shrink %4, %19, %1
+%21 = load %20
+%22 = index %21, %8
+%23 = add %18, %22
+%24 = index %21, %10
+%25 = add %23, %24
+%26 = index %21, %13
+%27 = add %25, %26
+%28 = index %21, %16
+%29 = add %27, %28
+%30 = store %3, %29
+%31 = end %30, %2
+%32 = sink %31 : r_4_8</code></pre>
+  <p>Notice <code>%1 = cast 4 : i32</code> feeding both the RANGE bound and the SHRINK length: committed consts are UOps too,
+  so they are hash-consed and shared.</p>
+  <div class="quiz" data-answer="1">
+    <div class="q">Why must "lower all index dtypes" run <em>before</em> "late decompositions"?</div>
+    <button class="opt">Because the C renderer can't print weakint</button>
+    <button class="opt">Because decompositions like fast_idiv need a concrete <code>x.dtype.max</code> to know whether <code>x*m</code> overflows</button>
+    <button class="opt">Because memory_coalescing needs int32 offsets</button>
+    <div class="explain">Look at <code>fast_idiv</code>: <code>if m*vmax &lt;= x.dtype.max: return (x*m) &gt;&gt; s</code>, otherwise
+    it widens to the next dtype. Both checks are meaningless for a width-less weakint. (The renderer also can't print weakint,
+    but that's handled by "cast consts" at the end.)</div>
+  </div>
+
+  <!-- ============================================================== -->
+  <h2 id="idiv"><span class="sec">15.10</span>Decompositions I: division, modulo and friends</h2>
+  <p><a class="src" data-path="tinygrad/codegen/decomp/op.py" data-line="1">codegen/decomp/op.py</a> builds its
+  PatternMatchers <em>from the renderer's capabilities</em>: <code>supported_ops = tuple(ren.code_for_op.keys())</code>
+  is passed in, and a rule is only added if its replacement can be rendered (both functions are
+  <code>@functools.cache</code>d on that tuple).</p>
+  <div class="codecap"><b>tinygrad/codegen/decomp/op.py:54-124</b></div>
+  <pre><code class="language-python">def floordiv_to_idiv(a:UOp, b:UOp) -&gt; UOp:
+  if (a.vmin &gt;= 0 and b.vmin &gt;= 0) or (a.vmax &lt;= 0 and b.vmax &lt;= 0): return a.alu(Ops.TRUNCDIV, b)
+  return a.alu(Ops.TRUNCDIV, b) - (a.alu(Ops.TRUNCMOD, b).ne(0) &amp; (a&lt;0).ne(b&lt;0))
+
+def floormod_to_mod(a:UOp, b:UOp) -&gt; UOp:
+  if (a.vmin &gt;= 0 and b.vmin &gt;= 0) or (a.vmax &lt;= 0 and b.vmax &lt;= 0): return a.alu(Ops.TRUNCMOD, b)
+  r = a.alu(Ops.TRUNCMOD, b)
+  # use where instead of mul to avoid being fused into MULACC (which int64 long-decomp doesn&#x27;t handle)
+  return r + (r.ne(0) &amp; (a&lt;0).ne(b&lt;0)).where(b, b.const_like(0))
+
+powers_of_two: dict[int, int] = {2**i:i for i in range(64)}
+@functools.cache
+def get_simplifying_rewrite_patterns(ops:tuple[Ops, ...]) -&gt; PatternMatcher:
+  # these are rewrites that make things simpler
+  pat: list[tuple[UPat, Callable]] = []
+  # DIV by 2**y -&gt; x &gt;&gt; y (an arithmetic shift is exactly floor division for any sign); fires before floordiv_to_idiv
+  if Ops.SHR in ops: pat.append((UPat.var(&quot;x&quot;, dtypes.ints)//UPat.cvar(&quot;c&quot;),
+    lambda x,c: x &gt;&gt; v if (v:=powers_of_two.get(c.val, 0)) else None))
+  pat.append((UPat.var(&quot;a&quot;)//UPat.var(&quot;b&quot;), floordiv_to_idiv))
+  # MOD by 2**y -&gt; x &amp; (2**y-1) (correct floor mod for any sign in two&#x27;s complement); fires before floormod_to_mod
+  if Ops.AND in ops: pat.append((UPat.var(&quot;x&quot;, dtypes.ints)%UPat.cvar(&quot;c&quot;), lambda x,c: x &amp; (c.val-1) if c.val in powers_of_two else None))
+  pat.append((UPat.var(&quot;a&quot;)%UPat.var(&quot;b&quot;), floormod_to_mod))
+  # no real hardware supports THREEFRY, but NullRenderer does
+  if Ops.THREEFRY not in ops: pat.append((UPat(Ops.THREEFRY, src=(UPat.var(&quot;x&quot;), UPat.var(&quot;key&quot;))), threefry2x32))
+  return PatternMatcher(pat)
+
+@functools.cache
+def get_late_rewrite_patterns(ops:tuple[Ops, ...], disable_fast_idiv:bool) -&gt; PatternMatcher:
+  pat: list[tuple[UPat, Callable]] = []
+  # MAX can be rewritten as CMPLT + WHERE (max function is annoying on many cstyle backends). late: WHERE loses the bound MAX carries
+  if Ops.MAX not in ops and Ops.CMPLT in ops: pat += [(UPat(Ops.MAX, name=&quot;m&quot;), lambda m: (m.src[0] &lt; m.src[1]).where(m.src[1], m.src[0]))]
+  if Ops.OR in ops: pat += [(UPat.var(&quot;x&quot;, dtypes.bool).logical_not()&amp;UPat.var(&quot;y&quot;, dtypes.bool).logical_not(),
+    lambda x,y: (x | y).logical_not())]
+  # rewrite MUL/TRUNCDIV to SHL+SHR: x*(2**y) -&gt; shl(x,y) and x//(2**y) -&gt; shr(x,y)
+  if Ops.SHL in ops: pat += [(UPat.var(&quot;x&quot;, dtypes.ints)*UPat.cvar(&quot;c&quot;), lambda c,x: x &lt;&lt; v if (v:=powers_of_two.get(c.val, 0)) else None)]
+  if Ops.SHR in ops:
+    # uint TRUNCDIV by 2**v -&gt; x &gt;&gt; v (DIV is lowered to TRUNCDIV by the rule above before reaching here)
+    pat += [(UPat(Ops.TRUNCDIV, src=(UPat.var(&quot;x&quot;, dtypes.uints), UPat.cvar(&quot;c&quot;))),
+      lambda x,c: x &gt;&gt; v if (v:=powers_of_two.get(c.val, 0)) else None)]
+    # signed TRUNCDIV by 2**v -&gt; (x + (x&lt;0 ? c-1 : 0)) &gt;&gt; v
+    pat += [(UPat(Ops.TRUNCDIV, src=(UPat.var(&quot;x&quot;, dtypes.ints), UPat.cvar(&quot;c&quot;))),
+      lambda x,c: (x+(l.const_like(l.vmin) if (l:=(x&lt;0)).vmin==l.vmax else l).where(c-1, 0)) &gt;&gt; v
+        if (v:=powers_of_two.get(c.val, 0)) else None)]
+    if not disable_fast_idiv:
+      # fast_idiv handles non-pow2 divisors on non-negative inputs
+      pat += [(UPat(Ops.TRUNCDIV, src=(UPat.var(&quot;x&quot;, dtypes.ints), UPat.cvar(&quot;d&quot;))), lambda ctx, x, d: fast_idiv(ctx, x, d.val))]
+      # rewrite raw TRUNCMOD -&gt; x - d*fast_idiv(x,d), only when fast_idiv can actually divide;
+      # avoids disturbing floormod_to_mod&#x27;s general-path output (which uses Ops.TRUNCMOD as an implementation detail)
+      pat += [(UPat(Ops.TRUNCMOD, src=(UPat.var(&quot;x&quot;, dtypes.ints), UPat.cvar(&quot;d&quot;))),
+        lambda ctx, x, d: x - d * q if (q:=fast_idiv(ctx, x, d.val)) is not None else None)]
+  if Ops.NEG in ops:
+    pat += [(UPat.var(&#x27;x&#x27;)*UPat.cvar(&#x27;c&#x27;), lambda ctx,x,c: x.alu(Ops.NEG) if c.val == x.dtype.const(-1) else None)]
+    if Ops.SUB in ops: pat += [(UPat.var(&#x27;x&#x27;)+UPat.var(&#x27;y&#x27;).alu(Ops.NEG), lambda ctx,x,y: x.alu(Ops.SUB, y))]
+  if Ops.CMPLT in ops:
+    # These are late rewrites because simplex expects equalities to be a certain format
+    pat += [
+      ((UPat.var(&quot;x&quot;, dtypes.ints) &lt; UPat.cvar(&quot;c&quot;)).logical_not(), lambda x,c: c-1&lt;x if c.val != x.dtype.min else None),
+      ((UPat.cvar(&quot;c&quot;) &lt; UPat.var(&quot;x&quot;, dtypes.ints)).logical_not(), lambda x,c: x&lt;c+1 if c.val != x.dtype.max else None),
+      ((UPat.cvar(&quot;c1&quot;)&lt;UPat.var(&quot;x&quot;, dtypes.ints)) &amp; (UPat.var(&quot;x&quot;, dtypes.ints)&lt;UPat.cvar(&quot;c2&quot;)),
+        lambda x,c1,c2: x.eq(c1+1) if c1.val+1==c2.val-1 else None),  # (c-1)&lt;x &amp; x&lt;(c+1) -&gt; x==c
+    ]
+  if Ops.CMPNE in ops: pat += [(UPat.var(&#x27;x&#x27;).eq(UPat.var(&#x27;y&#x27;)).logical_not(), lambda x,y: x.alu(Ops.CMPNE, y))]
+  if Ops.MULACC in ops:
+    pat += [(UPat.var(&#x27;a&#x27;)*UPat.var(&#x27;b&#x27;)+UPat.var(&#x27;c&#x27;), lambda a,b,c: a.alu(Ops.MULACC, b, c))]
+    # also fuse (x &lt;&lt; n) + c → MULACC(x, 2^n, c) since MUL→SHL may run first
+    if Ops.SHL in ops: pat += [(UPat.var(&#x27;x&#x27;).alu(Ops.SHL, UPat.cvar(&#x27;n&#x27;))+UPat.var(&#x27;c&#x27;), lambda x,n,c: x.alu(Ops.MULACC, x.const_like(1&lt;&lt;n.val), c))]
+  # some backends emit FDIV for RECIP, in that case: a*(1/b) -&gt; a/b
+  if Ops.FDIV in ops:
+    pat += [(UPat.var(&quot;x&quot;).reciprocal(), lambda x: UOp.const(1.0).alu(Ops.FDIV, x))]
+    pat += [(UPat.var(&quot;a&quot;) * UPat(Ops.FDIV, dtypes.floats, src=(UPat.const(1), UPat.var(&quot;b&quot;))), lambda a,b: a.alu(Ops.FDIV, b))]
+  return PatternMatcher(pat)</code></pre>
+  <ul>
+    <li><b>early</b>: <code>x // 2^k → x &gt;&gt; k</code> (arithmetic shift = floor division for any sign) if SHR is
+    renderable; otherwise floor DIV → <code>TRUNCDIV</code>, plus a correction term when the operands' signs may differ
+    (C's <code>/</code> truncates toward zero, tinygrad's <code>//</code> floors). Same for MOD → AND / TRUNCMOD.</li>
+    <li><b>late</b>: MAX → <code>a&lt;b ? b : a</code> when MAX isn't renderable, <code>x*2^k → x&lt;&lt;k</code>,
+    <code>x*-1 → NEG</code>, <code>a*b+c → MULACC</code> where supported, <code>!(x&lt;c) → c-1&lt;x</code>, and
+    <b>fast integer division</b>: TRUNCDIV by a constant on a non-negative <code>x</code> → <code>(x*m) &gt;&gt; s</code>.</li>
+  </ul>
+  <div class="callout warn"><span class="title">Fast idiv is off by default</span><code>DISABLE_FAST_IDIV = ContextVar("DISABLE_FAST_IDIV", 1)</code>
+  in <a class="src" data-path="tinygrad/helpers.py" data-line="251">helpers.py</a>. With the default, the C compiler does the
+  strength reduction itself; set <code>DISABLE_FAST_IDIV=0</code> to have tinygrad do it in the graph (useful for backends
+  whose compiler doesn't).</div>
+  <div class="codecap"><b>tinygrad/codegen/decomp/op.py:9-34</b> — magicgu (Hacker's Delight ch.10) and fast_idiv</div>
+  <pre><code class="language-python">@functools.lru_cache(None)
+def magicgu(vmax:int, d:int) -&gt; tuple[int,int]:
+  # calculate m,s such that x//d == (x*m) &gt;&gt; s for all 0 &lt;= x &lt;= vmax, d&gt;0; adapted from Hacker&#x27;s Delight, Chapter 10
+  nc = (vmax+1)//(d) * d - 1
+  nbits = vmax.bit_length()
+  for s in range(0, 2*nbits + 1):
+    if 2**s &gt; nc*(d - 1 - (2**s - 1) % d):
+      m = (2**s + d - 1 - (2**s - 1) % d)//d
+      return m, s
+  assert False
+
+def fast_idiv(ren: Renderer, x: UOp, d: int, dont_cast=False) -&gt; UOp|None:
+  if d &lt;= 0 or x.vmin &lt; 0: return None
+  if (vmax:=min(x.vmax, x.dtype.max)) &lt; d: return x.const_like(0)
+  m,s = magicgu(vmax, d)
+  if m*vmax &lt;= x.dtype.max: return (x*m) &gt;&gt; s
+  # before we try casting to a larger dtype (slow), we see if there are powers of two in d we can shift to make x smaller
+  if (k := (d &amp; -d).bit_length()-1) &gt; 0:
+    if (ret:=fast_idiv(ren, x &gt;&gt; k, d &gt;&gt; k, dont_cast=True)) is not None: return ret
+  if dont_cast: return None
+  # the next integer width that holds x*m
+  widen = {dtypes.int8:dtypes.int16, dtypes.int16:dtypes.int32, dtypes.int32:dtypes.int64, dtypes.int64:dtypes.uint64,
+           dtypes.uint8:dtypes.uint16, dtypes.uint16:dtypes.uint32, dtypes.uint32:dtypes.uint64}
+  if (next_dtype := widen.get(x.dtype)) is not None and next_dtype in ren.supported_dtypes():
+    if m*vmax &lt;= next_dtype.max: return ((x.cast(next_dtype)*m) &gt;&gt; s).cast(x.dtype)
+  return None</code></pre>
+  <div class="codecap"><b>examples/15_fast_idiv.py</b> — run with <code>DEV=CPU python3 examples/15_fast_idiv.py</code></div>
+  <pre class="output"><code>== magicgu(vmax, d) -&gt; (m, s) such that x//d == (x*m) &gt;&gt; s for every 0 &lt;= x &lt;= vmax ==
+  vmax=255         d=3     m=171          s=9   m*vmax=43605                  fits int32: True   check(x&lt;=2e5): True
+  vmax=1000        d=7     m=1171         s=13  m*vmax=1171000                fits int32: True   check(x&lt;=2e5): True
+  vmax=65536       d=10    m=52429        s=19  m*vmax=3435986944             fits int32: False  check(x&lt;=2e5): True
+  vmax=2147483647  d=7     m=2454267027   s=34  m*vmax=5270498305853807469    fits int32: False  check(x&lt;=2e5): True
+  vmax=2147483647  d=1000  m=274877907    s=38  m*vmax=590295810204086829     fits int32: False  check(x&lt;=2e5): True
+
+== fast_idiv on UOps: the bounds of x (vmin/vmax) decide what we get ==
+  x in [0,999], x//7  -&gt;  (x*1171&gt;&gt;13)
+  x in [0,2147483647], x//7  -&gt;  (i32)(((i64)(x)*2454267027&gt;&gt;34))
+  x in [0,2147483647], x//12  -&gt;  (i32)(((i64)(x)*715827883&gt;&gt;33))
+  x in [0,2147483647], x//1000  -&gt;  (i32)(((i64)(x)*274877907&gt;&gt;38))
+  x in [-5,100], x//7  -&gt;  None   (negative x: not handled here)
+
+== the same thing inside a real kernel on the CPU (Clang) ==
+  a // 8         default            : *((int4*)((data0_1000+alu0))) = (int4){(val0[0]&gt;&gt;3),(val0[1]&gt;&gt;3),(val0[2]&gt;&gt;3),(val0[3]&gt;&gt;3)};
+                 DISABLE_FAST_IDIV=0: *((int4*)((data0_1000+alu0))) = (int4){(val0[0]&gt;&gt;3),(val0[1]&gt;&gt;3),(val0[2]&gt;&gt;3),(val0[3]&gt;&gt;3)};
+  a % 8          default            : *((int4*)((data0_1000+alu0))) = (int4){(val0[0]&amp;7),(val0[1]&amp;7),(val0[2]&amp;7),(val0[3]&amp;7)};
+                 DISABLE_FAST_IDIV=0: *((int4*)((data0_1000+alu0))) = (int4){(val0[0]&amp;7),(val0[1]&amp;7),(val0[2]&amp;7),(val0[3]&amp;7)};
+  a // 7         default            : *((int4*)((data0_1000+alu0))) = (int4){((val0[0]/7)-((int)((((val0[0]%7)!=0)&amp;(val0[0]&lt;0))))),((val0[1]/7)-((int)((((val0[1]%7)!=0)&amp;(val0[1]&lt;0))))),((val0[2]/7)-((int)((((val0[2]%7)!=0)&amp;(val0[2]&lt;0))))),((val0[3]/7)-((int)((((val0[3]%7)!=0)&amp;(val0[3]&lt;0)))))};
+                 DISABLE_FAST_IDIV=0: *((int4*)((data0_1000+alu0))) = (int4){((val0[0]/7)-((int)((((val0[0]%7)!=0)&amp;(val0[0]&lt;0))))),((val0[1]/7)-((int)((((val0[1]%7)!=0)&amp;(val0[1]&lt;0))))),((val0[2]/7)-((int)((((val0[2]%7)!=0)&amp;(val0[2]&lt;0))))),((val0[3]/7)-((int)((((val0[3]%7)!=0)&amp;(val0[3]&lt;0)))))};
+  a + arange//7  default            : *((int4*)((data0_1000+alu0))) = (int4){(val0[0]+(alu0/7)),(val0[1]+((alu0+1)/7)),(val0[2]+((alu0+2)/7)),(val0[3]+((alu0+3)/7))};
+                 DISABLE_FAST_IDIV=0: *((int4*)((data0_1000+alu0))) = (int4){(val0[0]+((alu0*1171)&gt;&gt;13)),(val0[1]+(((alu0+1)*1171)&gt;&gt;13)),(val0[2]+(((alu0+2)*1171)&gt;&gt;13)),(val0[3]+(((alu0+3)*1171)&gt;&gt;13))};
+  a + arange%7   default            : *((int4*)((data0_1000+alu0))) = (int4){(val0[0]+(alu0%7)),(val0[1]+((alu0+1)%7)),(val0[2]+((alu0+2)%7)),(val0[3]+((alu0+3)%7))};
+                 DISABLE_FAST_IDIV=0: *((int4*)((data0_1000+alu0))) = (int4){(val0[0]+alu0+(((alu0*1171)&gt;&gt;13)*-7)),(val0[1]+alu1+(((alu1*1171)&gt;&gt;13)*-7)),(val0[2]+alu2+(((alu2*1171)&gt;&gt;13)*-7)),(val0[3]+alu3+(((alu3*1171)&gt;&gt;13)*-7))};
+  check //7: [-1, -1, -1, 0, 0] [142, 142, 142]   %7: [4, 5, 6, 0, 1] [3, 4, 5]</code></pre>
+  <p>The bounds decide everything. A loaded <code>int32</code> can be negative, so <code>a // 7</code> stays a C division
+  plus a floor correction. <code>a // 8</code> is a shift and <code>a % 8</code> a mask (correct for negatives in two's
+  complement). An index derived from a RANGE is known to be in [0, 999], so with fast idiv on, <code>/7</code> becomes
+  <code>*1171 &gt;&gt; 13</code> and <code>%7</code> becomes <code>x - 7*q</code> (printed as <code>x + q*-7</code>).</p>
+  <div class="demo" id="demo-idiv">
+    <div class="demo-title">Fast integer division calculator (a JS port of magicgu + fast_idiv)</div>
+    <div class="demo-desc">Choose the divisor, the range of <code>x</code> (its vmin/vmax — what tinygrad knows from symbolic
+    analysis) and the dtype. The calculator follows <code>fast_idiv</code>'s decision path exactly — including the
+    "shift out powers of two first" retry and the widening to the next dtype — and then checks the result against true
+    floor division (exhaustively when the range is ≤ 200 000 values, otherwise on 200 000 samples including the ends).</div>
+    <div class="controls">
+      <label>d <input type="number" id="idiv-d" value="7" min="1" style="width:90px"></label>
+      <label>vmin <input type="text" id="idiv-lo" value="0" size="8"></label>
+      <label>vmax <input type="text" id="idiv-hi" value="999" size="14"></label>
+      <label>dtype <select id="idiv-dt"><option>int32</option><option>uint32</option><option>int16</option><option>uint16</option><option>int8</option><option>uint8</option><option>int64</option></select></label>
+      <label><input type="checkbox" id="idiv-wide" checked> renderer supports the wider dtype</label>
+      <label>test x <input type="text" id="idiv-x" value="996" size="10"></label>
+    </div>
+    <div class="ch15-out" id="idiv-out"></div>
+  </div>
+
+  <!-- ============================================================== -->
+  <h2 id="transc"><span class="sec">15.11</span>Decompositions II: exp2, log2 and sin as polynomials</h2>
+  <p>If the renderer can't print EXP2/LOG2/SIN (or <code>TRANSCENDENTAL=2</code> forces it), <a class="src" data-path="tinygrad/codegen/decomp/transcendental.py" data-line="285">get_transcendental_patterns</a>
+  replaces them with SLEEF-style 1-ULP algorithms built from adds, multiplies, compares and bit tricks (float16/bfloat16
+  inputs are computed in float32). Every approximation has the same three-step shape:</p>
+  <ol>
+    <li><b>Range reduction</b>: write the input as an integer part and a small remainder. exp2: \(x = q + s\) with
+    \(q=\mathrm{round}(x)\), \(s\in[-\tfrac12,\tfrac12]\). sin: \(x = q\cdot\tfrac{\pi}{2}\ \text{or}\ q\pi + r\) with small \(r\).</li>
+    <li><b>Polynomial</b> on the small interval, evaluated with Horner's rule (<code>helpers.polyN</code>:
+    <code>reduce(lambda acc,c: acc*x+c, p, 0.0)</code>).</li>
+    <li><b>Reconstruction</b>: exp2: \(2^x = 2^s\cdot 2^q\), where \(2^q\) is built by writing \(q+127\) into the exponent bits
+    (<code>pow2if</code>) — in two halves (<code>ldexp2k</code>) so \(2^q\) never overflows on its own. sin: flip the sign
+    by quadrant bits <code>q&amp;1</code>, <code>q&amp;2</code>.</li>
+  </ol>
+  <div class="codecap"><b>tinygrad/codegen/decomp/transcendental.py:193-217</b> — xexp2</div>
+  <pre><code class="language-python">def xexp2(d:UOp) -&gt; UOp:
+  &quot;&quot;&quot;
+  Implements a 1.0 ULP approximation for Ops.EXP2
+  - Paper: https://arxiv.org/pdf/2001.09258
+  &quot;&quot;&quot;
+  assert d.dtype in TRANSCENDENTAL_DTYPES
+  # mask +=inf/nan as zero.
+  x = _lazy_map_numbers(d, d.const_like(0.0), d.const_like(0.0), d.const_like(0.0), d)
+  q = rintk(x)
+  # s = d - round(d)
+  s = x - q
+  # a polynomial approximation with 13 non-zero terms in the range of [−(log 2)/2,(log 2)/2].
+  if d.dtype == dtypes.float64:
+    u = polyN(s, [0.4434359082926529454e-9, 0.7073164598085707425e-8, 0.1017819260921760451e-6, 0.1321543872511327615e-5, 0.1525273353517584730e-4,
+                  0.1540353045101147808e-3, 0.1333355814670499073e-2, 0.9618129107597600536e-2, 0.5550410866482046596e-1, 0.2402265069591012214e+0,
+                  0.6931471805599452862e+0, 0.1000000000000000000e+1])
+  else: u = polyN(s, [0.1535920892e-3, 0.1339262701e-2, 0.9618384764e-2, 0.5550347269e-1, 0.2402264476e+0, 0.6931471825e+0, 1.0])
+  u = ldexp2k(u, q) # u*2^q
+  upper, lower = {dtypes.float64: (1024, -2000), dtypes.float32: (128, -150), dtypes.float16: (23, -22)}[d.dtype]
+  # Replace x &gt;= upper with +inf
+  u = (d &gt;= upper).where(d.const_like(math.inf), u)
+  # Replace x &lt; lower with zero.
+  u = (d&lt;lower).where(d.const_like(0.0), u)
+  # exp2(NaN) = NaN
+  return d.ne(d).where(d.const_like(math.nan), u)</code></pre>
+  <p>For sin, small angles (|x| &lt; 30) use <b>Cody–Waite</b> reduction: \(r = x - q\pi\) computed with \(\pi\) split into four
+  float32 pieces <code>3.1414794921875 + 0.000113159… + 1.98e-9 + 1.2e-10</code>, so that \(q\cdot\pi_A\) is exact and the
+  cancellation against \(x\) loses nothing. Large angles use <b>Payne–Hanek</b>: multiply the mantissa by 96 bits of
+  \(2/\pi\) taken from a 190-bit table, in 64-bit integer arithmetic, and read the quadrant from the top two bits. That's
+  where the <code>uint64</code> UOps in a sin kernel come from (and why "decomp dtypes" runs <em>after</em> this stage — on
+  a renderer without int64 they'd be emulated next).</p>
+  <div class="codecap"><b>tinygrad/codegen/decomp/transcendental.py:115-191</b> — Cody–Waite, the sin polynomial, xsin</div>
+  <pre><code class="language-python">def cody_waite_reduction(d:UOp) -&gt; tuple[UOp, UOp]:
+  &quot;&quot;&quot;
+  Performs Cody-Waite Reduction: computes the reminder of `d` modulo pi/2 for the values `d` where
+      0 &lt;= abs(d) &lt;= 39800.0
+  Returns a tuple of `(r, q)`, where the output format is the same as that of `payne_hanek_reduction`.
+  &quot;&quot;&quot;
+  def _reduce_d(x:UOp, q:UOp):
+    # https://github.com/shibatch/sleef/blob/4e08851f59fc2b545f9c393c6a23dfd311a26308/src/libm/sleefdp.c#L789-L823
+    if x.dtype == dtypes.float64:
+      # https://github.com/shibatch/sleef/blob/f6d8a841fbfddd26ce712834d4da220cd76048fb/src/common/misc.h#L77
+      PI_A, PI_B, PI_C, PI_D = 3.1415926218032836914, 3.1786509424591713469e-08, 1.2246467864107188502e-16, 1.2736634327021899816e-24
+      d = qdh * -PI_A + x
+      d = q * -PI_A + d
+      d = qdh * -PI_B + d
+      d = q * -PI_B + d
+      d = qdh * -PI_C + d
+      d = q * -PI_C + d
+      d = (qdh + q) * -PI_D + d
+    elif x.dtype == dtypes.float16:
+      # [FIXME] when reducing `d`, FP16 needs FP32 precision to achieve 1.0 ULP precision.
+      d = _reduce_d(x.cast(dtypes.float32), q.cast(dtypes.float32)).cast(dtypes.float16)
+    else:
+      # https://github.com/shibatch/sleef/blob/4e08851f59fc2b545f9c393c6a23dfd311a26308/src/libm/sleefsp.c#L464-L503
+      d = q * -3.1414794921875 + x
+      d = q * -0.00011315941810607910156 + d
+      d = q * -1.9841872589410058936e-09 + d
+      d = q * -1.2154201256553420762e-10 + d
+    return d
+
+  m_1_pi = 0.318309886183790671537767526745028724
+  qdh = (d * (m_1_pi / 2.0**24)).cast(dtypes.int64).cast(d.dtype) * (2.0**24)
+  quadrant = rintk(d * m_1_pi -qdh) if d.dtype == dtypes.float64 else rintk(d * m_1_pi)
+  return _reduce_d(d, quadrant.cast(d.dtype)), quadrant.cast(dtypes.int32)
+
+# *** approximate sine on small angle. ***
+def trig_poly(d:UOp, coeff32, coeff64): return d * (polyN(d*d, coeff64) if d.dtype == dtypes.float64 else polyN(d*d, coeff32))
+# approximate sine on [-pi/2, pi/2]
+def sin_poly(d:UOp) -&gt; UOp:
+  return trig_poly(d, [2.6083159809786593541503e-06, -0.0001981069071916863322258, 0.00833307858556509017944336, -0.166666597127914428710938, 1.0],
+                      [-7.97255955009037868891952e-18, 2.81009972710863200091251e-15, -7.64712219118158833288484e-13, 1.60590430605664501629054e-10,
+                       -2.50521083763502045810755e-08, 2.75573192239198747630416e-06, -0.000198412698412696162806809, 0.00833333333333332974823815,
+                       -0.166666666666666657414808,    1.0])
+
+def _ifand(q:UOp, n:int): return (q &amp; n).ne(0)
+
+def sin_poly_small(d:UOp, q:UOp) -&gt; UOp:
+  r = sin_poly(d)
+  return r * _ifand(q, 1).where(r.const_like(-1), r.const_like(1))
+
+def sin_poly_large(d:UOp, q:UOp) -&gt; UOp:
+  r = sin_poly(d + _ifand(q, 1).where(d.const_like(math.pi / 2), d.const_like(0)))
+  return r * _ifand(q, 2).where(r.const_like(-1), r.const_like(1))
+
+# *** toplevel functions for xsin/xlog2/xexp2 ***
+
+def xsin(d:UOp, fast:bool=False, switch_over:float=30.0) -&gt; UOp:
+  &quot;&quot;&quot;
+  Implements a 1.0 ULP approximation for Ops.SIN.
+  - fast=True assumes x &lt;= switch_over.
+  - switch_over is the threshold for switching to payne_hanek_reduction.
+  &quot;&quot;&quot;
+  assert d.dtype in TRANSCENDENTAL_DTYPES
+  # mask +-inf/nan as zero
+  x = _lazy_map_numbers(d, d.const_like(0.0), d.const_like(0.0), d.const_like(0.0), d)
+  # x_sign = sign(x)
+  x_sign = x.ne(0).where((x&lt;0).where(x.const_like(-1), x.const_like(1)), x.const_like(0))
+  x_abs = x * x_sign
+  r, q = (cody_waite_reduction if fast else payne_hanek_reduction)(x_abs)
+  if fast: result = sin_poly_small(r, q)
+  else:
+    # Payne Hanek Reduction assumes abs(x) &gt;= pi/4, so for smaller values, use cody_waite_reduction.
+    r_small, q_small = cody_waite_reduction(x_abs)
+    result = (x_abs&lt;switch_over).where(sin_poly_small(r_small, q_small), sin_poly_large(r, q))
+  # adjusts the sign for abs(x)
+  result = result * x_sign
+  # sin(Inf) = NaN, sin(-Inf) = NaN, sin(NaN) = NaN
+  return _lazy_map_numbers(d, d.const_like(math.nan), d.const_like(math.nan), d.const_like(math.nan), result)</code></pre>
+  <div class="codecap"><b>examples/15_transcendental.py</b> — run with <code>DEV=CPU python3 examples/15_transcendental.py</code></div>
+  <pre class="output"><code>== 1. native support (Ops in renderer.code_for_op) ==
+  ClangRenderer    {&#x27;EXP2&#x27;: False, &#x27;LOG2&#x27;: False, &#x27;SIN&#x27;: False, &#x27;SQRT&#x27;: True}
+  CPULLVMRenderer  {&#x27;EXP2&#x27;: True, &#x27;LOG2&#x27;: True, &#x27;SIN&#x27;: False, &#x27;SQRT&#x27;: True}
+  OpenCLRenderer   {&#x27;EXP2&#x27;: True, &#x27;LOG2&#x27;: True, &#x27;SIN&#x27;: True, &#x27;SQRT&#x27;: True}
+  PTXRenderer      {&#x27;EXP2&#x27;: True, &#x27;LOG2&#x27;: True, &#x27;SIN&#x27;: True, &#x27;SQRT&#x27;: True}
+  WGSLRenderer     {&#x27;EXP2&#x27;: True, &#x27;LOG2&#x27;: True, &#x27;SIN&#x27;: True, &#x27;SQRT&#x27;: True}
+
+== 2. graph size after the rewrite (float32 input variable d) ==
+  EXP2 : 1 UOp  -&gt;    75 UOps   (ops used: [&#x27;ADD&#x27;, &#x27;BITCAST&#x27;, &#x27;CAST&#x27;, &#x27;CMPEQ&#x27;, &#x27;CMPLT&#x27;, &#x27;CONST&#x27;, &#x27;DIV&#x27;, &#x27;MUL&#x27;, &#x27;PARAM&#x27;, &#x27;STACK&#x27;, &#x27;WHERE&#x27;])
+  LOG2 : 1 UOp  -&gt;    80 UOps   (ops used: [&#x27;ADD&#x27;, &#x27;AND&#x27;, &#x27;BITCAST&#x27;, &#x27;CAST&#x27;, &#x27;CMPEQ&#x27;, &#x27;CMPLT&#x27;, &#x27;CONST&#x27;, &#x27;DIV&#x27;, &#x27;MUL&#x27;, &#x27;PARAM&#x27;, &#x27;RECIP&#x27;, &#x27;STACK&#x27;, &#x27;WHERE&#x27;])
+  SIN  : 1 UOp  -&gt;   223 UOps   (ops used: [&#x27;ADD&#x27;, &#x27;AND&#x27;, &#x27;BITCAST&#x27;, &#x27;CAST&#x27;, &#x27;CMPEQ&#x27;, &#x27;CMPLT&#x27;, &#x27;CONST&#x27;, &#x27;DIV&#x27;, &#x27;MUL&#x27;, &#x27;OR&#x27;, &#x27;PARAM&#x27;, &#x27;SHL&#x27;, &#x27;SHR&#x27;, &#x27;STACK&#x27;, &#x27;WHERE&#x27;])
+
+== 3. tinygrad on CPU vs the python float32 port vs libm ==
+  exp2: port with CPU=False: bit-exact with tinygrad for 299/329 inputs, max 1 ulp apart
+  exp2: port with CPU=True : bit-exact with tinygrad for 329/329 inputs, max 0 ulp apart
+  exp2: tinygrad&#x27;s max error vs libm (on the float32 input): 1 ulp at x=57.29
+  sin: port with CPU=False: bit-exact with tinygrad for 147/647 inputs, max 4990 ulp apart
+  sin: port with CPU=True : bit-exact with tinygrad for 647/647 inputs, max 0 ulp apart
+  sin: tinygrad&#x27;s max error vs libm (on the float32 input): 4983 ulp at x=-21.993
+  exp2(   0.5) tinygrad=1.41421354     port=1.41421354     libm=1.41421356
+  exp2( 10.25) tinygrad=1217.74805     port=1217.74805     libm=1217.74809
+  exp2(  -3.7) tinygrad=0.0769465193   port=0.0769465193   libm=0.0769465233
+  exp2( 100.0) tinygrad=1.2676506e+30  port=1.2676506e+30  libm=1.2676506e+30
+  sin(    0.5) tinygrad=0.47942555     port=0.47942555     libm=0.479425539
+  sin(3.14159) tinygrad=2.62260437e-06 port=2.62260437e-06 libm=2.53518159e-06
+  sin(   31.0) tinygrad=-0.404037684   port=-0.404037684   libm=-0.404037645
+  sin(1000.25) tinygrad=0.94030875     port=0.94030875     libm=0.940308668</code></pre>
+  <p>Three things in that output deserve a second look:</p>
+  <ul>
+    <li><b>Who decomposes</b>: Clang removes EXP2/LOG2/SIN from its <code>code_for_op</code> (it's freestanding, no libm),
+    the CPU LLVM renderer keeps EXP2/LOG2 (LLVM intrinsics) but not SIN, GPUs keep all three (hardware approximations).</li>
+    <li><b>The port is exact</b>: a pure-python float32 port of xexp2/xsin agrees with tinygrad bit-for-bit on every input —
+    but only in "CPU mode": clang compiles with <code>-O2 -march=native</code> and contracts <code>acc*x+c</code> into one
+    FMA, and…</li>
+    <li><b>…the Cody–Waite order is not preserved in C.</b> The UOp graph adds the four \(q\cdot\pi_i\) terms in the correct
+    nested order, but <code>base_rewrite</code> prints a nested same-op ADD without parentheses
+    (<code>strip_parens(ctx[v]) if v.op == x.op</code>, <a class="src" data-path="tinygrad/renderer/cstyle.py" data-line="64">cstyle.py:64</a>),
+    so the kernel contains <code>(q*-1.2e-10f)+(q*-1.98e-09f)+(q*-0.000113f)+(q*-3.1414795f)+x</code>, which C evaluates
+    left to right — small terms first, the big cancellation last, so <code>q*π<sub>A</sub></code> is rounded to float32
+    <em>before</em> it cancels against x. Near multiples of π, where sin(x) is tiny, that shows: on [21.95, 22.03] (around 7π)
+    the port measures a worst absolute error of 5.8e-7 in C order vs 3.9e-9 in graph order — and since the true result is
+    tiny, that is up to hundreds of millions of ULPs right at the zero crossing (the example's 4983 ULP at −21.993 is just the
+    worst of its sample points). The plotter below lets you toggle both effects.</li>
+  </ul>
+  <div class="demo" id="demo-transc">
+    <div class="demo-title">Transcendental plotter: tinygrad's float32 approximations vs. Math</div>
+    <div class="demo-desc">A faithful JS port of the float32 paths of <code>xexp2</code> and <code>xsin</code> (every op
+    rounded with <code>Math.fround</code>, Payne–Hanek in BigInt; verified bit-identical to the Python port above on 2407
+    inputs, which in turn is bit-identical to tinygrad's CPU kernels). Top: the function; bottom: the error in float32 ULPs (log scale)
+    against <code>Math.pow(2,x)</code>/<code>Math.sin(x)</code> rounded to float32. Hover to inspect one input step by step.</div>
+    <div class="controls">
+      <button id="tr-exp2" class="active">exp2</button><button id="tr-sin">sin</button>
+      <label>from <input type="number" id="tr-lo" value="-4" step="any" style="width:90px"></label>
+      <label>to <input type="number" id="tr-hi" value="4" step="any" style="width:90px"></label>
+      <label>mode <select id="tr-mode"><option value="cpu">as compiled on this CPU (FMA + C add order)</option><option value="graph">as written in the graph (every op rounded, graph order)</option></select></label>
+      <button id="tr-preset1">sin near 7π</button><button id="tr-preset2">sin, Payne–Hanek range</button><button id="tr-preset3">exp2 extremes</button>
+    </div>
+    <div class="ch15-plot"><canvas id="tr-canvas" width="1000" height="430"></canvas></div>
+    <div class="ch15-readout" id="tr-read">hover the plot</div>
+  </div>
+
+  <!-- ============================================================== -->
+  <h2 id="dtype"><span class="sec">15.12</span>Decompositions III: emulating dtypes</h2>
+  <p>"decomp dtypes" (<a class="src" data-path="tinygrad/codegen/decomp/dtype.py" data-line="198">do_dtype_decomps</a>) first
+  collects every fp8/bf16/half/long/ulong dtype in the graph, then for each one that is in <code>EMULATED_DTYPES</code> or
+  missing from <code>ren.supported_dtypes()</code> runs a bottom-up rewrite: <b>long → two int32 words</b>
+  (<a class="src" data-path="tinygrad/codegen/decomp/dtype.py" data-line="21">l2i</a>: add with carry, 16-bit-limb multiply,
+  shift across words, 64-step long division, the classic TAOCP 4.3.1 algorithms) or <b>small float → float32</b> on its
+  bit pattern (<a class="src" data-path="tinygrad/codegen/decomp/dtype.py" data-line="98">f2f</a>, round-to-nearest-even).
+  Buffers change type too: an int64 buffer of 4 becomes an int32 buffer of 8.</p>
+  <div class="codecap"><b>examples/15_dtype_decomp.py</b> — run with <code>DEV=CPU python3 examples/15_dtype_decomp.py</code></div>
+  <pre class="output"><code>WGSL supports int64? False | Clang supports int64? True
+
+== int64 * 3 on Clang: 33 UOps, params [&#x27;slot0:dtypes.i64x4&#x27;, &#x27;slot1:dtypes.i64x4&#x27;]
+%0 = param 4 : dtype=i64 slot=0 device=CPU
+%1 = cast 0 : i32
+%2 = index %0, %1
+%3 = param 4 : dtype=i64 slot=1 device=CPU
+%4 = index %3, %1
+%5 = load %4
+%6 = cast 3 : i64
+%7 = mul %5, %6
+%8 = store %2, %7
+%9 = cast 1 : i32
+%10 = index %0, %9
+%11 = index %3, %9
+%12 = load %11
+%13 = mul %12, %6
+...
+
+== int64 * 3 on WGSL: 195 UOps, params [&#x27;slot0:dtypes.i32x8&#x27;, &#x27;slot1:dtypes.i32x8&#x27;]
+%0 = param 8 : dtype=i32 slot=0 device=CPU
+%1 = cast 0 : i32
+%2 = index %0, %1
+%3 = param 8 : dtype=i32 slot=1 device=CPU
+%4 = index %3, %1
+%5 = load %4
+%6 = bitcast %5 : u32
+%7 = cast 65535 : u32
+%8 = and %6, %7
+%9 = cast 0 : u32
+%10 = mul %8, %9
+%11 = cast 16 : u32
+%12 = shl %10, %11
+%13 = bitcast %12 : i32
+...
+
+== bfloat16 + 1 on Clang, EMULATED_DTYPES=bfloat16: 232 UOps, params [&#x27;slot0:dtypes.u16x4&#x27;, &#x27;slot1:dtypes.u16x4&#x27;]
+%0 = param 4 : dtype=u16 slot=0 device=CPU
+%1 = cast 0 : i32
+%2 = index %0, %1
+%3 = param 4 : dtype=u16 slot=1 device=CPU
+%4 = index %3, %1
+%5 = load %4
+%6 = cast 32768 : u16
+%7 = and %5, %6
+%8 = cast %7 : u32
+%9 = cast 16 : u32
+%10 = shl %8, %9
+%11 = cast 32767 : u16
+%12 = and %5, %11
+%13 = cast %12 : u32
+...</code></pre>
+
+  <!-- ============================================================== -->
+  <h2 id="tail"><span class="sec">15.13</span>The tail: gates, renderer quirks, barriers, SPECIAL, control flow</h2>
+  <ul>
+    <li><b>move gates from index</b> (<a class="src" data-path="tinygrad/codegen/late/gater.py" data-line="9">gater.py</a>):
+    until now, out-of-bounds access was expressed as an index value <code>valid.where(idx, Invalid)</code>. Renderers want
+    a gated LOAD (<code>LOAD(idx, alt=0, gate)</code> → <code>gate ? *p : 0</code>) or gated STORE instead; a WHERE right
+    after a gated load becomes the load's alternative value.</li>
+    <li><b>final rewrite</b>: <code>pm_decomp</code> again, plus the renderer's own <code>extra_matcher</code> (e.g. Clang
+    routes double→half through float, narrows uint8 math, emulates bf16 casts), plus
+    <a class="src" data-path="tinygrad/codegen/late/linearizer.py" data-line="88">pm_split_ends</a> (an END closing several
+    ranges becomes nested single-range ENDs, innermost first), plus <code>pm_remove_invalid</code>.</li>
+    <li><b>add implicit barriers</b> (<a class="src" data-path="tinygrad/codegen/__init__.py" data-line="229">add_raw_barrier</a>,
+    <a class="src" data-path="tinygrad/codegen/__init__.py" data-line="237">add_war_barrier</a>): an <code>AFTER</code> on a
+    LOCAL buffer whose dependencies contain a LOCAL store gets a <code>BARRIER</code> (read-after-write); a loop that both
+    stores and loads the same LOCAL buffer gets a barrier at the end of its body (write-after-read).</li>
+    <li><b>range to special</b> (<a class="src" data-path="tinygrad/codegen/gpudims.py" data-line="103">pm_range_to_special</a>):
+    GLOBAL/LOCAL RANGEs are not loops — the hardware runs one instance per index — so they become
+    <code>SPECIAL("gidx0")</code>/<code>SPECIAL("lidx0")</code>, and <code>pm_split_ends</code> drops them from ENDs.</li>
+    <li><b>add control flow</b>: <code>CFGContext</code> computes which sibling loops must come before which and records it
+    as <code>AFTER</code> edges on RANGE bounds — the subject of <a href="16-linearize-render.html">Chapter 16</a>.</li>
+    <li><b>number variables</b>: symbolic-shape variables (PARAMs with <code>slot=-1</code>) get slots after the buffers.</li>
+    <li><b>spec check</b>: with <code>SPEC=1</code> (the default, <a class="src" data-path="tinygrad/helpers.py" data-line="277">helpers.py:277</a>),
+    <code>type_verify(sink, spec_program)</code> (<a class="src" data-path="tinygrad/uop/spec.py" data-line="204">spec.py:204</a>)
+    rejects movement ops, Invalid, bare CONSTs, weak dtypes, non-int32 SPECIALs….</li>
+  </ul>
+  <p>The barrier and the gated store, for real (sum·GPU after "add implicit barriers"): <code>%25 = barrier %24</code> sits
+  between the loop that fills the LOCAL buffer and the AFTER that reads it, and <code>%36 = store %3, %34, %35</code> is
+  gated on <code>%35 = cmpeq %15, 0</code> (only local thread 0 writes the row's sum):</p>
+  <pre class="output"><code>=== after &#x27;add implicit barriers&#x27;
+%0 = param 16 : dtype=f32 slot=0 device=CPU
+%1 = cast 16 : i32
+%2 = range %1 : GLOBAL 0
+%3 = index %0, %2
+%4 = alloc 1 : dtype=f32 slot=0 addrspace=REG
+%5 = after %4, %2
+%6 = cast 0 : i32
+%7 = index %5, %6
+%8 = cast 0.0 : f32
+%9 = store %7, %8
+%10 = range %1 : WEAK 102
+%11 = after %4, %9, %10
+%12 = index %11, %6
+%13 = load %12
+%14 = alloc 16 : dtype=f32 slot=1 addrspace=LOCAL
+%15 = range %1 : LOCAL 0
+%16 = index %14, %15
+%17 = param 256 : dtype=f32 slot=1 device=CPU
+%18 = cast 4 : i32
+%19 = shl %2, %18
+%20 = add %19, %15
+%21 = index %17, %20
+%22 = load %21
+%23 = store %16, %22
+%24 = end %23, %15
+%25 = barrier %24
+%26 = after %14, %25
+%27 = index %26, %10
+%28 = load %27
+%29 = add %13, %28
+%30 = store %12, %29
+%31 = end %30, %10
+%32 = after %4, %31
+%33 = index %32, %6
+%34 = load %33
+%35 = cmpeq %15, %6
+%36 = store %3, %34, %35
+%37 = end %36, %2
+%38 = sink %37 : r_16_16</code></pre>
+  <p>And range → SPECIAL for add·GPU — note the ENDs of the two hardware ranges disappear, leaving no loop at all:</p>
+  <pre class="output"><code>=== after &#x27;range to special&#x27;
+%0 = param 256 : dtype=f32 slot=0 device=CPU
+%1 = cast 2 : i32
+%2 = special %1 : gidx0
+%3 = cast 7 : i32
+%4 = shl %2, %3
+%5 = cast 32 : i32
+%6 = special %5 : lidx0
+%7 = shl %6, %1
+%8 = add %4, %7
+%9 = cast 4 : i32
+%10 = shrink %0, %8, %9
+%11 = param 256 : dtype=f32 slot=1 device=CPU
+%12 = shrink %11, %8, %9
+%13 = load %12
+%14 = cast 0 : i32
+%15 = index %13, %14
+%16 = param 256 : dtype=f32 slot=2 device=CPU
+%17 = shrink %16, %8, %9
+%18 = load %17
+%19 = index %18, %14
+%20 = add %15, %19
+%21 = cast 1 : i32
+%22 = index %13, %21
+%23 = index %18, %21
+%24 = add %22, %23
+%25 = index %13, %1
+%26 = index %18, %1
+%27 = add %25, %26
+%28 = cast 3 : i32
+%29 = index %13, %28
+%30 = index %18, %28
+%31 = add %29, %30
+%32 = stack %20, %24, %27, %31
+%33 = store %10, %32
+%34 = after (), %33
+%35 = sink %34 : E_2_32_4
+</code></pre>
+  <div class="quiz" data-answer="3">
+    <div class="q">Which stage turns <code>range 2 : GLOBAL 0</code> into something the OpenCL renderer prints as <code>get_group_id(0)</code>?</div>
+    <button class="opt">group gpudims</button>
+    <button class="opt">expander</button>
+    <button class="opt">add control flow</button>
+    <button class="opt">range to special</button>
+    <div class="explain">"group gpudims" only regroups/renumbers the ranges (they stay RANGEs so their index math goes
+    through normal lowering). "range to special" replaces them with <code>SPECIAL("gidx0")</code>; the OpenCL renderer maps
+    the <code>g</code> prefix to <code>get_group_id</code> via <code>code_for_workitem</code>.</div>
+  </div>
+
+  <!-- ============================================================== -->
+  <h2 id="again"><span class="sec">15.14</span>Hammer it again: one AST, two kitchens</h2>
+  <p>Same question, other angle: how much of lowering is "the kernel" and how much is "the renderer"? Take the 16×16 add.
+  On OpenCL (has_local, float4) the explorer's add·GPU shows GLOBAL/LOCAL ranges, gpudims, SPECIALs, and float4 SHRINKs.
+  On Clang the very same AST gets <code>has_local = False</code> (so <code>convert_loop_to_global</code> returns early: no
+  GLOBAL ranges ever exist), <code>global_max=(1,0,0)</code>, and a loop. And for <code>exp</code>: on OpenCL "late
+  decompositions" is nearly a no-op; on Clang it is the biggest stage of all (14 → 78 UOps in the explorer's exp·CPU, one EXP2 UOp becoming the whole xexp2 algorithm),
+  and on a renderer without int64 a <em>sin</em> would grow again in "decomp dtypes" (Payne–Hanek's uint64 math).</p>
+  <div class="callout deep"><span class="title">What breaks if you reorder?</span>Each stage's comment hints at a dependency:
+  "symbolic (NOTE: this is a requirement for pm_simplify_ranges to be correct)", "some coalescing misses without this",
+  "extra symbolic before decomp. crashes without this?", "symbolic must NOT be composed here — … it cycles". Move
+  "memory_coalescing" before "devectorize2" and it finds no scalar loads to group; move "late decompositions" before
+  "lower all index dtypes" and fast_idiv has no dtype maximum; move "range to special" before "group gpudims" and the
+  hardware dims are wrong; skip "cast consts" and <code>spec_program</code> fails on the first bare CONST.</div>
+  <div class="quiz" data-answer="0">
+    <div class="q">You add a new renderer whose language has no <code>%</code> operator but has <code>&amp;</code>. Where does <code>x % 8</code> get handled, and where does <code>x % 7</code>?</div>
+    <button class="opt"><code>%8</code> → AND by the early simplifying patterns; <code>%7</code> stays TRUNCMOD (or becomes <code>x-7*((x*m)&gt;&gt;s)</code> if fast idiv is on and x ≥ 0) — so you must still provide TRUNCMOD or rely on fast idiv</button>
+    <button class="opt">Both are handled by the expander</button>
+    <button class="opt">Both become AND</button>
+    <div class="explain"><code>get_simplifying_rewrite_patterns</code> adds <code>x % 2^k → x &amp; (2^k-1)</code> when AND is in
+    code_for_op. A non-power-of-two modulus falls through to <code>floormod_to_mod</code> (TRUNCMOD + sign fix); only
+    <code>get_late_rewrite_patterns</code> with fast idiv enabled can remove it, and only for non-negative x with a
+    divisor whose magic multiply fits.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">Why do the loads appear (pm_add_loads) only at stage 12, so late?</div>
+    <button class="opt">Because LOAD is not a valid UOp before that</button>
+    <button class="opt">Because the scheduler forbids loads</button>
+    <button class="opt">Because until then an INDEX can stand for its value, which lets the expander, reduce lowering and gpudims rewrite index math without also moving memory operations around</button>
+    <div class="explain">Keeping "address" and "value" fused in INDEX keeps the graph small and the early rewrites simple;
+    once the structure is final, every value use of an INDEX into real memory gets an explicit LOAD, ready for
+    devectorizing and coalescing.</div>
+  </div>
+
+  <div class="summary-box"><h3>Chapter summary</h3><ul>
+    <li><code>full_rewrite_to_sink(ast, ren)</code> is ~30 named <code>graph_rewrite</code> calls, SINK in, SINK out; the
+    renderer is a parameter of almost every one (code_for_op, supports_float4, has_local, global/local_max, supported_dtypes,
+    extra_matcher).</li>
+    <li><b>expander</b>: UPCAST RANGE → constant vector with a shape; REDUCE gains horizontal axes. <b>remove reduces</b>:
+    horizontal reduce → ALU chain; loop reduce → REG accumulator with AFTER/STORE/END; grouped reduce → LOCAL STAGE.</li>
+    <li><b>add loads → devectorize2 → memory_coalescing</b>: make every op scalar, simplify each lane's index, then rebuild
+    aligned <code>SHRINK(buf, i, 4)</code> vector loads/stores.</li>
+    <li><b>weak → concrete dtypes</b> before decompositions; <b>cast consts</b> after them.</li>
+    <li><b>decompositions</b> are generated from <code>code_for_op</code>: DIV/MOD → shifts/masks/TRUNCDIV (+ fast idiv
+    <code>(x*m)&gt;&gt;s</code> when <code>DISABLE_FAST_IDIV=0</code>), MAX → WHERE, MUL → SHL, EXP2/LOG2/SIN → range
+    reduction + polynomial + reconstruction; unsupported dtypes are emulated.</li>
+    <li><b>tail</b>: gates move into LOAD/STORE, barriers are inserted for LOCAL memory, GLOBAL/LOCAL ranges become
+    <code>SPECIAL</code>, sibling loops get ordering edges, and <code>spec_program</code> verifies the result.</li>
+  </ul></div>
+</main>
+</div>
+<script>
+// ======================= shared helpers =======================
+const $ = (s) => document.querySelector(s);
+const E = Guide.el;
+
+// ======================= Demo 1: pass explorer =======================
+const STAGE_INFO = {
+  "multi_pm": [258, "multi_pm", "kernel AST", "resolves in-kernel UNSHARDs (multi-device fragments). A no-op for single-device kernels."],
+  "early movement ops": [261, "pm_mops (bottom_up=True)", "kernel AST", "pushes any remaining movement ops (RESHAPE/PERMUTE/…) through INDEX so only index math remains."],
+  "load collapse": [266, "pm_load_collapse", "AST", "a REDUCE(ADD) over a range that only selects one element (indexing a tensor by a tensor) collapses into a direct load."],
+  "split ranges": [269, "pm_split_ranges + pm_flatten_range, init_ctx=MapCtx", "AST", "r % c with c | len(r): split r into two ranges so the MOD disappears."],
+  "initial symbolic": [272, "sym + pm_flatten_range", "AST", "full symbolic simplification of index math (needed for simplify ranges to be correct)."],
+  "simplify ranges": [275, "pm_flatten_range + pm_simplify_ranges, init_ctx=MapCtx", "AST", "merge adjacent ranges when it doesn't add DIV/MOD; shrink ranges guarded by r < c."],
+  "apply_opts()": [278, "Scheduler.apply_opt / hand_coded_optimizations / beam_search (not a PatternMatcher)", "AST", "the optimizer of chapter 14: retags/splits ranges into GLOBAL, LOCAL, UPCAST, …"],
+  "postopt symbolic": [282, "sym + pm_move_where_on_load + pm_flatten_range + pm_reduce_unparented", "optimized AST", "clean up after the optimizer; drop reduce ranges the reduce input doesn't depend on."],
+  "expander": [285, "expander (+ pm_flatten_range + mop_cleanup), ctx=build_range_map(sink)", "optimized AST with UPCAST ranges", "UPCAST RANGE → CONST tuple reshaped onto its own axis; REDUCE over now-shaped input gets horizontal axes; WMMA axes contracted."],
+  "remove reduces": [290, "mop_cleanup + pm_reduce_local (+ pm_wmma_add + pm_clean_up_group_sink), ctx=slot counter", "graph with REDUCE", "REDUCE → ALU chain (horizontal) or ALLOC(REG) accumulator + STORE/AFTER/END; LOCAL/WARP reduces staged through LOCAL memory."],
+  "add local buffers": [293, "pm_add_local_buffers (+ pm_mops)", "graph with STAGE", "STAGE → ALLOC(LOCAL/REG) + store inside its ranges + INDEX to read back."],
+  "group gpudims": [296, "pm_group_gpudims (+ pm_device_to_var), ctx=ren, walk=True", "graph with GLOBAL/LOCAL ranges", "fit hardware dims into ren.global_max/local_max (merge/split), renumber, mask global stores missing a local range."],
+  "*** expand broadcast / add loads": [300, "symbolic_simple + pm_expand_broadcast + pm_add_loads", "mixed-shape graph", "make broadcasts explicit (EXPAND); wrap value uses of INDEX into GLOBAL/LOCAL/REG memory in LOAD."],
+  "devectorize2": [303, "symbolic_simple + devectorizer2 (+ pm_mops) + indexing_simplify", "shaped (vector) graph", "every shaped elementwise/LOAD/STORE → one scalar op per lane + STACK/GROUP; lane selects folded."],
+  "early symbolic": [306, "sym", "scalar graph", "simplify each lane's index (some coalescing misses without this)."],
+  "memory_coalescing()": [309, "memory_coalescing(sink, ren) — a function using sink.substitute", "scalar loads/stores", "group consecutive constant offsets from the same base into SHRINK(buf, start, 4|2) vector loads/stores."],
+  "add images": [312, "pm_simplify_add_image (bottom_up), ctx=(shapes, ren, read_write)", "coalesced graph", "IMAGE=1 on QCOM/CL: float4-read buffers → 2D images; half stores → float."],
+  "extra symbolic": [317, "sym + indexing_simplify + pm_commit_weak", "graph with weak dtypes", "simplify while indexes are still weakint; commit weak consts where a sibling states a width."],
+  "lower all index dtypes": [322, "pm_lower_weak + indexing_simplify", "weakint index math", "resolve every weak node at a concrete width from its bounds (int32 unless it needs int64)."],
+  "final symbolic": [325, "symbolic", "concrete dtypes", "simplify at concrete dtypes before decompositions."],
+  "cast float alu operands": [327, "pm_cast_float_alu", "graph", "SIN/LOG2/EXP2/SQRT/RECIP get an explicit cast of their operand to the result float dtype."],
+  "early decompositions": [334, "symbolic_simple + get_simplifying_rewrite_patterns(code_for_op)", "graph", "floor DIV/MOD → SHR/AND (powers of 2) or TRUNCDIV/TRUNCMOD with sign fix; THREEFRY → ALU."],
+  "late decompositions": [340, "pm_decomp + get_late_rewrite_patterns(ops, DISABLE_FAST_IDIV) + get_transcendental_patterns(ops, TRANSCENDENTAL>=2), ctx=ren", "graph", "MAX→WHERE, MUL by 2^k→SHL, fast idiv, NEG/SUB/CMPNE/MULACC/FDIV forms, EXP2/LOG2/SIN/SQRT → polynomial algorithms."],
+  "decomp dtypes": [342, "pm_dtype_decomps + pm_commit_weak, ctx=DTypeDecompCtx(ren)", "graph", "emulate long (as 2×int32) and half/bf16/fp8 (via float32) when the renderer lacks them or EMULATED_DTYPES says so."],
+  "move gates from index": [343, "pm_move_gates_from_index", "graph with valid.where(idx, Invalid)", "turn Invalid-gated INDEX into gated LOAD (alt value 0) / gated STORE."],
+  "final rewrite": [348, "pm_commit_weak + pm_decomp + ren.extra_matcher + pm_split_ends + pm_remove_invalid, ctx=ren", "graph", "renderer-specific rules; multi-range END → nested ENDs; remove remaining Invalid."],
+  "cast consts": [351, "pm_cast_const, walk=True", "graph", "every bare CONST becomes CAST(CONST) at a concrete dtype (spec_program forbids bare CONST srcs)."],
+  "add implicit barriers": [354, "pm_implicit_barriers", "graph", "BARRIER for LOCAL read-after-write (AFTER) and write-after-read inside loops (END)."],
+  "range to special": [357, "pm_range_to_special (+ pm_split_ends)", "graph", "GLOBAL/LOCAL RANGE → SPECIAL('gidxN'/'lidxN'); their ENDs disappear."],
+  "add control flow": [360, "pm_add_control_flow, ctx=CFGContext(sink), bottom_up=True", "graph", "sibling loops get an AFTER edge on their bound so the linearizer orders them (chapter 16)."],
+  "number variables": [364, "pm_number_params, ctx=(num_params, {}), walk=True", "graph", "variables (PARAM slot=-1) get slots after the buffers, one per name."],
+};
+const KNAMES = { sum_cpu: "sum · CPU", exp_cpu: "exp · CPU", add_gpu: "add · GPU (OpenCL)", sum_gpu: "sum · GPU (OpenCL)" };
+function shortArg(n) {
+  let a = String(n.arg ?? "");
+  if (n.op === "PARAM" || n.op === "ALLOC" || n.op === "BUFFER") {
+    const m = a.match(/ParamArg\((-?\d+)/); const sp = a.match(/addrspace=AddrSpace\.(\w+)/); const nm = a.match(/name='([^']+)'/);
+    return (nm ? nm[1] + " " : "") + (m ? "slot " + m[1] : a.slice(0, 18)) + (sp ? " " + sp[1] : "");
+  }
+  if (n.op === "RANGE") return a.replace(/AxisType\./g, "").replace(/[()]/g, "").replace(/, /g, " ");
+  if (n.op === "REDUCE") return a.replace(/<Ops\.(\w+): \d+>/, "$1");
+  if (n.op === "SINK" || a === "None") return "";
+  if (n.op === "CAST" || n.op === "BITCAST") return "";
+  return a.replace(/dtypes\./g, "").replace(/AxisType\./g, "").slice(0, 22);
+}
+function prepGraph(g) {
+  return { nodes: g.nodes.map((n) => { const s = shortArg(n); const dt = (n.dtype || "").replace("dtypes.", "");
+    return Object.assign({}, n, { sub: [s, dt === "void" ? "" : dt].filter(Boolean).join(" · ") || " " }); }), edges: g.edges };
+}
+(async function explorer() {
+  const data = await Guide.loadJSON("../data/ch15_passes.json");
+  let kernel = "sum_cpu", stageIdx = 0, ctl = null, pipe = null, timer = null;
+  const kb = $("#ex-kernels");
+  const kbtns = Object.keys(data).map((k) => { const b = E("button", { onclick: () => setKernel(k) }, KNAMES[k] || k); kb.append(b); return [k, b]; });
+  function setKernel(k) {
+    kernel = k; kbtns.forEach(([kk, b]) => b.classList.toggle("active", kk === k));
+    const d = data[k];
+    $("#ex-kdesc").textContent = `${d.desc}  →  renderer ${d.renderer}, final kernel name ${d.name}`;
+    const strip = $("#ex-strip"); strip.innerHTML = "";
+    pipe = Guide.pipeline(strip, d.stages.map((s, i) => ({ name: s.name.replace("*** ", ""), sub: s.same ? `#${i} ·` : `#${i} ${s.nin}→${s.nout}` })), (i) => selectStage(i));
+    Guide.$$(".stage", strip).forEach((el, i) => { el.classList.toggle("ch15-same", d.stages[i].same); el.classList.toggle("ch15-big", Math.abs(d.stages[i].nout - d.stages[i].nin) > 60); });
+    drawSpark();
+    ctl = null; $("#ex-graph").innerHTML = "";
+    const first = d.stages.findIndex((s) => !s.same && s.name === "expander");
+    pipe.select(first >= 0 ? first : 0);
+  }
+  function drawSpark() {
+    const d = data[kernel], svg = $("#ex-spark"); svg.innerHTML = "";
+    const W = svg.parentElement.clientWidth || 900, n = d.stages.length, bw = W / n, mx = Math.max(...d.stages.map((s) => s.nout));
+    svg.setAttribute("width", W); svg.setAttribute("viewBox", `0 0 ${W} 46`);
+    d.stages.forEach((s, i) => {
+      const h = Math.max(2, (s.nout / mx) * 34);
+      const r = E("rect", { x: i * bw + 1, y: 40 - h, width: bw - 2, height: h, rx: 2, fill: s.same ? "#3a4048" : "#58C4DD", "data-i": i });
+      r.addEventListener("click", () => pipe.select(i));
+      const t = E("title", {}); t.textContent = `#${i} ${s.name}: ${s.nin} → ${s.nout} UOps`; r.append(t);
+      svg.append(r);
+    });
+    svg.append(E("text", { x: 2, y: 9, fill: "#9aa3ad", "font-size": 9, "font-family": "monospace" }, `UOps after each stage (max ${mx})`));
+  }
+  function nodeIds(g) { return new Set(g.nodes.map((n) => n.id)); }
+  function show(which) {
+    const d = data[kernel], s = d.stages[stageIdx];
+    const g = prepGraph(d.graphs[which === "in" ? s.in : s.out]);
+    if (!ctl) ctl = Guide.uopGraph("#ex-graph", g, { compact: true, height: 640 });
+    else ctl.setGraph(g, { animate: true });
+    applyZoom();
+    $("#ex-count").textContent = `${which === "in" ? "input" : "output"}: ${g.nodes.length} UOps`;
+    $("#ex-count").classList.toggle("on", which === "out");
+    if (which === "out") { const before = nodeIds(d.graphs[s.in]); setTimeout(() => ctl.highlight(g.nodes.filter((n) => !before.has(n.id)).map((n) => n.id), { dimOthers: false }), 650); }
+  }
+  function selectStage(i) {
+    stageIdx = i; clearTimeout(timer);
+    const d = data[kernel], s = d.stages[i];
+    Guide.$$("#ex-spark rect").forEach((r) => r.classList.toggle("sel", +r.dataset.i === i));
+    const info = STAGE_INFO[s.name] || [253, "?", "", ""];
+    const box = $("#ex-info"); box.innerHTML = "";
+    box.append(E("h4", {}, `#${i}  name="${s.name}"`));
+    const kv = E("div", { class: "kv" });
+    const link = E("a", { class: "src", "data-path": "tinygrad/codegen/__init__.py", "data-line": info[0], href: Guide.src("tinygrad/codegen/__init__.py", info[0]), target: "_blank" }, `codegen/__init__.py:${info[0]}`);
+    kv.append(E("span", {}, "call"), E("span", {}, link), E("span", {}, "matchers"), E("span", {}, info[1]),
+      E("span", {}, "input"), E("span", {}, info[2]), E("span", {}, "does"), E("span", {}, info[3]),
+      E("span", {}, "here"), E("span", {}, s.same ? "returned its input unchanged (same UOp object)" : `${s.nin} → ${s.nout} UOps` + (s.bottom_up ? " · bottom_up" : "") + (s.walk ? " · walk" : "")));
+    box.append(kv);
+    const rules = E("div", { class: "ch15-rules" }, E("div", { style: "color:var(--gold);font-size:12.5px;margin-top:6px" }, s.rules.length ? `rules that fired (${s.rules.reduce((a, r) => a + r[3], 0)} rewrites, incl. nested sub-rewrites):` : "no rule fired"));
+    for (const [file, line, text, n] of s.rules.slice(0, 40)) {
+      rules.append(E("div", { class: "ch15-rule" }, E("span", { class: "n" }, n + "×"),
+        E("div", {}, E("a", { class: "src", href: Guide.src(file, line), target: "_blank" }, `${file.replace("tinygrad/", "")}:${line}`), E("br", {}), E("code", {}, text))));
+    }
+    box.append(rules);
+    show("in");
+    if (!s.same) timer = setTimeout(() => show("out"), 900);
+  }
+  let zoom = false;
+  function applyZoom() { if (!ctl) return; ctl.svg.style.maxWidth = zoom ? "none" : ""; ctl.svg.style.height = zoom ? ctl.svg.getAttribute("height") + "px" : ""; }
+  $("#ex-zoom").onclick = () => { zoom = !zoom; $("#ex-zoom").textContent = zoom ? "zoom: 1:1" : "zoom: fit"; applyZoom(); };
+  $("#ex-before").onclick = () => show("in");
+  $("#ex-after").onclick = () => show("out");
+  $("#ex-morph").onclick = () => { show("in"); clearTimeout(timer); timer = setTimeout(() => show("out"), 700); };
+  document.addEventListener("keydown", (e) => {
+    const r = $("#demo-explorer").getBoundingClientRect(); if (r.bottom < 0 || r.top > innerHeight) return;
+    if (e.key === "ArrowRight") pipe.select(Math.min(data[kernel].stages.length - 1, stageIdx + 1));
+    if (e.key === "ArrowLeft") pipe.select(Math.max(0, stageIdx - 1));
+  });
+  setKernel("sum_cpu");
+})();
+
+// ======================= Demo: GPU dims calculator =======================
+(function dims() {
+  const prod = (a) => a.reduce((x, y) => x * y, 1);
+  function groupDims(dims, mx) {
+    while (dims.length > mx.length || dims.some((d, i) => i < mx.length && d > mx[i])) {
+      let done = false;
+      for (let i = 0; i < mx.length; i++) {
+        if (i < dims.length - 1 && dims[i] * dims[i + 1] <= mx[i]) { dims = [...dims.slice(0, i), dims[i] * dims[i + 1], ...dims.slice(i + 2)]; done = true; break; }
+      }
+      if (!done) return null;
+    }
+    return dims;
+  }
+  function splitDims(dims, mx) {
+    if (dims.every((d, i) => d <= mx[i])) return dims;
+    const d = [...dims, ...Array(Math.max(0, 3 - dims.length)).fill(1)];
+    for (let i = 0; i < d.length; i++) {
+      while (d[i] > mx[i]) {
+        let div = 1;
+        for (let k = 2; k <= Math.ceil(Math.sqrt(d[i])); k++) if (d[i] % k === 0) { div = k; break; }
+        if (div === 1) throw new Error(`cannot limit dim ${JSON.stringify(dims)}, ${JSON.stringify(mx)}`);
+        d[i] = d[i] / div; d[(i + 1) % d.length] *= div;
+      }
+    }
+    return d[2] === 1 ? d.slice(0, 2) : d;
+  }
+  function grouped(prefix, dims, mx, reverse) {
+    if (reverse) { const r = grouped(prefix, [...dims].reverse(), mx, false); return { limited: r.limited, exprs: r.exprs.reverse(), how: r.how, rev: true }; }
+    let limited = groupDims(dims, mx) || dims, how = "fits as is";
+    if (limited.length > mx.length) throw new Error(`cannot limit dim ${JSON.stringify(dims)}, ${JSON.stringify(mx)}`);
+    if (JSON.stringify(limited) !== JSON.stringify(dims)) how = "grouped (_group_dims)";
+    else { const s = splitDims(dims, mx); if (JSON.stringify(s) !== JSON.stringify(dims)) how = "split (_split_dims)"; limited = s; }
+    // flat = sum(raw_i * prod(limited[i+1:])); original range i = (flat // prod(dims[i+1:])) % dims[i]
+    // mini-simplifier for exactly this mixed-radix structure (tinygrad uses ssimplify, which reaches the same forms here)
+    const T = limited.map((sz, i) => ({ v: `${prefix}${i}`, c: prod(limited.slice(i + 1)), sz }));
+    const show = (ts) => ts.map((t) => (t.q ? `${t.v} // ${t.q}` : t.c === 1 ? t.v : `${t.v}*${t.c}`)).join(" + ") || "0";
+    const maxOf = (ts) => ts.reduce((a, t) => a + (t.q ? Math.ceil(t.sz / t.q) - 1 : (t.sz - 1) * t.c), 0);
+    function divide(ts, D) {
+      if (D === 1) return ts;
+      const exact = ts.filter((t) => !t.q && t.c % D === 0).map((t) => ({ ...t, c: t.c / D }));
+      const rest = ts.filter((t) => t.q || t.c % D !== 0);
+      if (!rest.length) return exact;
+      const k = rest.filter((t) => !t.q && D % t.c === 0).sort((a, b) => b.c - a.c)[0];
+      if (k && maxOf(rest.filter((t) => t !== k)) < k.c) return k.sz <= D / k.c ? exact : [...exact, { v: k.v, c: 1, q: D / k.c, sz: k.sz }];
+      return null;
+    }
+    function modulo(ts, d) {
+      const keep = ts.filter((t) => t.q || t.c % d !== 0);
+      return maxOf(keep) < d ? show(keep) : (keep.length > 1 ? `(${show(keep)}) % ${d}` : `${show(keep)} % ${d}`);
+    }
+    const flatS = show(T);
+    const exprs = dims.map((d, i) => {
+      const D = prod(dims.slice(i + 1)), q = divide(T, D);
+      if (q === null) return i === 0 ? `(${flatS}) // ${D}` : `((${flatS}) // ${D}) % ${d}`;
+      return i === 0 ? show(q) : modulo(q, d);
+    });
+    return { limited, exprs, how };
+  }
+  function run() {
+    const out = $("#dims-out");
+    try {
+      const dims = $("#dims-in").value.split(",").map((s) => parseInt(s.trim())).filter((x) => x > 0);
+      const mx = $("#dims-max").value.split(",").map(Number), rev = $("#dims-rev").checked, prefix = rev ? "gidx" : "lidx";
+      const r = grouped(prefix, dims, mx, rev);
+      const hw = r.rev ? [...r.limited].reverse() : r.limited;
+      out.innerHTML = "";
+      const row1 = E("div", { class: "ch15-dims" }, E("span", {}, "logical ranges:"), ...dims.map((d, i) => E("span", { class: "ch15-dimbox" }, E("b", {}, d), `range ${i}`)));
+      const row2 = E("div", { class: "ch15-dims", style: "margin-top:8px" }, E("span", {}, `hardware (${r.how}${rev ? ", reversed" : ""}):`),
+        ...r.limited.map((d, i) => E("span", { class: "ch15-dimbox " + (rev ? "g" : "l") }, E("b", {}, d), `${prefix}${i} ≤ ${mx[i]}`)));
+      const pre = E("div", { style: "margin-top:10px" }, ...r.exprs.map((e, i) => E("div", {}, E("b", {}, `range ${i} (${dims[i]})`), " → ", e)));
+      out.append(row1, row2, pre, E("div", { style: "margin-top:8px;color:var(--dim)" }, `total threads: ${prod(dims)} = ${r.limited.join(" × ")}`));
+    } catch (e) { out.innerHTML = `<span class="ch15-bad">RuntimeError: ${Guide.escape(e.message)}</span>  (tinygrad raises the same)`; }
+  }
+  ["#dims-in", "#dims-max", "#dims-rev"].forEach((s) => $(s).addEventListener("input", run));
+  run();
+})();
+
+// ======================= Demo: fast integer division =======================
+(function idiv() {
+  const DT = { int8: [-128n, 127n], uint8: [0n, 255n], int16: [-32768n, 32767n], uint16: [0n, 65535n], int32: [-2147483648n, 2147483647n], uint32: [0n, 4294967295n], int64: [-(2n ** 63n), 2n ** 63n - 1n], uint64: [0n, 2n ** 64n - 1n] };
+  const WIDEN = { int8: "int16", int16: "int32", int32: "int64", int64: "uint64", uint8: "uint16", uint16: "uint32", uint32: "uint64" };
+  const bitlen = (v) => (v === 0n ? 0 : v.toString(2).length);
+  function magicgu(vmax, d) {
+    const nc = ((vmax + 1n) / d) * d - 1n, nbits = bitlen(vmax);
+    for (let s = 0; s <= 2 * nbits; s++) {
+      const p = 1n << BigInt(s);
+      if (p > nc * (d - 1n - ((p - 1n) % d))) return [(p + d - 1n - ((p - 1n) % d)) / d, s];
+    }
+    throw new Error("assert False");
+  }
+  const bmin = (a, b) => (a < b ? a : b);
+  // returns {expr, f:(x)=>q, steps:[...]} or null — mirrors fast_idiv(ren, x, d, dont_cast)
+  function fastIdiv(x, d, dt, wideOK, dontCast, steps, xname) {
+    if (d <= 0n || x.lo < 0n) { steps.push(`d <= 0 or x.vmin = ${x.lo} < 0 → None (no rewrite)`); return null; }
+    const vmax = bmin(x.hi, DT[dt][1]);
+    if (vmax < d) { steps.push(`vmax ${vmax} < d → const 0`); return { expr: "0", f: () => 0n }; }
+    const [m, s] = magicgu(vmax, d);
+    steps.push(`magicgu(vmax=${vmax}, d=${d}) = (m=${m}, s=${s});  m*vmax = ${m * vmax}  vs  ${dt}.max = ${DT[dt][1]}`);
+    if (m * vmax <= DT[dt][1]) { steps.push("fits → (x*m) >> s"); return { expr: `(${xname}*${m}) >> ${s}`, f: (v) => (v * m) >> BigInt(s) }; }
+    let k = 0; while ((d >> BigInt(k)) % 2n === 0n) k++;
+    if (k > 0) {
+      steps.push(`overflows; d has 2^${k} as a factor → retry fast_idiv(x >> ${k}, ${d >> BigInt(k)}, dont_cast=True)`);
+      const r = fastIdiv({ lo: x.lo >> BigInt(k), hi: x.hi >> BigInt(k) }, d >> BigInt(k), dt, wideOK, true, steps, `(${xname} >> ${k})`);
+      if (r) return { expr: r.expr, f: (v) => r.f(v >> BigInt(k)) };
+    }
+    if (dontCast) { steps.push("dont_cast → None"); return null; }
+    const nd = WIDEN[dt];
+    if (nd && wideOK && m * vmax <= DT[nd][1]) { steps.push(`widen: cast x to ${nd} (m*vmax fits ${nd}) → ((${nd})x*m) >> s, cast back`); return { expr: `(${dt})(((${nd})${xname}*${m}) >> ${s})`, f: (v) => (v * m) >> BigInt(s) }; }
+    steps.push(nd ? `can't widen to ${nd}${wideOK ? " (still overflows)" : " (renderer doesn't support it)"} → None` : "no wider dtype → None");
+    return null;
+  }
+  const fdiv = (a, b) => { const q = a / b; return (a % b !== 0n && (a < 0n) !== (b < 0n)) ? q - 1n : q; };
+  function run() {
+    const out = $("#idiv-out");
+    try {
+      const d = BigInt($("#idiv-d").value), dt = $("#idiv-dt").value;
+      let lo = BigInt($("#idiv-lo").value), hi = BigInt($("#idiv-hi").value);
+      lo = lo < DT[dt][0] ? DT[dt][0] : lo; hi = hi > DT[dt][1] ? DT[dt][1] : hi;
+      const steps = [];
+      const isPow2 = d > 0n && (d & (d - 1n)) === 0n;
+      let html = `<b>x // ${d}</b> with x: ${dt} in [${lo}, ${hi}]\n`;
+      if (isPow2) html += `early decompositions: DIV by 2^k → <b>x >> ${bitlen(d) - 1}</b> (arithmetic shift = floor division for any sign; no fast_idiv needed)\n`;
+      else if (lo < 0n) html += `early decompositions: floor DIV → TRUNCDIV - ((x % d != 0) & (x<0) != (d<0))   (signs may differ)\n`;
+      else html += `early decompositions: floor DIV → TRUNCDIV (both operands non-negative)\n`;
+      const r = isPow2 ? null : fastIdiv({ lo, hi }, d, dt, $("#idiv-wide").checked, false, steps, "x");
+      if (!isPow2) html += "late decompositions (DISABLE_FAST_IDIV=0): fast_idiv\n  " + steps.join("\n  ") + "\n";
+      if (r) {
+        html += `result: <b>${Guide.escape(r.expr)}</b>\n`;
+        const n = hi - lo + 1n; let bad = 0, tested = 0, first = null;
+        const test = (v) => { tested++; if (r.f(v) !== fdiv(v, d)) { bad++; if (first === null) first = v; } };
+        if (n <= 200000n) for (let v = lo; v <= hi; v++) test(v);
+        else { test(lo); test(hi); for (let i = 0; i < 200000; i++) test(lo + BigInt(Math.floor(Math.random() * Number(n)))); }
+        html += bad === 0 ? `<span class="ch15-ok">✓ matches floor division on ${tested} ${n <= 200000n ? "values (exhaustive)" : "samples"}</span>\n` : `<span class="ch15-bad">✗ ${bad} mismatches, first at x=${first}</span>\n`;
+        const xv = BigInt($("#idiv-x").value);
+        if (xv >= lo && xv <= hi) html += `x = ${xv}: ${Guide.escape(r.expr.replace(/x/g, String(xv)))} = ${r.f(xv)}   (true ${xv} // ${d} = ${fdiv(xv, d)})`;
+      } else if (!isPow2) html += "result: <b>no rewrite</b> — the TRUNCDIV is printed as C's '/' (plus the sign fix if needed)";
+      out.innerHTML = html;
+    } catch (e) { out.textContent = "error: " + e.message; }
+  }
+  ["#idiv-d", "#idiv-lo", "#idiv-hi", "#idiv-dt", "#idiv-wide", "#idiv-x"].forEach((s) => $(s).addEventListener("input", run));
+  run();
+})();
+
+// ======================= Demo: transcendental plotter =======================
+// ==== JS port of tinygrad/codegen/decomp/transcendental.py (float32 paths) — mirrors examples/15_transcendental.py ====
+const TG = (() => {
+  const F = Math.fround;
+  const dv = new DataView(new ArrayBuffer(8));
+  const f2u = (v) => { dv.setFloat32(0, v, true); return dv.getUint32(0, true); };
+  const u2f = (u) => { dv.setUint32(0, Number(BigInt.asUintN(32, BigInt(u))), true); return dv.getFloat32(0, true); };
+  const f2i = (v) => { dv.setFloat32(0, v, true); return dv.getInt32(0, true); };
+  const st = { CPU: true };
+  const fma = (a, b, c) => F(a * b + c);            // a*b of two float32 is exact in a double -> one rounding
+  function polyN(x, cs) { let acc = 0; for (const c0 of cs) { const c = F(c0); acc = st.CPU ? fma(acc, x, c) : F(F(acc * x) + c); } return acc; }
+  const rintk = (v) => Math.trunc(F(v + (v < 0 ? -0.5 : 0.5)));     // round away from zero, C-style cast to int32
+  const pow2if = (q) => u2f((q + 127) * 8388608);                    // shl(q+127, 23) then bitcast
+  const ldexp2k = (u, q) => F(F(u * pow2if(Math.floor(q / 2))) * pow2if(q - Math.floor(q / 2)));
+  const EXP2_C = [0.1535920892e-3, 0.1339262701e-2, 0.9618384764e-2, 0.5550347269e-1, 0.2402264476e+0, 0.6931471825e+0, 1.0];
+  function xexp2(d, trace) {
+    d = F(d);
+    if (Number.isNaN(d)) return NaN;
+    const x = Number.isFinite(d) ? d : 0;
+    const q = rintk(x), s = F(x - q), p = polyN(s, EXP2_C), u = ldexp2k(p, q);
+    if (trace) Object.assign(trace, { d, q, s, poly: p, scale: F(pow2if(Math.floor(q / 2)) * pow2if(q - Math.floor(q / 2))) });
+    if (d >= 128) return Infinity;
+    if (d < -150) return 0;
+    return u;
+  }
+  const SIN_C = [2.6083159809786593541503e-06, -0.0001981069071916863322258, 0.00833307858556509017944336, -0.166666597127914428710938, 1.0];
+  const sinPoly = (d) => F(d * polyN(F(d * d), SIN_C));
+  const CW = [-3.1414794921875, -0.00011315941810607910156, -1.9841872589410058936e-09, -1.2154201256553420762e-10].map(F);
+  function codyWaite(d) {
+    const q = rintk(F(d * F(0.318309886183790671537767526745028724)));
+    let r;
+    if (st.CPU) { r = F(q * CW[3]); for (const c of [CW[2], CW[1], CW[0]]) r = fma(q, c, r); r = F(r + d); }
+    else { r = d; for (const c of CW) r = F(F(q * c) + r); }
+    return [r, q];
+  }
+  const TWO_OVER_PI = [0x00000000n, 0x28be60dbn, 0x9391054an, 0x7f09d5f4n, 0x7d4d3770n, 0x36d8a566n, 0x4f10e410n];
+  const M64 = (1n << 64n) - 1n, M32 = 0xFFFFFFFFn;
+  function payneHanek(d) {
+    const bits = BigInt(f2u(d));
+    const exponent = (bits >> 23n) & 0xFFn;
+    const f = u2f(Number((bits & 0x807FFFFFn) | 0x3F000000n));
+    let e = (exponent - 127n + 1n) & M32;
+    const ia = BigInt(Math.trunc(F(f * 4.294967296e9))) & M64;
+    const i = e >> 5n; e = e & 31n;
+    const offset = 32n - e;
+    const a = [0n, 1n, 2n, 3n].map((k) => (i + k < 6n ? TWO_OVER_PI[Number(i + k)] : 0n));
+    const shl = (x, y) => ((x << y) & M64) & M32, shr = (x, y) => (x >> y) & M32;
+    const hi = shl(a[0], e) | shr(a[1], offset), mi = shl(a[1], e) | shr(a[2], offset), lo = shl(a[2], e) | shr(a[3], offset);
+    let p = ((((ia * hi) & M64) << 32n) + ((ia * mi) & M64) + (((ia * lo) & M64) >> 32n)) & M64;
+    const q = Number(p >> 62n);
+    p &= 0x3FFFFFFFFFFFFFFFn;
+    const r = F(F(Number(p)) * F(3.4061215800865545e-19));
+    return f < 0.5 ? [r, q] : [F(r - F(Math.PI / 2)), q + 1];
+  }
+  function xsin(d, trace) {
+    d = F(d);
+    if (!Number.isFinite(d)) return NaN;
+    const sign = d === 0 ? 0 : d < 0 ? -1 : 1, xa = F(d * sign);
+    let r, q, res, path;
+    if (xa < 30) { [r, q] = codyWaite(xa); res = sinPoly(r); res = F(res * (q & 1 ? -1 : 1)); path = "Cody–Waite"; }
+    else { [r, q] = payneHanek(xa); res = sinPoly(F(r + (q & 1 ? F(Math.PI / 2) : 0))); res = F(res * (q & 2 ? -1 : 1)); path = "Payne–Hanek"; }
+    if (trace) Object.assign(trace, { d, xa, r, q, path });
+    return F(res * sign);
+  }
+  // distance in float32 ulps (sign-magnitude -> ordered integers)
+  function ulps(a, b) {
+    if (Number.isNaN(a) && Number.isNaN(b)) return 0;
+    if (Number.isNaN(a) || Number.isNaN(b)) return Infinity;
+    let ia = f2i(a), ib = f2i(b);
+    ia = ia >= 0 ? ia : -(ia & 0x7FFFFFFF); ib = ib >= 0 ? ib : -(ib & 0x7FFFFFFF);
+    return Math.abs(ia - ib);
+  }
+  return { st, xexp2, xsin, ulps, f2i, F };
+})();
+if (typeof module !== "undefined") module.exports = TG;
+
+(function plotter() {
+  const cv = $("#tr-canvas"), ctx = cv.getContext("2d");
+  let fn = "exp2", samples = [];
+  const dpr = window.devicePixelRatio || 1;
+  function resize() { const w = cv.clientWidth; cv.width = w * dpr; cv.height = 430 * dpr; cv.style.height = "430px"; }
+  const ref = (f, x) => (f === "exp2" ? TG.F(Math.pow(2, x)) : TG.F(Math.sin(x)));
+  const approx = (f, x, tr) => (f === "exp2" ? TG.xexp2(x, tr) : TG.xsin(x, tr));
+  function compute() {
+    TG.st.CPU = $("#tr-mode").value === "cpu";
+    const lo = +$("#tr-lo").value, hi = +$("#tr-hi").value, N = 1400;
+    samples = [];
+    for (let i = 0; i <= N; i++) { const x = TG.F(lo + ((hi - lo) * i) / N); const a = approx(fn, x), t = ref(fn, x); samples.push({ x, a, t, e: TG.ulps(a, t) }); }
+    draw();
+  }
+  function draw(hx) {
+    resize();
+    const W = cv.width, H = cv.height, s = dpr; ctx.clearRect(0, 0, W, H);
+    const L = 60 * s, R = W - 14 * s, top0 = 22 * s, top1 = 250 * s, bot0 = 284 * s, bot1 = H - 26 * s;
+    const lo = samples[0].x, hi = samples[samples.length - 1].x;
+    const X = (x) => L + ((x - lo) / (hi - lo || 1)) * (R - L);
+    const fin = samples.filter((p) => Number.isFinite(p.t) && Number.isFinite(p.a));
+    let ymin = Math.min(...fin.map((p) => p.t)), ymax = Math.max(...fin.map((p) => p.t));
+    const logy = fn === "exp2" && ymax / Math.max(ymin, 1e-300) > 1e4;
+    const tf = (v) => (logy ? Math.log2(Math.max(v, 1e-45)) : v);
+    ymin = tf(ymin); ymax = tf(ymax); if (ymax === ymin) { ymax += 1; ymin -= 1; }
+    const Y = (v) => top1 - ((tf(v) - ymin) / (ymax - ymin)) * (top1 - top0);
+    const emax = Math.max(1, ...samples.map((p) => (Number.isFinite(p.e) ? p.e : 0)));
+    const EY = (e) => bot1 - (Math.log10(1 + Math.min(e, emax)) / Math.log10(1 + emax)) * (bot1 - bot0);   // log scale
+    ctx.font = `${11 * s}px monospace`; ctx.fillStyle = "#9aa3ad"; ctx.strokeStyle = "#2f343c"; ctx.lineWidth = s;
+    // axes
+    ctx.strokeRect(L, top0, R - L, top1 - top0); ctx.strokeRect(L, bot0, R - L, bot1 - bot0);
+    ctx.fillText(logy ? `log2 ${fn}(x)` : `${fn}(x)`, L, top0 - 6 * s);
+    ctx.fillText(`|error| in float32 ulps, log scale (max ${emax}${emax >= 1000 ? " — relative error explodes where the result is tiny" : ""})`, L, bot0 - 6 * s);
+    ctx.fillText(lo.toPrecision(5), L, H - 8 * s); ctx.fillText(hi.toPrecision(5), R - 60 * s, H - 8 * s);
+    ctx.fillText(emax.toString(), 6 * s, bot0 + 10 * s); ctx.fillText("0", 6 * s, bot1);
+    ctx.fillText((logy ? "2^" : "") + ymax.toPrecision(4), 4 * s, top0 + 10 * s); ctx.fillText((logy ? "2^" : "") + ymin.toPrecision(4), 4 * s, top1);
+    // true curve (thick, faint) and approx (thin)
+    const line = (key, color, w) => { ctx.strokeStyle = color; ctx.lineWidth = w * s; ctx.beginPath(); let pen = false;
+      for (const p of samples) { const v = p[key]; if (!Number.isFinite(v)) { pen = false; continue; } const yy = Y(v); if (!pen) ctx.moveTo(X(p.x), yy); else ctx.lineTo(X(p.x), yy); pen = true; } ctx.stroke(); };
+    line("t", "rgba(244,211,69,.45)", 5); line("a", "#58C4DD", 1.4);
+    // error bars
+    ctx.fillStyle = "#FC6255";
+    for (const p of samples) { if (!Number.isFinite(p.e) || p.e === 0) continue; const x = X(p.x); ctx.fillRect(x - 0.6 * s, EY(p.e), 1.2 * s, bot1 - EY(p.e)); }
+    ctx.fillStyle = "#F4D345"; ctx.fillText("— Math (rounded to float32)", R - 380 * s, top0 - 6 * s);
+    ctx.fillStyle = "#58C4DD"; ctx.fillText("— tinygrad approximation", R - 175 * s, top0 - 6 * s);
+    if (hx !== undefined) { ctx.strokeStyle = "rgba(255,255,255,.35)"; ctx.lineWidth = s; ctx.beginPath(); ctx.moveTo(X(hx), top0); ctx.lineTo(X(hx), bot1); ctx.stroke(); }
+    cv._X = X; cv._L = L; cv._R = R;
+  }
+  function inspect(ev) {
+    const r = cv.getBoundingClientRect(), px = (ev.clientX - r.left) * dpr;
+    const lo = samples[0].x, hi = samples[samples.length - 1].x;
+    const x = TG.F(lo + ((px - cv._L) / (cv._R - cv._L)) * (hi - lo));
+    if (x < lo || x > hi) return;
+    const tr = {}, a = approx(fn, x, tr), t = ref(fn, x);
+    let txt;
+    if (fn === "exp2") txt = `x = ${x}\n q = rintk(x) = ${tr.q}        s = x - q = ${tr.s}\n polyN(s, 7 coeffs) ≈ 2^s = ${tr.poly}\n ldexp2k: × 2^(q>>1) × 2^(q-(q>>1)) = × ${tr.scale}\n result = ${a}\n Math    = ${t}     error = ${TG.ulps(a, t)} ulp`;
+    else txt = `x = ${x}\n |x| = ${tr.xa}  → ${tr.path} reduction${tr.path === "Payne–Hanek" ? " (|x| ≥ 30)" : " (|x| < 30)"}\n r = ${tr.r}   quadrant q = ${tr.q}   (q&1: ${tr.q & 1 ? "negate / +π/2" : "-"}, q&2: ${tr.q & 2 ? "negate" : "-"})\n sin_poly(r) = r·P(r²), degree-9 odd polynomial\n result = ${a}\n Math   = ${t}     error = ${TG.ulps(a, t)} ulp  (abs ${(a - t).toExponential(2)})`;
+    $("#tr-read").textContent = txt; draw(x);
+  }
+  function setFn(f, lo, hi) { fn = f; $("#tr-exp2").classList.toggle("active", f === "exp2"); $("#tr-sin").classList.toggle("active", f === "sin"); if (lo !== undefined) { $("#tr-lo").value = lo; $("#tr-hi").value = hi; } compute(); }
+  $("#tr-exp2").onclick = () => setFn("exp2", -4, 4);
+  $("#tr-sin").onclick = () => setFn("sin", -10, 10);
+  $("#tr-preset1").onclick = () => setFn("sin", 21.95, 22.03);
+  $("#tr-preset2").onclick = () => setFn("sin", 29, 60);
+  $("#tr-preset3").onclick = () => setFn("exp2", -152, 130);
+  ["#tr-lo", "#tr-hi", "#tr-mode"].forEach((s) => $(s).addEventListener("change", compute));
+  cv.addEventListener("mousemove", inspect);
+  window.addEventListener("resize", () => draw());
+  compute();
+})();
+</script>
+</body>
+</html>

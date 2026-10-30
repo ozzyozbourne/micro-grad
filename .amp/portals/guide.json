@@ -1,0 +1,12 @@
+{
+	"links": [
+		{
+			"label": "guide",
+			"url": "https://t-03h53vgmtjn1exvblxtavc491-p22463.onamp.dev/"
+		}
+	],
+	"amp": {
+		"owner": "amp-orb-service",
+		"service": "guide"
+	}
+}

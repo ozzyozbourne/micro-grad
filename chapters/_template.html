@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NN. Chapter title — tinygrad internals</title>
+<link rel="stylesheet" href="../assets/vendor/hljs-dark.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/vendor/highlight.min.js"></script>
+<script src="../assets/vendor/dagre.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/chapters.js"></script>
+<script src="../assets/guide.js"></script>
+<!-- chapter-specific styles go in a <style> block here; keep them prefixed (e.g. .ch07-...) -->
+</head>
+<body>
+<div class="layout">
+<nav class="sidebar" id="sidebar"></nav>
+<main>
+  <h1><span class="chnum">CHAPTER NN</span>Chapter title</h1>
+  <p class="lede">One-paragraph promise: what you will understand after this chapter.</p>
+
+  <h2 id="intuition"><span class="sec">NN.1</span>Intuition first</h2>
+  <p>Prose…</p>
+
+  <div class="callout aha"><span class="title">The key idea</span>…</div>
+  <div class="callout analogy"><span class="title">Analogy</span>…</div>
+  <div class="callout note">…</div>
+  <div class="callout warn">…</div>
+  <details class="deep-dive"><summary>Deep dive: …</summary>…</details>
+
+  <p>Source: <a class="src" data-path="tinygrad/uop/ops.py" data-line="228">UOp class</a></p>
+
+  <div class="codecap"><b>examples/NN_name.py</b> — run with <code>DEV=CPU python examples/NN_name.py</code></div>
+  <pre><code class="language-python">from tinygrad import Tensor
+print(Tensor([1,2,3]).sum().item())</code></pre>
+  <pre class="output"><code>6</code></pre>
+
+  <div class="demo" id="demo-x">
+    <div class="demo-title">Demo title</div>
+    <div class="demo-desc">What to do with it and what to notice.</div>
+    <div class="graph"></div>
+  </div>
+
+  <div class="quiz" data-answer="1">
+    <div class="q">Question?</div>
+    <button class="opt">wrong</button><button class="opt">right</button>
+    <div class="explain">Why.</div>
+  </div>
+
+  <div class="summary-box"><h3>Chapter summary</h3><ul><li>…</li></ul></div>
+</main>
+</div>
+<script>
+// Chapter-specific demo code. Use Guide.uopGraph / Guide.stepper / Guide.mkGraph / Guide.loadJSON("../data/chNN_x.json") ...
+</script>
+</body>
+</html>

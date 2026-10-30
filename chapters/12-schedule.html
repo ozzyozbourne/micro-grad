@@ -1,0 +1,711 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>12. The schedule: CALLs, LINEAR &amp; memory — tinygrad internals</title>
+<link rel="stylesheet" href="../assets/vendor/hljs-dark.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/vendor/highlight.min.js"></script>
+<script src="../assets/vendor/dagre.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/chapters.js"></script>
+<script src="../assets/guide.js"></script>
+<style>
+.ch12-calls { display: flex; flex-direction: column; gap: 6px; }
+.ch12-call { background: var(--bg3); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; cursor: pointer; font-family: var(--mono); font-size: 12.5px; }
+.ch12-call:hover { border-color: var(--blue); }
+.ch12-call.on { border-color: var(--yellow); background: rgba(244,211,69,.08); }
+.ch12-call .nm { color: var(--yellow); font-weight: 700; }
+.ch12-call .dep { color: var(--dim); font-size: 11.5px; }
+.ch12-arg { display: inline-block; margin: 2px 4px 2px 0; padding: 0 7px; border-radius: 10px; border: 1px solid var(--line); font-size: 11.5px; }
+.ch12-arg.out { border-color: var(--red); color: var(--red); }
+.ch12-arg.in { border-color: var(--green); color: var(--green); }
+.ch12-arg.tmp { font-style: italic; }
+.ch12-gantt svg text { font-family: var(--mono); font-size: 11px; fill: #e6e6e6; }
+.ch12-gantt svg .ax { fill: var(--dim); font-size: 10.5px; }
+.ch12-stat { display: grid; grid-template-columns: repeat(3, minmax(140px, 1fr)); gap: 10px; margin: 10px 0; }
+.ch12-stat div { background: var(--bg3); border-radius: 8px; padding: 8px 10px; text-align: center; }
+.ch12-stat b { display: block; font-size: 22px; font-family: var(--mono); color: var(--yellow); }
+.ch12-stat small { color: var(--dim); font-size: 12px; }
+.ch12-cache { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 1000px) { .ch12-cache { grid-template-columns: 1fr; } }
+.ch12-dict { font-family: var(--mono); font-size: 13px; background: #0d0f12; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; }
+.ch12-dict div { padding: 2px 4px; border-radius: 4px; }
+.ch12-dict .hit { background: rgba(131,193,103,.25); outline: 1px solid var(--green); }
+.ch12-dict .miss { background: rgba(252,98,85,.18); outline: 1px solid var(--red); }
+.ch12-line { font-family: var(--mono); font-size: 13px; background: #0a0c0e; border-left: 3px solid var(--green); padding: 8px 12px; border-radius: 4px; margin: 8px 0; white-space: pre-wrap; }
+.ch12-flow { display: flex; flex-wrap: wrap; gap: 6px; align-items: stretch; margin: 12px 0; }
+.ch12-flow > div { background: var(--bg3); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 13px; flex: 1 1 150px; }
+.ch12-flow > div b { display: block; font-family: var(--mono); color: var(--yellow); font-size: 12.5px; }
+.ch12-flow > span { align-self: center; color: var(--dim); }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="sidebar" id="sidebar"></nav>
+<main>
+  <h1><span class="chnum">CHAPTER 12</span>The schedule: CALLs, LINEAR &amp; memory</h1>
+  <p class="lede"><a href="11-kernel-split.html">Chapter 11</a> produced a <em>graph</em> of kernels connected by
+  <code>AFTER</code>s. A GPU wants a <em>list</em>. This chapter covers what happens between the kernel graph and kernels actually
+  running: putting the kernels in order (<code>create_schedule</code>), the final form of a schedule (a <code>LINEAR</code> of
+  <code>CALL</code>s), how abstract <code>PARAM</code>/<code>ALLOC</code> slots become real <code>BUFFER</code>s, how the memory planner packs
+  intermediates into one arena, why the second call of a function with new data skips scheduling entirely (the schedule cache), how
+  symbolic <code>Variable</code>s pass through as <code>var_vals</code>, and how <code>engine/realize.py</code> compiles and runs the list.</p>
+
+  <!-- ===================================================================================== -->
+  <h2 id="intuition"><span class="sec">12.1</span> Intuition: a recipe card with blanks</h2>
+  <p>A schedule is a recipe: "step 1: run kernel <code>r_4_8</code> on (tray A, input 1); step 2: run kernel <code>E_4_8</code> on (output,
+  input 1, tray A)". tinygrad first writes the recipe with <b>blanks</b> — "input 1", "a temporary tray" — and only fills in actual memory
+  when you cook. Because the recipe has blanks, it can be <b>reused</b>: the next time you ask for the same computation on different data,
+  it's the same recipe with different things in the blanks. That's the schedule cache. And since a temporary tray is only needed between the
+  step that fills it and the last step that reads it, a planner can put several trays on the same shelf space: the memory planner.</p>
+
+  <div class="callout aha"><span class="title">The key idea</span>The final schedule is a <code>UOp(Ops.LINEAR, src=(CALL, CALL, …))</code>.
+  Each <code>CALL</code>'s <code>src[0]</code> is the kernel body (a <code>SINK</code> AST, later a <code>PROGRAM</code>; or a <code>STORE</code>
+  for a copy) and <code>src[1:]</code> are the buffers it receives, positionally. The schedule is computed once per <em>shape</em> of
+  computation with placeholders (<code>PARAM</code> for inputs, <code>ALLOC</code> for temporaries), cached by the hash of that
+  placeholder graph, and bound to real buffers every time it's used.</div>
+
+  <div class="ch12-flow">
+    <div><b>Tensor.linear_with_vars</b>outputs get storage: <code>AFTER(BUFFER, STORE)</code></div><span>→</span>
+    <div><b>transform_to_call</b>BUFFER → PARAM; <code>CALL(SINK, *buffers)</code></div><span>→</span>
+    <div><b>lower_sink_to_linear</b>cache lookup, else prepare_rangeify → get_kernel_graph → <b>create_schedule</b></div><span>→</span>
+    <div><b>resolve_linear_call</b>PARAM → real BUFFER, ALLOC → new BUFFER</div><span>→</span>
+    <div><b>pm_copy_from_store</b>copy kernels → <code>CALL(STORE)</code></div><span>→</span>
+    <div><b>memory_plan_rewrite</b>temporaries → views of one arena</div><span>→</span>
+    <div><b>run_linear</b>compile, link, execute</div>
+  </div>
+
+  <!-- ===================================================================================== -->
+  <h2 id="entry"><span class="sec">12.2</span> The entry point: create_linear_with_vars</h2>
+  <p><a class="src" data-path="tinygrad/tensor.py" data-line="217">Tensor.realize</a> is three lines:</p>
+<pre><code class="language-python">def realize(self, *lst:Tensor, do_update_stats=True) -> Tensor:
+  to_realize = [x for x in (self,)+lst if x.uop.base.needs_storage()]
+  if len(to_realize):
+    linear, var_vals = Tensor.linear_with_vars(*to_realize)
+    run_linear(linear, var_vals, update_stats=do_update_stats)
+  return self</code></pre>
+  <p><a class="src" data-path="tinygrad/tensor.py" data-line="166">linear_with_vars</a> gives each output fresh storage
+  (<code>buf.after(buf.store(compute))</code>), re-points all live Tensors at that storage (so the next <code>realize()</code> is a no-op),
+  and calls <a class="src" data-path="tinygrad/schedule/__init__.py" data-line="268">create_linear_with_vars</a>:</p>
+<pre><code class="language-python">def create_linear_with_vars(big_sink:UOp) -> tuple[UOp, dict[str, int]]:
+  big_sink = transform_to_call(big_sink)
+  # big_sink srcs are all the Tensors
+  linear_call = graph_rewrite(big_sink, pm_schedule, name="schedule to linear", enter_calls=True)
+  # this recursively resolves the linear_call and allocates buffers
+  linear = graph_rewrite(linear_call, pm_resolve_linear_call, name="resolve linear call")
+  # create copies
+  linear = graph_rewrite(linear, pm_copy_from_store, name="lower copy kernels to STORE calls")
+  # vars used in the schedule
+  used_vars = set().union(*[{v.expr for v in si.src[0].variables()} for si in linear.src])
+  var_vals: dict[str, int] = {}
+  for b in big_sink.src[1:]:
+    if b.is_bound_var:
+      nm, val = b.expr, b.arg.val
+      if nm not in used_vars: continue
+      if var_vals.get(nm, val) != val: raise RuntimeError(f"bind mismatch on {nm}, {var_vals[nm]} != {val}")
+      var_vals[nm] = val
+  # jit captures this schedule, no need to execute.
+  if len(capturing) and CAPTURING:
+    capturing[0].add_linear(linear)
+    return UOp(Ops.LINEAR, src=()), var_vals
+  held_bufs = {b for b in linear_call.src[1:] if b.op is Ops.BUFFER}
+  return memory_plan_rewrite(linear, held_bufs), var_vals</code></pre>
+  <p>We can replay these steps by hand and look at the CALL arguments after each one:</p>
+  <div class="codecap"><b>examples/12_schedule.py</b> — run with <code>DEV=CPU NOOPT=1 python3 examples/12_schedule.py</code></div>
+<pre><code class="language-python">&quot;&quot;&quot;examples/12_schedule.py — create_linear_with_vars step by step, and what the final schedule looks like
+
+Run:  DEV=CPU NOOPT=1 python3 examples/12_schedule.py 2&gt;/dev/null
+
+Tensor.linear_with_vars builds a SINK of the outputs (each an AFTER(BUFFER, STORE(...))) and hands it to
+create_linear_with_vars (tinygrad/schedule/__init__.py). We capture that SINK and replay the steps one by one.
+&quot;&quot;&quot;
+from tinygrad import Tensor
+from tinygrad.helpers import Context
+from tinygrad.uop.ops import Ops, UOp, graph_rewrite
+import tinygrad.tensor as T
+import tinygrad.schedule as S
+from tinygrad.engine.realize import run_linear
+
+def short(u:UOp) -&gt; str:
+  if u.op is Ops.BUFFER: return f&quot;BUFFER#{u.arg.slot}({u.max_numel()})&quot;
+  if u.op is Ops.PARAM: return f&quot;PARAM{u.arg.slot}&quot;
+  if u.op is Ops.ALLOC: return f&quot;ALLOC{u.arg.slot}({u.max_numel()})&quot;
+  if u.op is Ops.BITCAST and u.src[0].op is Ops.SHRINK:
+    sh = u.src[0]; return f&quot;arena#{sh.src[0].arg.slot}[{sh.src[1].arg}:+{sh.src[2].arg}]&quot;
+  return u.op.name
+
+def show_calls(title, linear:UOp):
+  print(f&quot;--- {title}: {linear.op.name} of {len(linear.src)}&quot;)
+  for i, c in enumerate(linear.src):
+    print(f&quot;   CALL {i}: body={c.body.op.name:7s} args=({&#x27;, &#x27;.join(short(s) for s in c.src[1:])})&quot;)
+
+captured = {}
+orig = T.create_linear_with_vars
+def hook(big_sink):
+  captured[&quot;big_sink&quot;] = big_sink
+  return orig(big_sink)
+T.create_linear_with_vars = hook
+
+x = Tensor.empty(4, 8).realize()
+out = x / x.sum(1, keepdim=True)
+with Context(SCACHE=0): linear, var_vals = Tensor.linear_with_vars(out)
+big = captured[&quot;big_sink&quot;]
+print(&quot;0. the big SINK Tensor.linear_with_vars hands over:&quot;, [f&quot;{s.op.name}({short(s.src[0])}, {s.src[1].op.name})&quot; for s in big.src])
+
+with Context(SCACHE=0):
+  call = S.transform_to_call(big)
+  print(f&quot;1. transform_to_call -&gt; CALL(body={call.body.op.name}, args=({&#x27;, &#x27;.join(short(s) for s in call.src[1:])}))  &quot;
+        f&quot;key={call.body.key.hex()[:8]}&quot;)
+  lin_call = graph_rewrite(call, S.pm_schedule, name=&quot;schedule to linear&quot;, enter_calls=True)
+  show_calls(&quot;2. &#x27;schedule to linear&#x27;: CALL(LINEAR...) body&quot;, lin_call.body)
+  resolved = graph_rewrite(lin_call, S.pm_resolve_linear_call, name=&quot;resolve linear call&quot;)
+  show_calls(&quot;3. &#x27;resolve linear call&#x27;: PARAM -&gt; real BUFFER, ALLOC -&gt; new BUFFER&quot;, resolved)
+  planned = S.memory_plan_rewrite(graph_rewrite(resolved, S.pm_copy_from_store), {b for b in call.src[1:] if b.op is Ops.BUFFER})
+  show_calls(&quot;4. memory_plan_rewrite: intermediates become views into one arena&quot;, planned)
+show_calls(&quot;what Tensor.linear_with_vars actually returned&quot;, linear)
+
+print(&quot;\n=== ordering: a kernel that reads the OLD value of a must run before the assign that overwrites it&quot;)
+a = Tensor([1., 2., 3., 4.]).realize()
+b = a * 10            # reads the OLD a  -&gt; must run before the assign (WAR dependency)
+a.assign(a + 1)       # overwrites a in place
+c = a * 100           # reads the NEW a  -&gt; must run after the assign (RAW dependency)
+lin, vv = Tensor.linear_with_vars(b, a, c)
+show_calls(&quot;schedule for (b, a, c)&quot;, lin)
+run_linear(lin, vv)
+print(&quot;b =&quot;, b.tolist(), &quot; a =&quot;, a.tolist(), &quot; c =&quot;, c.tolist())</code></pre>
+<pre class="output"><code>0. the big SINK Tensor.linear_with_vars hands over: [&#x27;AFTER(RESHAPE, STORE)&#x27;]
+1. transform_to_call -&gt; CALL(body=SINK, args=(BUFFER#2(32), BUFFER#1(32)))  key=eb417c35
+--- 2. &#x27;schedule to linear&#x27;: CALL(LINEAR...) body: LINEAR of 2
+   CALL 0: body=SINK    args=(ALLOC0(4), PARAM1)
+   CALL 1: body=SINK    args=(PARAM0, PARAM1, ALLOC0(4))
+--- 3. &#x27;resolve linear call&#x27;: PARAM -&gt; real BUFFER, ALLOC -&gt; new BUFFER: LINEAR of 2
+   CALL 0: body=SINK    args=(BUFFER#5(4), BUFFER#1(32))
+   CALL 1: body=SINK    args=(BUFFER#2(32), BUFFER#1(32), BUFFER#5(4))
+--- 4. memory_plan_rewrite: intermediates become views into one arena: LINEAR of 2
+   CALL 0: body=SINK    args=(arena#6[0:+16], BUFFER#1(32))
+   CALL 1: body=SINK    args=(BUFFER#2(32), BUFFER#1(32), arena#6[0:+16])
+--- what Tensor.linear_with_vars actually returned: LINEAR of 2
+   CALL 0: body=SINK    args=(arena#4[0:+16], BUFFER#1(32))
+   CALL 1: body=SINK    args=(BUFFER#2(32), BUFFER#1(32), arena#4[0:+16])
+
+=== ordering: a kernel that reads the OLD value of a must run before the assign that overwrites it
+--- schedule for (b, a, c): LINEAR of 3
+   CALL 0: body=SINK    args=(BUFFER#9(4), BUFFER#8(4))
+   CALL 1: body=SINK    args=(BUFFER#8(4))
+   CALL 2: body=SINK    args=(BUFFER#10(4), BUFFER#8(4))
+b = [10.0, 20.0, 30.0, 40.0]  a = [2.0, 3.0, 4.0, 5.0]  c = [200.0, 300.0, 400.0, 500.0]</code></pre>
+  <p>Look at the arguments evolve. After <b>schedule to linear</b> the two CALLs only mention <code>ALLOC0</code> (the row-sum temporary) and
+  <code>PARAM0</code>/<code>PARAM1</code> (the output and <code>x</code>, the outer CALL's arguments). After <b>resolve linear call</b> they are
+  real buffers: <code>PARAM0</code> → <code>BUFFER#2</code> (output), <code>PARAM1</code> → <code>BUFFER#1</code> (x), <code>ALLOC0</code> → a
+  brand-new <code>BUFFER#5</code>. After <b>memory planning</b> the temporary is a 16-byte view at offset 0 of an arena buffer. (Buffer numbers differ
+  between the replay and the real call because each run allocates fresh ones.)</p>
+
+  <!-- ===================================================================================== -->
+  <h2 id="order"><span class="sec">12.3</span> Ordering: create_schedule turns AFTERs into a list</h2>
+  <p>After <code>get_kernel_graph</code>, dependencies are implicit in the graph: a kernel reads a buffer through
+  <code>AFTER(buffer, CALL_that_wrote_it)</code>. <a class="src" data-path="tinygrad/schedule/__init__.py" data-line="31">create_schedule</a>
+  extracts a dependency graph and topologically sorts it (Kahn's algorithm, BFS with a <code>deque</code>):</p>
+  <ul>
+    <li><b>RAW</b> (read-after-write): for every kernel <code>k</code> and every buffer state it reads (<code>_states</code> unwraps views to a
+    <code>BUFFER</code>/<code>PARAM</code>/<code>ALLOC</code> or an <code>AFTER</code>), if that state is an <code>AFTER</code>, each kernel in it
+    must run before <code>k</code>.</li>
+    <li><b>WAR</b> (write-after-read): for every kernel that reads state <code>S</code> of a buffer, every <em>other</em> write that supersedes
+    <code>S</code> must wait for it. This is what makes <code>b = a*10; a.assign(a+1)</code> correct: the kernel reading the old <code>a</code>
+    runs before the in-place update.</li>
+  </ul>
+<pre><code class="language-python">  with cpu_profile(TracingKey("linearize schedule")):
+    queue: deque[UOp] = deque(k for k,v in in_degree.items() if v == 0)
+    linearized: list[UOp] = []
+    while len(queue):
+      rk = queue.popleft()
+      k = rk.src[0] if rk.op is Ops.END else rk
+      buf_uops = tuple(_unwrap_src(s).buf_uop for s in k.src[1:] if not s.is_bound_var)
+      linearized.append(k.replace(src=(k.body, *buf_uops)))      # strip the AFTERs: args become plain buffers
+      for x in children.get(rk, []):
+        in_degree[x] -= 1
+        if in_degree[x] == 0: queue.append(x)
+    if any(in_degree.values()): raise RuntimeError("cycle detected in assign graph")
+  return UOp(Ops.LINEAR, src=tuple(linearized))</code></pre>
+  <p>Note the <code>k.replace(src=(k.body, *buf_uops))</code>: once a kernel is in the list, its position <em>is</em> its dependency info, so
+  the <code>AFTER</code> wrappers on its arguments are stripped. The second half of the <code>12_schedule.py</code> output shows the result for
+  <code>(b, a, c)</code>: CALL 0 reads the old <code>a</code> (BUFFER#8) into <code>b</code>, CALL 1 updates <code>a</code> in place (one arg), CALL 2
+  reads the new <code>a</code> into <code>c</code> — and the printed values confirm it: <code>b = 10·old</code>, <code>c = 100·new</code>.</p>
+
+  <div class="quiz" data-answer="1">
+    <div class="q">In <code>b = a * 10; a.assign(a + 1); c = a * 100</code>, which dependency forces the kernel computing <code>b</code> to run before the assign?</div>
+    <button class="opt">RAW: <code>b</code> reads the output of the assign.</button>
+    <button class="opt">WAR: <code>b</code> reads the state of <code>a</code> that the assign supersedes, so the write must wait.</button>
+    <button class="opt">None: they run in the order the Python statements were written.</button>
+    <div class="explain">The scheduler doesn't know your statement order; only the graph. The WAR loop in <code>create_schedule</code> adds the edge <code>b-kernel → assign-kernel</code>.</div>
+  </div>
+
+  <!-- ===================================================================================== -->
+  <h2 id="bufs"><span class="sec">12.4</span> Buffers: BUFFER, PARAM, ALLOC — and their numbering</h2>
+  <table>
+    <tr><th>UOp</th><th>meaning</th><th>where it comes from</th></tr>
+    <tr><td><code>BUFFER</code></td><td>bound storage: a real <code>Buffer</code> on a device (<code>arg=ParamArg(slot, dtype, device, buffer=…)</code>)</td><td><code>UOp.new_buffer</code>; your realized tensors; created by <code>create_new_buffer</code> for temporaries</td></tr>
+    <tr><td><code>PARAM</code> (outer)</td><td>"argument #slot of the enclosing CALL"</td><td><a class="src" data-path="tinygrad/schedule/__init__.py" data-line="248">pm_replace_buf</a> in transform_to_call: each GLOBAL BUFFER in the tensor graph, in order of first appearance; bound Variables too</td></tr>
+    <tr><td><code>ALLOC</code></td><td>"storage to be allocated", call-local; canonical negative slots inside the cached body</td><td><code>bufferize_to_store</code> (temporaries), <code>stage_to_anon_store</code> (contiguous), <code>copy_to_anon_store</code> (copies); <a class="src" data-path="tinygrad/schedule/__init__.py" data-line="231">canonicalize_alloc</a> renumbers them</td></tr>
+    <tr><td><code>PARAM</code> (kernel)</td><td>"argument #slot of <em>this kernel</em>"</td><td><code>debuf</code> in <code>split_store</code>: the kernel's own buffers numbered 0, 1, 2… in order of discovery</td></tr>
+  </table>
+  <p>Two levels of PARAM is the thing to keep straight. Inside a kernel AST, <code>PARAM 0</code> means "this kernel's first argument"; the kernel's
+  <code>CALL</code> lists, positionally, what that argument is in the outer schedule. Positional, slot-numbered placeholders at both levels are what
+  make both the schedule cache and the kernel compile cache hit across different programs.</p>
+  <p><a class="src" data-path="tinygrad/schedule/__init__.py" data-line="93">pm_post_sched_cache</a> fills the blanks, inside
+  <a class="src" data-path="tinygrad/schedule/__init__.py" data-line="100">resolve_linear_call</a> (pass "params to buffers"):</p>
+<pre><code class="language-python">def create_new_buffer(ctx:tuple[UOp, ...], b:UOp):
+  device = b.device if b.device is not None else next(a.device for a in ctx if a.device is not None)
+  return UOp.new_buffer(device, b.max_numel(), b.dtype)
+
+pm_post_sched_cache = PatternMatcher([
+  # Resolve positional arguments outside kernel bodies; free Variables have slot -1.
+  (UPat(Ops.PARAM, name="x"), lambda ctx,x: ctx[x.arg.slot] if x.arg.slot >= 0 else None),
+  # bind ALLOCs to fresh BUFFERs for this invocation
+  (UPat(Ops.ALLOC, name="b"), create_new_buffer),
+])</code></pre>
+  <p>The <code>walk=True</code> flag on that rewrite means kernel bodies (<code>CALL</code> srcs[0]) aren't entered: kernel-level PARAMs stay put.</p>
+
+  <!-- ===================================================================================== -->
+  <h2 id="viewer"><span class="sec">12.5</span> A whole schedule: a 4-layer MLP</h2>
+  <p>A 4-layer MLP forward pass (batch 64, 128 → 256 → 256 → 256 → 10, softmax), scheduled for real by <code>examples/12_make_data.py</code>:</p>
+<pre><code class="language-python" id="mlpcode"></code></pre>
+  <div class="demo" id="demo-viewer">
+    <div class="demo-title">Schedule viewer</div>
+    <div class="demo-desc">The real <code>LINEAR</code> (7 CALLs). Click a CALL to see its arguments
+    (<span style="color:var(--red)">red = written</span>, <span style="color:var(--green)">green = read</span>; italic = temporary in the arena,
+    with its byte offset), the kernels it depends on, its kernel AST (the SINK, as rendered graph) and the generated C.</div>
+    <div class="row">
+      <div class="col" style="flex:0 1 330px"><div class="ch12-calls" id="calls"></div></div>
+      <div class="col" style="flex:1 1 520px">
+        <div id="calldetail"></div>
+        <div class="tabs" id="calltabs">
+          <div class="tabpane" data-title="kernel AST (SINK)"><div id="callast"></div></div>
+          <div class="tabpane" data-title="C source"><pre style="max-height:460px"><code id="callsrc"></code></pre></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p>The softmax at the end costs three kernels, exactly as in Chapter 11; each matmul+bias+relu is one kernel. Each kernel's dependency list
+  is computed from its <em>read</em> arguments: e.g. the final <code>E_64_10</code> waits for the logits kernel and both reduces.</p>
+
+  <!-- ===================================================================================== -->
+  <h2 id="memory"><span class="sec">12.6</span> Memory planning: one arena for all temporaries</h2>
+  <p>Every intermediate (h1, h2, h3, logits, row max, row sum) got its own fresh <code>BUFFER</code> from <code>create_new_buffer</code>. But h1 is dead
+  once h2 is computed. <a class="src" data-path="tinygrad/schedule/memory.py" data-line="19">memory_plan_rewrite</a> exploits that:</p>
+<pre><code class="language-python">def memory_plan_rewrite(linear:UOp, held_bufs:set[UOp]|None=None) -> UOp:
+  if NO_MEMORY_PLANNER: return linear
+  # compute lifetimes for all plannable internal buffers
+  first_appearance, last_appearance, copy_bufs = {}, {}, set()
+  for i, si in enumerate(linear.src):
+    si_bufs = [b for src in si.src[1:] for b in _collect_bufs(src) if _can_plan(b, held_bufs)]
+    for b in si_bufs:
+      if b not in first_appearance: first_appearance[b] = i
+      last_appearance[b] = i
+    if si.src[0].op is Ops.STORE: copy_bufs.update(si_bufs)
+  ...
+  # suballocation: build sorted open/close events, then alloc/free in order
+  block_size = 256
+  nbytes = {b: round_up(b.max_numel() * b.dtype.itemsize, block_size) for b in first_appearance}
+  events = sorted([(first_appearance[b], True, b) for b in first_appearance] +
+                  [(last_appearance[b] + 1 + buf_hold.get(b, 0), False, b) for b in first_appearance], key=lambda x: (x[0], x[1]))
+  ...
+  for _, is_open, buf in events:
+    if is_open: offsets[buf] = peaks[_key(buf)][1].alloc(nbytes[buf])
+    else: peaks[_key(buf)][1].free(offsets[buf])
+  ...
+  # build replace_map: each buffer becomes a SHRINK/BITCAST into a shared per-device-lane arena
+  arenas = {key: UOp.new_buffer(key[0], sz, dtypes.int8) for key, sz in arena_sizes.items()}
+  replace_map = {buf_uop:arenas[_key(buf_uop)][offset:offset+buf_uop.nbytes()].bitcast(buf_uop.dtype) for buf_uop, offset in offsets.items()}
+  return linear.substitute(replace_map, name="memory plan", walk=True)</code></pre>
+  <ul>
+    <li><b>What is planned</b>: buffers that appear in CALL args and are <em>not</em> in <code>held_bufs</code> (the outer CALL's arguments: your inputs and
+    outputs, which must outlive the schedule) and not on DISK/CL/WEBGPU (no sub-buffer views there).</li>
+    <li><b>Lifetime</b>: [first CALL index, last CALL index]. Events are sorted by time with frees before allocs at the same index (<code>False &lt; True</code>),
+    so a buffer last used by kernel 1 can be reused by a buffer first written by kernel 2.</li>
+    <li><b>Allocator</b>: a <code>TLSFAllocator</code> (two-level segregated fit, the same allocator as the runtime's) over a virtual space, 256-byte blocks.</li>
+    <li><b>Lanes</b>: one arena per (device, copy?) pair. Copy buffers live in a separate lane and are held one extra lifetime so a copy engine and a compute
+    engine never fight over the same bytes.</li>
+    <li><b>Result</b>: each temporary becomes <code>arena[offset:offset+nbytes].bitcast(dtype)</code> — that's the
+    <code>BITCAST(SHRINK(BUFFER))</code> you saw as <code>arena#4[0:+16]</code> above. With <code>DEBUG≥1</code> it prints
+    <code>memory reduced from X MB -&gt; Y MB, n -&gt; m bufs</code>. Disable with <code>NO_MEMORY_PLANNER=1</code>.</li>
+  </ul>
+
+  <div class="demo" id="demo-gantt">
+    <div class="demo-title">Buffer lifetimes &amp; the memory planner (Gantt chart)</div>
+    <div class="demo-desc">x-axis: CALL index in the real MLP schedule. y-axis: byte address. Each temporary is a bar from its first to its last use.
+    <b>Planner ON</b> uses the real offsets tinygrad assigned; <b>OFF</b> stacks the buffers as separate allocations (what <code>NO_MEMORY_PLANNER=1</code>
+    gives). Drag the slider to see what's alive while each kernel runs. Held buffers (weights, x, out) are listed below; they're never planned.</div>
+    <div class="controls"><button id="plan-on" class="active">planner ON (real offsets)</button><button id="plan-off">planner OFF</button>
+      <label style="margin-left:12px">kernel</label><input type="range" id="gk" min="0" max="6" value="0"><span id="gkl" style="font-family:var(--mono)"></span></div>
+    <div class="ch12-stat" id="gstat"></div>
+    <div class="ch12-gantt" id="gantt"></div>
+    <div id="gheld" style="font-size:13px;color:var(--dim);margin-top:6px"></div>
+  </div>
+
+  <div class="quiz" data-answer="2">
+    <div class="q">In the MLP, h1 (64 KB) and h3 (64 KB) get the same offset 0 in the arena. Why is that safe?</div>
+    <button class="opt">Because they have the same shape.</button>
+    <button class="opt">Because the planner copies h1 out before writing h3.</button>
+    <button class="opt">h1's last use is CALL 1 and h3's first use is CALL 2; their lifetimes don't overlap, and the schedule runs CALLs in order.</button>
+    <div class="explain">Lifetime intervals on the linearized order are all that matters. The planner relies on the LINEAR being executed sequentially (and on separate lanes for copies).</div>
+  </div>
+
+  <!-- ===================================================================================== -->
+  <h2 id="cache"><span class="sec">12.7</span> The schedule cache</h2>
+  <p>With <code>DEBUG=1</code>, every schedule of more than one kernel prints a line like</p>
+  <div class="ch12-line">scheduled     2 kernels in    52.82 ms | CACHE MISS eb417c35 |      89 uops in cache | …/12_schedule_cache.py:17</div>
+  <p>It comes from <a class="src" data-path="tinygrad/schedule/__init__.py" data-line="121">lower_sink_to_linear</a>, the single pattern of
+  <code>pm_schedule</code>:</p>
+<pre><code class="language-python">schedule_cache: dict[bytes, UOp] = {}
+def lower_sink_to_linear(call:UOp) -> UOp|None:
+  function = call.body
+  if function.op is not Ops.SINK or isinstance(function.arg, KernelInfo) or not call.arg.precompile: return None
+  st = time.perf_counter()
+  cache_key = function.key
+  # SCACHE >= 2 also persists the cache to disk
+  sc_ret, disk_hit = schedule_cache.get(cache_key, None) if SCACHE else None, False
+  if sc_ret is None and SCACHE >= 2: disk_hit = (sc_ret:=diskcache_get("schedule_cache", {"key": cache_key})) is not None
+  if sc_ret is None:
+    if SPEC: type_verify(function, spec_tensor)
+    linear = create_schedule(get_kernel_graph(prepare_rangeify(function)))
+    if SCACHE: schedule_cache[cache_key] = linear
+    if SCACHE >= 2: diskcache_put("schedule_cache", {"key": cache_key}, linear)
+  else:
+    linear = schedule_cache[cache_key] = sc_ret
+  ...
+  return call.replace(src=(linear,)+call.src[1:])</code></pre>
+  <ul>
+    <li><b>The key</b> is <code>function.key</code>: the structural hash of the CALL <em>body</em> built by <code>transform_to_call</code>. In that body
+    every input/output <code>BUFFER</code> is a <code>PARAM(slot)</code>, every <code>ALLOC</code> has a canonical slot, and every bound
+    <code>Variable</code> is a value-free <code>PARAM</code>. So the key captures ops, shapes, dtypes, devices and the <em>pattern</em> of buffer use —
+    not which buffers or which variable values. The 8 hex digits printed are <code>cache_key.hex()[:8]</code>.</li>
+    <li><b>The value</b> is the <code>LINEAR</code> straight out of <code>create_schedule</code>: CALLs whose args are still <code>PARAM</code>s and
+    <code>ALLOC</code>s. Everything expensive (rangeify, remove_bufferize, splitting, ordering) is skipped on a hit; only
+    <code>resolve_linear_call</code> + memory planning run per call.</li>
+    <li><code>SCACHE=0</code> disables it (the example scripts in Chapters 10–11 do this so the passes actually run); <code>SCACHE=2</code> also uses the disk cache.</li>
+  </ul>
+  <div class="codecap"><b>examples/12_schedule_cache.py</b> — run with <code>DEV=CPU DEBUG=1 python3 examples/12_schedule_cache.py 2&gt;/dev/null</code></div>
+<pre><code class="language-python">&quot;&quot;&quot;examples/12_schedule_cache.py — what the schedule cache keys on, and what it stores
+
+Run:  DEV=CPU DEBUG=1 python3 examples/12_schedule_cache.py 2&gt;/dev/null
+
+DEBUG&gt;=1 prints one line per scheduled graph with &gt;1 kernel (see lower_sink_to_linear in tinygrad/schedule/__init__.py):
+    scheduled     2 kernels in  8.49 ms | CACHE MISS eb417c35 | ...
+The hex is the first 8 hex digits of the cache key = the .key (structural hash) of the CALL body built by
+transform_to_call, where every input BUFFER was replaced by PARAM(slot) and every bound Variable by a value-free PARAM.
+&quot;&quot;&quot;
+from tinygrad import Tensor, Variable
+import tinygrad.schedule as S
+from tinygrad.uop.ops import Ops
+
+def f(x): return x / x.sum(1, keepdim=True)
+
+print(&quot;--- call 1: x is a fresh (4, 8) buffer&quot;)
+f(Tensor.empty(4, 8)).realize()
+print(&quot;--- call 2: a DIFFERENT (4, 8) buffer -&gt; same key&quot;)
+f(Tensor.empty(4, 8)).realize()
+print(&quot;--- call 3: shape (5, 8) -&gt; different graph, different key&quot;)
+f(Tensor.empty(5, 8)).realize()
+print(&quot;--- calls 4,5: a symbolic batch size; the value 3 / 11 is NOT part of the key&quot;)
+xs = Tensor.empty(16, 8).realize()
+bs = Variable(&quot;bs&quot;, 1, 16)
+f(xs[:bs.bind(3)]).realize()
+f(xs[:bs.bind(11)]).realize()
+
+print(f&quot;\nschedule_cache now holds {len(S.schedule_cache)} entries:&quot;)
+for k, v in S.schedule_cache.items(): print(f&quot;  {k.hex()[:8]} -&gt; LINEAR of {len(v.src)} CALL(s)&quot;)
+key, cached = list(S.schedule_cache.items())[0]
+print(f&quot;entry {key.hex()[:8]}: a {cached.op} of {len(cached.src)} CALLs. The cached CALLs are NOT bound to real memory:&quot;)
+for i, call in enumerate(cached.src):
+  args = [f&quot;{s.op.name}(slot={s.arg.slot})&quot; for s in call.src[1:]]
+  print(f&quot;  CALL {i}: body={call.body.op.name}  args={args}&quot;)
+print(&quot;PARAM(slot=i) = &#x27;the i-th argument of the outer CALL&#x27; (output buffer, x, ...); ALLOC = an intermediate buffer&quot;)
+print(&quot;the scheduler created in bufferize_to_store — it gets fresh memory every time (create_new_buffer).&quot;)
+print(&quot;resolve_linear_call (pm_post_sched_cache) substitutes both every time the schedule is used, hit or miss.&quot;)</code></pre>
+<pre class="output"><code>--- call 1: x is a fresh (4, 8) buffer
+scheduled     2 kernels in    56.70 ms | CACHE MISS eb417c35 |      89 uops in cache | /home/user/workspace/tinygrad-guide/examples/12_schedule_cache.py:17
+opened device CPU from pid:32790
+--- call 2: a DIFFERENT (4, 8) buffer -&gt; same key
+scheduled     2 kernels in     2.28 ms |  cache hit eb417c35 |     160 uops in cache | /home/user/workspace/tinygrad-guide/examples/12_schedule_cache.py:19
+--- call 3: shape (5, 8) -&gt; different graph, different key
+scheduled     2 kernels in     6.56 ms | CACHE MISS 448ff55b |     205 uops in cache | /home/user/workspace/tinygrad-guide/examples/12_schedule_cache.py:21
+--- calls 4,5: a symbolic batch size; the value 3 / 11 is NOT part of the key
+scheduled     2 kernels in    12.70 ms | CACHE MISS 6a7926aa |     319 uops in cache | /home/user/workspace/tinygrad-guide/examples/12_schedule_cache.py:25
+scheduled     2 kernels in     1.45 ms |  cache hit 6a7926aa |     409 uops in cache | /home/user/workspace/tinygrad-guide/examples/12_schedule_cache.py:26
+
+schedule_cache now holds 4 entries:
+  eb417c35 -&gt; LINEAR of 2 CALL(s)
+  448ff55b -&gt; LINEAR of 2 CALL(s)
+  bc014fc9 -&gt; LINEAR of 0 CALL(s)
+  6a7926aa -&gt; LINEAR of 2 CALL(s)
+entry eb417c35: a Ops.LINEAR of 2 CALLs. The cached CALLs are NOT bound to real memory:
+  CALL 0: body=SINK  args=[&#x27;ALLOC(slot=0)&#x27;, &#x27;PARAM(slot=1)&#x27;]
+  CALL 1: body=SINK  args=[&#x27;PARAM(slot=0)&#x27;, &#x27;PARAM(slot=1)&#x27;, &#x27;ALLOC(slot=0)&#x27;]
+PARAM(slot=i) = &#x27;the i-th argument of the outer CALL&#x27; (output buffer, x, ...); ALLOC = an intermediate buffer
+the scheduler created in bufferize_to_store — it gets fresh memory every time (create_new_buffer).
+resolve_linear_call (pm_post_sched_cache) substitutes both every time the schedule is used, hit or miss.</code></pre>
+  <p>(The <code>bc014fc9 -&gt; LINEAR of 0 CALL(s)</code> entry is the <code>.realize()</code> of <code>xs = Tensor.empty(16, 8)</code>: an empty
+  tensor needs no kernel.)</p>
+
+  <div class="demo" id="demo-cache">
+    <div class="demo-title">Schedule cache: hit/miss walkthrough</div>
+    <div class="demo-desc">Six real calls of <code>f(x) = x / x.sum(1, keepdim=True)</code>, captured with the scheduler instrumented. Left: the CALL body
+    <em>before</em> "replace bufs" (concrete <code>BUFFER</code>s) and <em>after</em> it (the PARAM-ized body whose hash is the key). Right: the cache
+    dictionary and the DEBUG line.</div>
+    <div id="cachestep"></div>
+    <div class="ch12-cache">
+      <div>
+        <div class="controls"><button id="cb-before">before "replace bufs"</button><button id="cb-after" class="active">after (the key)</button></div>
+        <div id="cachegraph"></div>
+      </div>
+      <div>
+        <div style="font-weight:700;margin-bottom:4px">schedule_cache</div>
+        <div class="ch12-dict" id="cachedict"></div>
+        <div class="ch12-line" id="cacheline"></div>
+        <div id="cachevv" style="font-family:var(--mono);font-size:13px"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout note">The schedule cache sits <em>below</em> the JIT (<a href="18-jit.html">Chapter 18</a>). Even without <code>TinyJit</code>, a
+  training loop that builds the same graph every step pays for scheduling only once. The JIT goes further: it captures the resolved, compiled
+  LINEAR and replays it without building the tensor graph at all (that's the <code>capturing</code> branch in <code>create_linear_with_vars</code>).</div>
+
+  <!-- ===================================================================================== -->
+  <h2 id="vars"><span class="sec">12.8</span> Symbolic variables and var_vals</h2>
+  <p>A <code>Variable("bs", 1, 16).bind(3)</code> is a bound variable: a symbol plus a current value. <code>pm_replace_buf</code> turns it into a
+  value-stripped PARAM in the body (so all values share one key: calls 5 and 6 above hit), while the bound UOp itself is passed as a CALL
+  argument. At the end of <code>create_linear_with_vars</code>, the values of variables that are actually used by some kernel are collected into
+  <code>var_vals</code>, e.g. <code>{'bs': 3}</code>, with a check that one name isn't bound to two values. The kernels are compiled once with
+  <code>bs</code> as a runtime argument (kernel names like <code>E_bs_4</code>), and <code>exec_kernel</code> passes
+  <code>var_vals[p.expr]</code> for every ALU <code>PARAM</code> of the program.</p>
+
+  <div class="quiz" data-answer="3">
+    <div class="q">Which of these changes produces a schedule-cache <b>hit</b> for <code>f(x) = x / x.sum(1, keepdim=True)</code>?</div>
+    <button class="opt">x changes from shape (4, 8) to (5, 8)</button>
+    <button class="opt">x changes from float32 to half</button>
+    <button class="opt">x moves to another device</button>
+    <button class="opt">x is a different (4, 8) float32 buffer with different contents</button>
+    <div class="explain">Shapes, dtypes and devices are in the PARAM-ized body; buffer identity and contents are not. Values of bound Variables aren't either.</div>
+  </div>
+
+  <!-- ===================================================================================== -->
+  <h2 id="run"><span class="sec">12.9</span> Running it: engine/realize.py</h2>
+  <p><a class="src" data-path="tinygrad/engine/realize.py" data-line="284">run_linear</a>:</p>
+<pre><code class="language-python">def run_linear(linear:UOp, var_vals:dict[str, int]|None=None, input_uops:Sequence[UOp]=(), update_stats=True, jit=False, wait=False):
+  assert linear.op is Ops.LINEAR, f"run_linear calls on {linear.op}"
+  if len(linear.src) == 0: return
+  inputs = list(input_uops)
+  if not jit: linear = link_linear(compile_linear(linear, validate=VALIDATE_WITH_CPU, input_uops=inputs, cache=True), input_uops=inputs)
+  ctx = ExecContext(var_vals or {}, tuple(inputs), update_stats, jit, wait or DEBUG>=2)
+  for call in linear.src: track_stats(ctx, call.without_after, perf_counter_us(), pm_exec.rewrite(call.without_after, ctx))</code></pre>
+  <ol>
+    <li><a class="src" data-path="tinygrad/engine/realize.py" data-line="275">compile_linear</a>: optionally wrap calls for CPU validation
+    (<code>VALIDATE_WITH_CPU</code>) or tag them for BEAM search, then
+    <a class="src" data-path="tinygrad/engine/realize.py" data-line="238">lower_and_compile</a>: every <code>CALL(SINK(KernelInfo))</code> is
+    deduped by <code>to_program_key</code>, compiled with <code>to_program</code> (all of <a href="13-kernel-ast.html">Part IV</a>: optimize, lower,
+    linearize, render, compile) — in parallel worker processes when there are several — cached in <code>to_program_cache</code>, and substituted back
+    as <code>CALL(PROGRAM)</code>. Then <a class="src" data-path="tinygrad/runtime/support/hcq2.py" data-line="541">hcq_compile</a> batches calls
+    into command queues for HCQ devices (AMD, NV, METAL, CUDA…); for CPU it leaves the list alone.</li>
+    <li><a class="src" data-path="tinygrad/engine/realize.py" data-line="282">link_linear</a> → <code>hcq_link</code>: resolve addresses / patch
+    command buffers.</li>
+    <li><a class="src" data-path="tinygrad/engine/realize.py" data-line="268">pm_exec</a>, a PatternMatcher used as a dispatcher, one call at a time:
+    <code>CALL(STORE)</code> → <a class="src" data-path="tinygrad/engine/realize.py" data-line="147">exec_copy</a>,
+    <code>CALL(PROGRAM)</code> → <a class="src" data-path="tinygrad/engine/realize.py" data-line="157">exec_kernel</a> (allocate buffers lazily
+    with <code>ensure_allocated</code>, look up the runtime, compute launch dims from <code>var_vals</code>, call it), or <code>exec_hcq</code>.</li>
+  </ol>
+  <div class="codecap"><b>examples/12_run_linear.py</b> — run with <code>DEV=CPU NOOPT=1 python3 examples/12_run_linear.py</code></div>
+<pre><code class="language-python">&quot;&quot;&quot;examples/12_run_linear.py — how engine/realize.py consumes the schedule: compile_linear -&gt; link_linear -&gt; pm_exec
+
+Run:  DEV=CPU NOOPT=1 python3 examples/12_run_linear.py 2&gt;/dev/null
+
+Tensor.realize() is just:
+    linear, var_vals = Tensor.linear_with_vars(*to_realize)
+    run_linear(linear, var_vals)
+and run_linear does   link_linear(compile_linear(linear)) and then one pm_exec.rewrite per CALL.
+We do the same steps by hand and print what each CALL body looks like after each step.
+&quot;&quot;&quot;
+from tinygrad import Tensor
+from tinygrad.uop.ops import Ops
+from tinygrad.engine.realize import compile_linear, link_linear, pm_exec, ExecContext
+
+def bodies(title, linear):
+  print(f&quot;--- {title}&quot;)
+  for i, c in enumerate(linear.src):
+    c = c.without_after
+    b = c.body
+    extra = f&quot; name={b.src[0].arg.name}&quot; if b.op is Ops.PROGRAM else (f&quot; (kernel AST, {len(b.toposort())} uops)&quot; if b.op is Ops.SINK else &quot;&quot;)
+    print(f&quot;   CALL {i}: body={b.op.name}{extra}  args={len(c.src)-1}&quot;)
+
+x = Tensor([[float(8*r + c + 1) for c in range(8)] for r in range(4)]).realize()
+out = x / x.sum(1, keepdim=True)
+linear, var_vals = Tensor.linear_with_vars(out)
+bodies(&quot;1. the schedule from linear_with_vars&quot;, linear)
+
+compiled = compile_linear(linear)          # lower_and_compile: to_program() on every SINK (cached, maybe in parallel)
+bodies(&quot;2. compile_linear: every kernel AST became a PROGRAM&quot;, compiled)
+prg = compiled.src[0].without_after.body
+print(&quot;   PROGRAM srcs:&quot;, [s.op.name for s in prg.src])
+
+linked = link_linear(compiled)              # hcq_link: resolve addresses (a no-op rewrite for plain CPU calls)
+bodies(&quot;3. link_linear&quot;, linked)
+
+ctx = ExecContext(var_vals)
+for call in linked.src:                      # what run_linear&#x27;s loop does (minus stats)
+  pm_exec.rewrite(call.without_after, ctx)  # CALL(PROGRAM) -&gt; exec_kernel, CALL(STORE) -&gt; exec_copy
+print(&quot;--- 4. executed. each row of out sums to&quot;, [round(sum(r), 4) for r in out.tolist()])</code></pre>
+<pre class="output"><code>--- 1. the schedule from linear_with_vars
+   CALL 0: body=SINK (kernel AST, 15 uops)  args=2
+   CALL 1: body=SINK (kernel AST, 18 uops)  args=3
+--- 2. compile_linear: every kernel AST became a PROGRAM
+   CALL 0: body=PROGRAM name=r_4_8  args=2
+   CALL 1: body=PROGRAM name=E_4_8  args=3
+   PROGRAM srcs: [&#x27;SINK&#x27;, &#x27;LINEAR&#x27;, &#x27;SOURCE&#x27;, &#x27;BINARY&#x27;]
+--- 3. link_linear
+   CALL 0: body=PROGRAM name=r_4_8  args=2
+   CALL 1: body=PROGRAM name=E_4_8  args=3
+--- 4. executed. each row of out sums to [1.0, 1.0, 1.0, 1.0]</code></pre>
+  <p>Notice the <code>PROGRAM</code>'s srcs: the original kernel <code>SINK</code>, the <code>LINEAR</code> of lowered instructions, the rendered
+  <code>SOURCE</code> and the compiled <code>BINARY</code> — the entire codegen history of the kernel travels in one UOp. Chapters 13–17 open that box.</p>
+
+  <!-- ===================================================================================== -->
+  <h2 id="hammer"><span class="sec">12.10</span> Hammer it again: the life of one temporary</h2>
+  <p>Follow the row-sum of <code>x / x.sum(1, keepdim=True)</code> through every representation it has in the scheduler:</p>
+  <table>
+    <tr><th>stage</th><th>the row sum is…</th></tr>
+    <tr><td>tensor graph</td><td><code>REDUCE(ADD, 1 axis)</code> of shape (4,), reshaped to (4, 1) and broadcast</td></tr>
+    <tr><td>run_rangeify (Ch. 10)</td><td>a realize-map entry (ending ranges), wrapped as <code>STAGE(…, r)</code></td></tr>
+    <tr><td>pm_remove_bufferize (Ch. 11)</td><td>kept: its REDUCE reads a buffer</td></tr>
+    <tr><td>stage to store (Ch. 11)</td><td><code>AFTER(ALLOC slot 0, END(STORE(INDEX(ALLOC, r), …), r))</code></td></tr>
+    <tr><td>split kernels (Ch. 11)</td><td>the output of its own <code>CALL(SINK)</code>, where it's <code>PARAM 0</code>; arg 3 of the next CALL, where it's <code>PARAM 2</code></td></tr>
+    <tr><td>create_schedule</td><td><code>ALLOC</code> (canonical slot) in the args of CALL 0 and CALL 1 of a cached LINEAR</td></tr>
+    <tr><td>resolve_linear_call</td><td>a fresh <code>BUFFER</code> of 4 floats</td></tr>
+    <tr><td>memory_plan_rewrite</td><td><code>BITCAST(SHRINK(arena, 0, 16), float)</code></td></tr>
+    <tr><td>exec_kernel</td><td>a pointer into the arena's memory, allocated on first use</td></tr>
+  </table>
+
+  <div class="quiz" data-answer="0">
+    <div class="q">Why does <code>pm_post_sched_cache</code> turn ALLOCs into fresh BUFFERs on <em>every</em> call, even on a cache hit?</div>
+    <button class="opt">The cached LINEAR has no concrete memory in it by design; two different invocations could be alive at once, so each needs its own temporaries (the memory planner then packs them).</button>
+    <button class="opt">Because BUFFERs can't be hashed.</button>
+    <button class="opt">To zero-initialize them.</button>
+    <div class="explain">Keeping the cached schedule free of memory is what makes it reusable; binding happens per call in <code>resolve_linear_call</code>.</div>
+  </div>
+
+  <div class="quiz" data-answer="2">
+    <div class="q">What's the type of the object <code>Tensor.linear_with_vars</code> returns as its first element?</div>
+    <button class="opt">A list of ScheduleItems.</button>
+    <button class="opt">A Python list of compiled programs.</button>
+    <button class="opt">A UOp with <code>op=Ops.LINEAR</code> whose srcs are <code>CALL</code> UOps.</button>
+    <div class="explain">There's no ScheduleItem class in this version. The schedule is IR too: LINEAR of CALLs, with kernel ASTs as CALL bodies.</div>
+  </div>
+
+  <div class="summary-box"><h3>Chapter summary</h3><ul>
+    <li><b>Input</b>: the SINK of output stores from <code>Tensor.linear_with_vars</code>. <b>Output</b>: <code>LINEAR(CALL(body, *buffers), …)</code> + <code>var_vals</code>.</li>
+    <li><code>transform_to_call</code> PARAM-izes the graph; its body's hash is the schedule cache key. A hit skips rangeify/splitting/ordering entirely.</li>
+    <li><code>create_schedule</code> derives RAW and WAR dependencies from AFTERs and topologically sorts the kernels, stripping the AFTERs.</li>
+    <li><code>resolve_linear_call</code> binds PARAMs to the call's real buffers and ALLOCs to fresh BUFFERs; copy kernels become <code>CALL(STORE)</code>.</li>
+    <li><code>memory_plan_rewrite</code> computes lifetimes over the list and packs temporaries into one arena per device/lane with a TLSF allocator.</li>
+    <li><code>run_linear</code>: <code>compile_linear</code> (to_program per kernel, cached, parallel) → <code>link_linear</code> → <code>pm_exec</code> per CALL.</li>
+  </ul></div>
+</main>
+</div>
+<script>
+(async function () {
+  const G = window.Guide, el = G.el;
+  const hl = (s, lang) => hljs.highlight(s, { language: lang }).value;
+  const kb = (n) => n >= 1024 ? (n / 1024).toFixed(n % 1024 ? 1 : 0) + " KB" : n + " B";
+
+  // ---------------------------------------------------------------- schedule viewer
+  const M = await G.loadJSON("../data/ch12_mlp.json");
+  G.$("#mlpcode").innerHTML = hl(M.code, "python");
+  const bufBy = new Map(M.bufs.map((b) => [b.key, b]));
+  let astCtl = null;
+  function showCall(i) {
+    G.$$(".ch12-call").forEach((e, j) => e.classList.toggle("on", i === j));
+    const C = M.calls[i], d = G.$("#calldetail"); d.innerHTML = "";
+    d.append(el("div", { style: "font-family:var(--mono);font-size:15px;color:var(--yellow);margin-bottom:4px" }, `CALL ${i}: ${C.name}`));
+    const args = el("div", {});
+    C.args.forEach((a) => {
+      const b = bufBy.get(a.buf);
+      args.append(el("div", { style: "font-family:var(--mono);font-size:12.5px" }, `kernel PARAM ${a.slot} = `,
+        el("span", { class: "ch12-arg " + (a.out ? "out" : "in") + (b.held ? "" : " tmp") }, `${b.name}`),
+        ` ${b.numel}×${b.dtype} (${kb(b.nbytes)})` + (b.held ? " · held (not planned)" : ` · arena offset ${b.offset}`) + (a.out ? " · WRITTEN" : " · read")));
+    });
+    d.append(args);
+    d.append(el("div", { style: "font-size:13px;color:var(--dim);margin:6px 0" }, C.deps.length ? `depends on (RAW): ${C.deps.map((k) => "CALL " + k + " " + M.calls[k].name).join(", ")}` : "no dependencies: can run first"));
+    astCtl = G.uopGraph("#callast", C.ast, { height: 460, compact: true });
+    G.$("#callsrc").innerHTML = hl(C.src, "c");
+  }
+  M.calls.forEach((C, i) => {
+    const outs = C.args.filter((a) => a.out).map((a) => bufBy.get(a.buf).name);
+    G.$("#calls").append(el("div", { class: "ch12-call", onclick: () => showCall(i) },
+      el("span", { class: "nm" }, `${i}  ${C.name}`), el("br"), el("span", { class: "dep" }, `→ ${outs.join(", ")}` + (C.deps.length ? `  ·  after ${C.deps.join(",")}` : ""))));
+  });
+  showCall(0);
+
+  // ---------------------------------------------------------------- Gantt
+  let planOn = true;
+  const temps = M.bufs.filter((b) => !b.held), N = M.calls.length;
+  const COLORS = ["#58C4DD", "#F0AC5F", "#83C167", "#9A72AC", "#5CD0B3", "#FC6255", "#F4D345"];
+  function drawGantt() {
+    const k = +G.$("#gk").value;
+    G.$("#gkl").textContent = ` ${k}: ${M.calls[k].name}`;
+    let off = 0; const naive = new Map();
+    temps.forEach((b) => { naive.set(b.key, off); off += Math.ceil(b.nbytes / 256) * 256; });
+    const pos = (b) => planOn ? b.offset : naive.get(b.key);
+    const total = planOn ? M.plan.arena_bytes : off;
+    const W = 860, H = 340, L = 70, T = 14, B = 34, cw = (W - L - 10) / N, ys = (H - T - B) / Math.max(off, M.plan.arena_bytes);
+    const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, width: "100%" });
+    for (let i = 0; i <= N; i++) svg.append(el("line", { x1: L + i * cw, x2: L + i * cw, y1: T, y2: H - B, stroke: "#2f343c" }));
+    for (let i = 0; i < N; i++) svg.append(el("text", { x: L + i * cw + cw / 2, y: H - B + 14, "text-anchor": "middle", class: "ax" }, `${i} ${M.calls[i].name}`.slice(0, 16)));
+    svg.append(el("rect", { x: L + k * cw, y: T, width: cw, height: H - T - B, fill: "rgba(244,211,69,.04)", stroke: "#F4D345", "stroke-dasharray": "3 4", "stroke-opacity": .6 }));
+    const steps = 4, mx = Math.max(off, M.plan.arena_bytes);
+    for (let s = 0; s <= steps; s++) { const v = mx * s / steps; svg.append(el("text", { x: L - 6, y: T + v * ys + 4, "text-anchor": "end", class: "ax" }, kb(Math.round(v)))); }
+    svg.append(el("line", { x1: L, x2: W - 10, y1: T + total * ys, y2: T + total * ys, stroke: "#FC6255", "stroke-dasharray": "4 3" }));
+    svg.append(el("text", { x: W - 12, y: T + total * ys - 4, "text-anchor": "end", fill: "#FC6255" }, `${planOn ? "arena" : "sum of buffers"}: ${kb(total)}`));
+    let live = 0;
+    temps.forEach((b, j) => {
+      const y = T + pos(b) * ys, h = Math.max(3, b.nbytes * ys), alive = b.first <= k && k <= b.last;
+      if (alive) live += b.nbytes;
+      const c = COLORS[j % COLORS.length];
+      svg.append(el("rect", { x: L + b.first * cw + 2, y, width: (b.last - b.first + 1) * cw - 4, height: h - 1, rx: 4, fill: c + (alive ? "88" : "33"), stroke: c }));
+      svg.append(el("text", { x: L + b.first * cw + 8, y: y + Math.min(h / 2 + 4, 16) }, `${b.name} (${kb(b.nbytes)})`));
+    });
+    const g = G.$("#gantt"); g.innerHTML = ""; g.append(svg);
+    G.$("#gstat").innerHTML = "";
+    [["temporaries", temps.length + " → " + (planOn ? 1 : temps.length) + " buffer(s)"], ["memory for temporaries", kb(total)], [`live during CALL ${k}`, kb(live)]].forEach(([a, v]) =>
+      G.$("#gstat").append(el("div", {}, el("b", {}, v), el("small", {}, a))));
+  }
+  G.$("#gk").max = N - 1;
+  G.$("#gk").addEventListener("input", drawGantt);
+  G.$("#plan-on").addEventListener("click", () => { planOn = true; G.$("#plan-on").classList.add("active"); G.$("#plan-off").classList.remove("active"); drawGantt(); });
+  G.$("#plan-off").addEventListener("click", () => { planOn = false; G.$("#plan-off").classList.add("active"); G.$("#plan-on").classList.remove("active"); drawGantt(); });
+  G.$("#gheld").textContent = "held (never planned): " + M.bufs.filter((b) => b.held).map((b) => `${b.name} ${kb(b.nbytes)}`).join(" · ");
+  drawGantt();
+
+  // ---------------------------------------------------------------- cache walkthrough
+  const CD = await G.loadJSON("../data/ch12_cache.json");
+  let side = "after", cur = 0, cacheCtl = null;
+  function drawCache() {
+    const V = CD.variants[cur];
+    cacheCtl = G.uopGraph("#cachegraph", side === "after" ? V.after : V.before, { height: 440, compact: true, legend: false });
+    const seen = []; const dict = G.$("#cachedict"); dict.innerHTML = "";
+    CD.variants.slice(0, cur + 1).forEach((v) => { if (!seen.includes(v.key)) seen.push(v.key); });
+    seen.forEach((k) => dict.append(el("div", { class: k === V.key ? (V.hit_in_tinygrad ? "hit" : "miss") : "" }, `${k}… → LINEAR(${V.n_kernels} CALLs with PARAM/ALLOC args)`)));
+    G.$("#cacheline").textContent = `scheduled     ${V.n_kernels} kernels | ${V.hit_in_tinygrad ? " cache hit" : "CACHE MISS"} ${V.key}`;
+    G.$("#cachevv").textContent = "var_vals = " + JSON.stringify(V.var_vals);
+  }
+  const steps = CD.variants.map((V, i) => ({ caption: `<b>${G.escape(V.label)}</b> — ${G.escape(V.desc)}. Key <code>${V.key}</code>: ` +
+    (V.hit_in_tinygrad ? `<span style="color:var(--green)">hit</span> — rangeify, splitting and ordering are skipped.` : `<span style="color:var(--red)">miss</span> — the full scheduler runs and the result is stored.`) }));
+  G.stepper("#cachestep", steps, (i) => { cur = i; drawCache(); }, { autoplayMs: 2600 });
+  G.$("#cb-before").addEventListener("click", () => { side = "before"; G.$("#cb-before").classList.add("active"); G.$("#cb-after").classList.remove("active"); drawCache(); });
+  G.$("#cb-after").addEventListener("click", () => { side = "after"; G.$("#cb-after").classList.add("active"); G.$("#cb-before").classList.remove("active"); drawCache(); });
+})();
+</script>
+</body>
+</html>

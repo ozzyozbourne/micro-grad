@@ -1,0 +1,177 @@
+[
+ {
+  "code": "Tensor([1, 2, 3])",
+  "dtype": "i32",
+  "value": "[1, 2, 3]"
+ },
+ {
+  "code": "Tensor([1., 2, 3])",
+  "dtype": "f32",
+  "value": "[1.0, 2.0, 3.0]"
+ },
+ {
+  "code": "Tensor([True, False])",
+  "dtype": "bool",
+  "value": "[True, False]"
+ },
+ {
+  "code": "Tensor([2**40])",
+  "dtype": "i64",
+  "value": "[1099511627776]"
+ },
+ {
+  "code": "Tensor([2**63])",
+  "dtype": "u64",
+  "value": "[9223372036854775808]"
+ },
+ {
+  "code": "Tensor(3)",
+  "dtype": "weakint",
+  "value": "3"
+ },
+ {
+  "code": "Tensor(3.0)",
+  "dtype": "weakfloat",
+  "value": "3.0"
+ },
+ {
+  "code": "Tensor([1, 2, 3]) + 1",
+  "dtype": "i32",
+  "value": "[2, 3, 4]"
+ },
+ {
+  "code": "Tensor([1, 2, 3]) + 1.5",
+  "dtype": "weakfloat",
+  "value": "[2.5, 3.5, 4.5]"
+ },
+ {
+  "code": "Tensor([1, 2, 3]) / 2",
+  "dtype": "f32",
+  "value": "[0.5, 1.0, 1.5]"
+ },
+ {
+  "code": "Tensor([1, 2, 3]) // 2",
+  "dtype": "i32",
+  "value": "[0, 1, 1]"
+ },
+ {
+  "code": "Tensor([1, 2, 3], dtype=int8) + 1",
+  "dtype": "i8",
+  "value": "[2, 3, 4]"
+ },
+ {
+  "code": "Tensor([1, 2, 3], dtype=int8) + 1000",
+  "dtype": "i8",
+  "value": "[-23, -22, -21]"
+ },
+ {
+  "code": "Tensor([1, 2, 3], dtype=uint8) * 2.5",
+  "dtype": "weakfloat",
+  "value": "[2.5, 5.0, 7.5]"
+ },
+ {
+  "code": "Tensor([1.], dtype=half) + 1.0",
+  "dtype": "f16",
+  "value": "[2.0]"
+ },
+ {
+  "code": "Tensor([1.], dtype=half) + Tensor([1.])",
+  "dtype": "f32",
+  "value": "[2.0]"
+ },
+ {
+  "code": "int8 tensor + uint8 tensor",
+  "dtype": "i16",
+  "value": "[2]"
+ },
+ {
+  "code": "uint32 tensor + int32 tensor",
+  "dtype": "i64",
+  "value": "[2]"
+ },
+ {
+  "code": "int64 tensor + uint64 tensor",
+  "dtype": "weakfloat",
+  "value": "[2.0]"
+ },
+ {
+  "code": "int64 tensor + half tensor",
+  "dtype": "f16",
+  "value": "[2.0]"
+ },
+ {
+  "code": "Tensor([True]) + Tensor([True])",
+  "dtype": "bool",
+  "value": "[True]"
+ },
+ {
+  "code": "Tensor([True]) + 1",
+  "dtype": "weakint",
+  "value": "[2]"
+ },
+ {
+  "code": "Tensor([1, 2]) < 2",
+  "dtype": "bool",
+  "value": "[True, False]"
+ },
+ {
+  "code": "Tensor([1, 4]).sqrt()",
+  "dtype": "f32",
+  "value": "[1.0, 2.0]"
+ },
+ {
+  "code": "Tensor([1, 2], dtype=uint8).sum()",
+  "dtype": "u32",
+  "value": "3"
+ },
+ {
+  "code": "Tensor([1, 2], dtype=int8).sum()",
+  "dtype": "i32",
+  "value": "3"
+ },
+ {
+  "code": "Tensor([1., 2], dtype=half).sum()",
+  "dtype": "f16",
+  "value": "3.0"
+ },
+ {
+  "code": "Tensor([True, False]).sum()",
+  "dtype": "i32",
+  "value": "1"
+ },
+ {
+  "code": "Tensor.arange(5)",
+  "dtype": "i32",
+  "value": "[0, 1, 2, 3, 4]"
+ },
+ {
+  "code": "Tensor.full((2,), 7)",
+  "dtype": "i32",
+  "value": "[7, 7]"
+ },
+ {
+  "code": "Tensor(3) * 0.5",
+  "dtype": "weakfloat",
+  "value": "1.5"
+ },
+ {
+  "code": "Tensor([1, 2]).mean()",
+  "dtype": "f32",
+  "value": "1.5"
+ },
+ {
+  "code": "Tensor([1, 2]) ** 2",
+  "dtype": "i32",
+  "value": "[1, 4]"
+ },
+ {
+  "code": "Tensor([1, 2]) ** 0.5",
+  "dtype": "weakfloat",
+  "value": "[1.0, 1.4142135381698608]"
+ },
+ {
+  "code": "Tensor([1., 2]).bitcast(dtypes.int32)",
+  "dtype": "i32",
+  "value": "[1065353216, 1073741824]"
+ }
+]

@@ -1,0 +1,91 @@
+{
+ "presets": [
+  {
+   "id": "elementwise",
+   "title": "Elementwise",
+   "blurb": "a*b+1 then relu: one kernel, no loop survives (the 8 elements are upcast).",
+   "code": "# elementwise: one kernel. inputs are realized first, so the trace starts from real BUFFERs\na = Tensor([[1., 2, 3, 4], [5, 6, 7, 8]]).realize()\nb = Tensor([[0.5, -1, 2, 0], [1, 1, -2, 3]]).realize()\nout = (a * b + 1).relu()\n",
+   "file": "ch22_preset_elementwise.json",
+   "kernels": [
+    "E_2_4"
+   ]
+  },
+  {
+   "id": "sum",
+   "title": "Sum (reduce)",
+   "blurb": "sum over an axis: a REDUCE range becomes an accumulator loop in C.",
+   "code": "# reduce along an axis: a RANGE of type REDUCE becomes an accumulator loop\nx = Tensor([[1., 2, 3, 4, 5, 6, 7, 8],\n            [8, 7, 6, 5, 4, 3, 2, 1],\n            [1, 1, 1, 1, 2, 2, 2, 2]]).realize()\nout = x.sum(axis=1)\n",
+   "file": "ch22_preset_sum.json",
+   "kernels": [
+    "r_3_8"
+   ]
+  },
+  {
+   "id": "matmul",
+   "title": "Matmul",
+   "blurb": "a @ b = reshape + expand + mul + sum, fused into a single kernel.",
+   "code": "# matmul = reshape + expand + mul + sum, fused into ONE kernel\na = Tensor([[1., 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12], [13, 14, 15, 16]]).realize()\nb = Tensor([[1., 0, 0, 1], [0, 1, 0, 1], [0, 0, 1, 1], [1, 1, 1, 0]]).realize()\nout = a @ b\n",
+   "file": "ch22_preset_matmul.json",
+   "kernels": [
+    "r_4_4_4"
+   ]
+  },
+  {
+   "id": "softmax",
+   "title": "Softmax",
+   "blurb": "max-reduce, exp-sum-reduce, divide: watch the graph get cut into 3 kernels.",
+   "code": "# softmax: a max-reduce, an exp-sum-reduce and a divide. how many kernels?\nx = Tensor([[1., 2, 3, 4, 5, 6, 7, 8],\n            [0, 0, 0, 0, 1, 1, 1, 1]]).realize()\nout = x.softmax(axis=-1)\n",
+   "file": "ch22_preset_softmax.json",
+   "kernels": [
+    "r_2_8",
+    "r_2_8",
+    "E_2_2_4"
+   ]
+  },
+  {
+   "id": "conv2d",
+   "title": "Conv2d",
+   "blurb": "conv2d = pad + pool (movement) + mul + sum; the windowing becomes index math.",
+   "code": "# conv2d: pool (movement ops) + mul + sum. 1 image, 1 in-channel, 2 filters of 3x3\nx = Tensor([[[[float(i * 6 + j) for j in range(6)] for i in range(6)]]]).realize()  # (1,1,6,6)\nw = Tensor([[[[0., 1, 0], [1, -4, 1], [0, 1, 0]]],\n            [[[1., 1, 1], [1, 1, 1], [1, 1, 1]]]]).realize()                         # (2,1,3,3)\nout = x.conv2d(w)                                                                    # (1,2,4,4)\n",
+   "file": "ch22_preset_conv2d.json",
+   "kernels": [
+    "r_2_4_4_3_3"
+   ]
+  },
+  {
+   "id": "mlp",
+   "title": "MLP fwd+bwd",
+   "blurb": "2-layer MLP, loss.backward(): autograd adds UOps, then forward+backward are scheduled together.",
+   "code": "# a 2-layer MLP forward + backward: autograd builds MORE UOps, all scheduled together\nx  = Tensor([[1., 2, 3], [0, -1, 1]]).realize()                                     # (2,3)\nw1 = Tensor([[.1, -.2, .3, .4], [.5, .6, -.7, .8], [-.9, .1, .2, .3]]).realize()     # (3,4)\nw2 = Tensor([[.2], [-.3], [.4], [.1]]).realize()                                     # (4,1)\nloss = (x @ w1).relu().matmul(w2).square().mean()\nloss.backward()                       # fills .grad of every in-scope float tensor\nout = {\"loss\": loss, \"w1.grad\": w1.grad, \"w2.grad\": w2.grad}\n",
+   "file": "ch22_preset_mlp.json",
+   "kernels": [
+    "r_2_4_3",
+    "r_2_4",
+    "r_2",
+    "r_3_4_2",
+    "r_4_2"
+   ]
+  },
+  {
+   "id": "padslice",
+   "title": "Pad / slice",
+   "blurb": "pad, shrink, flip, permute: movement ops vanish into index arithmetic and a gate.",
+   "code": "# movement ops only: pad, shrink (slice), flip, permute -> index arithmetic + a WHERE for the padding\nx = Tensor([[1., 2, 3], [4, 5, 6]]).realize()\nout = x.pad(((1, 1), (2, 0)))[1:4, ::-1].permute(1, 0) * 10\n",
+   "file": "ch22_preset_padslice.json",
+   "kernels": [
+    "E_3_5"
+   ]
+  },
+  {
+   "id": "fused",
+   "title": "Fused chain",
+   "blurb": "mean -> subtract -> exp2 -> sum: a reduce feeding a broadcast feeding another reduce.",
+   "code": "# a fused chain: reduce -> broadcast back -> elementwise -> reduce\nx = Tensor([[1., 2, 3, 4], [2, 4, 6, 8]]).realize()\nm = x.mean(axis=1, keepdim=True)\nout = ((x - m) * 2).exp2().sum(axis=1)\n",
+   "file": "ch22_preset_fused.json",
+   "kernels": [
+    "r_2_4",
+    "r_2_4"
+   ]
+  }
+ ]
+}

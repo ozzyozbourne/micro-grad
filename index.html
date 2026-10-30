@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tinygrad internals — an interactive study guide</title>
+<link rel="stylesheet" href="assets/vendor/hljs-dark.css">
+<link rel="stylesheet" href="assets/style.css">
+<script src="assets/vendor/highlight.min.js"></script>
+<script src="assets/vendor/dagre.min.js"></script>
+<script src="assets/chapters.js"></script>
+<script src="assets/guide.js"></script>
+<style>
+  .hero { padding: 10px 0 10px; }
+  .hero h1 { font-size: 2.8em; }
+  .hero h1 span { color: var(--blue); }
+  .flow { width: 100%; height: auto; margin: 10px 0 0; }
+  .flow .box { cursor: pointer; }
+  .flow .box rect { transition: all .25s; }
+  .flow .box:hover rect { stroke-width: 3; filter: drop-shadow(0 0 8px currentColor); }
+  .flow text { font-family: var(--mono); fill: var(--fg); }
+  .flow .pkt { filter: drop-shadow(0 0 6px #F4D345); }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; margin: 14px 0; }
+  .card { background: var(--bg2); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; color: var(--fg); display: block; transition: border-color .2s, transform .2s; }
+  .card:hover { border-color: var(--blue); transform: translateY(-2px); text-decoration: none; }
+  .card .n { font-family: var(--mono); color: var(--blue); font-size: 13px; }
+  .card .t { font-weight: 700; font-size: 17px; margin: 2px 0 4px; }
+  .card .b { color: var(--dim); font-size: 14px; line-height: 1.5; }
+  .partname { color: var(--gold); text-transform: uppercase; letter-spacing: .08em; font-size: 13px; margin-top: 30px; }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="sidebar" id="sidebar"></nav>
+<main>
+  <div class="hero">
+    <h1>tiny<span>grad</span>, from the inside</h1>
+    <p class="lede">An interactive, from-first-principles tour of the entire tinygrad compiler. You'll follow a tensor expression from a Python
+      call all the way down to generated C and its execution, with every intermediate stage shown, explained and animated.
+      Everything here comes from the actual source at commit <code>6a404871</code> (tinygrad 0.14.0, Oct 2026): real UOp graphs,
+      real kernels, real outputs.</p>
+  </div>
+
+  <div class="demo">
+    <div class="demo-title">The whole machine in one picture</div>
+    <div class="demo-desc">Press <b>play</b> to send a packet (a tensor expression) through the pipeline. Click any stage to jump to the chapter that explains it.</div>
+    <svg class="flow" id="flow" viewBox="0 0 1000 300"></svg>
+    <div id="flowstep"></div>
+  </div>
+
+  <h2>How to use this guide</h2>
+  <ul>
+    <li><b>Go in order.</b> Chapters build on each other: first the IR and rewrite engine (Part I), then the tensor graph (II), scheduling (III), codegen (IV), runtime (V), and finally everything together (VI).</li>
+    <li><b>Run the examples.</b> Every chapter has self-contained scripts in <code>examples/</code>. From the guide folder:
+      <code>DEV=CPU python3 examples/04_uop_basics.py</code>. Add <code>DEBUG=2</code> (kernel timings), <code>DEBUG=4</code> (generated code) or <code>VIZ=1</code> to see more.</li>
+    <li><b>Play with the demos.</b> Graphs are hoverable (tooltips show the full UOp), steppers can be played or stepped, and most demos use data captured from real tinygrad runs.</li>
+    <li><b>Follow the <span class="hl-gold">⌥ source</span> links.</b> They point to the exact lines at the pinned commit.</li>
+    <li><b>Finish with Chapter 22.</b> The live explorer traces <i>any</i> program you type through every stage.</li>
+  </ul>
+  <div class="callout note">Op colors are the same everywhere in the guide: <span id="leg"></span></div>
+
+  <h2>Chapters</h2>
+  <div id="cards"></div>
+</main>
+</div>
+<script>
+// chapter cards
+const cardsRoot = document.getElementById("cards");
+let grid = null;
+for (const c of CHAPTERS) {
+  if (c.part) { cardsRoot.append(Guide.el("div", { class: "partname" }, c.part)); grid = Guide.el("div", { class: "cards" }); cardsRoot.append(grid); continue; }
+  grid.append(Guide.el("a", { class: "card", href: "chapters/" + c.slug + ".html" },
+    Guide.el("div", { class: "n" }, "CHAPTER " + String(c.n).padStart(2, "0")), Guide.el("div", { class: "t" }, c.title), Guide.el("div", { class: "b" }, c.blurb)));
+}
+document.getElementById("leg").append(Guide.legend());
+
+// pipeline picture
+const stages = [
+  { x: 20,  y: 40,  t: "Tensor API",      s: "a*b+1 .sum()",       c: "#58C4DD", ch: "02-tensor-laziness", cap: "<b>Tensor API.</b> Every method on Tensor is lazy: it returns a new Tensor whose <code>.uop</code> is a bigger UOp graph. Nothing is computed yet." },
+  { x: 215, y: 40,  t: "UOp graph",       s: "lazy DAG",           c: "#9A72AC", ch: "04-uop", cap: "<b>The tensor graph.</b> A DAG of UOps: BUFFER/COPY leaves, movement ops (RESHAPE, EXPAND, …), ALU ops, REDUCE. Built from about two dozen primitives (Ch 4, 7, 8). <code>backward()</code> just adds more UOps (Ch 9)." },
+  { x: 410, y: 40,  t: "rangeify",        s: "shapes → loops",     c: "#5CD0B3", ch: "10-rangeify", cap: "<b>Rangeify.</b> realize() starts scheduling. Each materialized tensor gets RANGE loop variables; movement ops turn into index arithmetic; nothing about shapes or views is left (Ch 10)." },
+  { x: 605, y: 40,  t: "kernel split",    s: "fusion",             c: "#FC6255", ch: "11-kernel-split", cap: "<b>Fusion and kernel split.</b> The graph is cut at buffer boundaries. Each piece becomes one kernel AST (a SINK of STOREs), wrapped in a CALL (Ch 11)." },
+  { x: 800, y: 40,  t: "schedule",        s: "LINEAR of CALLs",    c: "#F0AC5F", ch: "12-schedule", cap: "<b>The schedule.</b> An ordered list of kernel CALLs and copies with buffers assigned and memory planned. It is cached by graph structure, so the next run skips scheduling (Ch 12)." },
+  { x: 800, y: 190, t: "optimize",        s: "OptOps / BEAM",      c: "#F4D345", ch: "14-optimizations", cap: "<b>Optimize.</b> For each kernel AST, ranges are split and retyped (UPCAST, LOCAL, GROUP, UNROLL, TC) by a heuristic or by BEAM search (Ch 13–14)." },
+  { x: 605, y: 190, t: "lower",           s: "expand · decompose", c: "#83C167", ch: "15-lowering", cap: "<b>Lowering.</b> About 30 rewrite passes: expand vectors, devectorize, simplify indexes, decompose transcendentals and unsupported ops, and map ranges to GPU dims (Ch 15)." },
+  { x: 410, y: 190, t: "linearize",       s: "DAG → list",         c: "#9A72AC", ch: "16-linearize-render", cap: "<b>Linearize.</b> The DAG is ordered into a straight-line program with properly nested loops (Ch 16)." },
+  { x: 215, y: 190, t: "render+compile",  s: "C / PTX / LLVM …",   c: "#58C4DD", ch: "16-linearize-render", cap: "<b>Render and compile.</b> A renderer turns UOps into source text (C, CUDA, Metal, PTX, LLVM IR, WGSL) or machine code; the device's Compiler turns that into a binary (Ch 16)." },
+  { x: 20,  y: 190, t: "run",             s: "Device · Buffer",    c: "#83C167", ch: "17-runtime", cap: "<b>Run.</b> run_linear allocates Buffers, loads programs and launches them in order. TinyJit can replay the whole thing without Python overhead (Ch 17–18)." },
+];
+const svg = document.getElementById("flow");
+const W = 180, H = 70;
+const path = [];
+stages.forEach((s, i) => {
+  const g = Guide.el("g", { class: "box", onclick: () => (location.href = "chapters/" + s.ch + ".html") });
+  g.append(Guide.el("rect", { x: s.x, y: s.y, width: W, height: H, rx: 10, fill: s.c + "22", stroke: s.c, "stroke-width": 1.6 }));
+  g.append(Guide.el("text", { x: s.x + W / 2, y: s.y + 30, "text-anchor": "middle", "font-size": 16, "font-weight": 700, fill: s.c }, s.t));
+  g.append(Guide.el("text", { x: s.x + W / 2, y: s.y + 52, "text-anchor": "middle", "font-size": 12, fill: "#9aa3ad" }, s.s));
+  svg.append(g);
+  path.push([s.x + W / 2, s.y + H / 2]);
+  if (i) {
+    const p = stages[i - 1];
+    let d;
+    if (p.y === s.y) d = p.x < s.x ? `M${p.x + W},${p.y + H / 2} L${s.x - 4},${s.y + H / 2}` : `M${p.x},${p.y + H / 2} L${s.x + W + 4},${s.y + H / 2}`;
+    else d = `M${p.x + W / 2},${p.y + H} L${s.x + W / 2},${s.y - 4}`;
+    svg.prepend(Guide.el("path", { d, stroke: "#5b6470", "stroke-width": 2, fill: "none", "marker-end": "url(#ah)" }));
+  }
+});
+svg.prepend(Guide.el("defs", {}, Guide.el("marker", { id: "ah", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: "auto" }, Guide.el("path", { d: "M0,0 L10,5 L0,10 z", fill: "#5b6470" }))));
+svg.append(Guide.el("text", { x: 500, y: 150, "text-anchor": "middle", "font-size": 13, fill: "#9aa3ad" }, "— per kernel: to_program() —"));
+const pkt = Guide.el("circle", { class: "pkt", r: 9, fill: "#F4D345", cx: path[0][0], cy: path[0][1] - 44 });
+svg.append(pkt);
+Guide.stepper("#flowstep", stages.map((s) => ({ caption: s.cap })), async (i) => {
+  const [x, y] = path[i];
+  const cx = +pkt.getAttribute("cx"), cy = +pkt.getAttribute("cy");
+  await Guide.tween(0, 1, 500, (k) => { pkt.setAttribute("cx", cx + (x - cx) * k); pkt.setAttribute("cy", cy + (y - 44 - cy) * k); });
+  Guide.$$(".box rect", svg).forEach((r, j) => r.setAttribute("stroke-width", j === i ? 4 : 1.6));
+}, { autoplayMs: 2600 });
+</script>
+</body>
+</html>

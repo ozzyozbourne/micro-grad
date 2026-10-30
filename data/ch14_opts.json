@@ -1,0 +1,1821 @@
+{
+ "optops": [
+  "TC",
+  "SPLIT",
+  "PADTO",
+  "SWAP"
+ ],
+ "shift": {
+  "before": "%0 = param 16 : dtype=f32 slot=0 device=CPU\n%1 = range 16 : WEAK 0\n%2 = index %0, %1\n%3 = param 16 : dtype=f32 slot=1 device=CPU\n%4 = index %3, %1\n%5 = add %4, 1.0\n%6 = store %2, %5\n%7 = end %6, %1\n%8 = sink %7 : test",
+  "after": "%0 = param 16 : dtype=f32 slot=0 device=CPU\n%1 = range 4 : WEAK 0\n%2 = mul %1, 4\n%3 = range 4 : UPCAST 1\n%4 = add %2, %3\n%5 = index %0, %4\n%6 = param 16 : dtype=f32 slot=1 device=CPU\n%7 = index %6, %4\n%8 = add %7, 1.0\n%9 = store %5, %8\n%10 = end %9, %1, %3\n%11 = sink %10 : test",
+  "after_top": "%0 = param 16 : dtype=f32 slot=0 device=CPU\n%1 = range 4 : UPCAST 1\n%2 = mul %1, 4\n%3 = range 4 : WEAK 0\n%4 = add %2, %3\n%5 = index %0, %4\n%6 = param 16 : dtype=f32 slot=1 device=CPU\n%7 = index %6, %4\n%8 = add %7, 1.0\n%9 = store %5, %8\n%10 = end %9, %1, %3\n%11 = sink %10 : test",
+  "noopt": "\nstruct E_16_args { float* arg0; float* arg1; };\nvoid E_16(const struct E_16_args* args) {\n  float* data0_16 = args->arg0;\n  float* data1_16 = args->arg1;\n  for (int Lidx0 = 0; Lidx0 < 16; Lidx0++) {\n    float val0 = (*(data1_16+Lidx0));\n    *(data0_16+Lidx0) = (val0+1.0f);\n  }\n}\n",
+  "upcast4": "typedef float float4 __attribute__((aligned(4),ext_vector_type(4)));\nstruct E_4_4_args { float* arg0; float* arg1; };\nvoid E_4_4(const struct E_4_4_args* args) {\n  float* data0_16 = args->arg0;\n  float* data1_16 = args->arg1;\n  for (int Lidx0 = 0; Lidx0 < 4; Lidx0++) {\n    int alu0 = (Lidx0<<2);\n    float4 val0 = (*((float4*)((data1_16+alu0))));\n    *((float4*)((data0_16+alu0))) = (float4){(val0[0]+1.0f),(val0[1]+1.0f),(val0[2]+1.0f),(val0[3]+1.0f)};\n  }\n}\n"
+ },
+ "mm_variants": {
+  "CPU (Clang)": {
+   "NOOPT=1": {
+    "name": "r_16_16_16",
+    "opts": [],
+    "src": "\nstruct r_16_16_16_args { float* arg0; float* arg1; float* arg2; };\nvoid r_16_16_16(const struct r_16_16_16_args* args) {\n  float* data0_256 = args->arg0;\n  float* data1_256 = args->arg1;\n  float* data2_256 = args->arg2;\n  float buf0[1];\n  for (int Lidx1 = 0; Lidx1 < 16; Lidx1++) {\n    int alu0 = (Lidx1<<4);\n    for (int Lidx2 = 0; Lidx2 < 16; Lidx2++) {\n      *(buf0+0) = 0.0f;\n      for (int Lidx0 = 0; Lidx0 < 16; Lidx0++) {\n        float val0 = (*(data1_256+(alu0+Lidx0)));\n        float val1 = (*(data2_256+((Lidx0<<4)+Lidx2)));\n        *(buf0+0) = ((*(buf0+0))+(val0*val1));\n      }\n      *(data0_256+(alu0+Lidx2)) = (*(buf0+0));\n    }\n  }\n}\n",
+    "est": {
+     "ops": 8192,
+     "lds": 33792,
+     "mem": 3072
+    },
+    "uops": 46
+   },
+   "default (hand_coded_optimizations)": {
+    "name": "r_16_16_16",
+    "opts": [
+     "Opt(op=OptOps.SPLIT, axis=2, arg=(0, AxisType.UPCAST))"
+    ],
+    "src": "typedef float float4 __attribute__((aligned(4),ext_vector_type(4)));\nstruct r_16_16_16_args { float* arg0; float* arg1; float* arg2; };\nvoid r_16_16_16(const struct r_16_16_16_args* args) {\n  float* data0_256 = args->arg0;\n  float* data1_256 = args->arg1;\n  float* data2_256 = args->arg2;\n  for (int Lidx1 = 0; Lidx1 < 16; Lidx1++) {\n    int alu0 = (Lidx1<<4);\n    float4 val0 = (*((float4*)((data1_256+(alu0+12)))));\n    float4 val1 = (*((float4*)((data1_256+(alu0+4)))));\n    float4 val2 = (*((float4*)((data1_256+(alu0+8)))));\n    float4 val3 = (*((float4*)((data1_256+alu0))));\n    for (int Lidx2 = 0; Lidx2 < 16; Lidx2++) {\n      float val4 = (*(data2_256+(Lidx2+112)));\n      float val5 = (*(data2_256+(Lidx2+128)));\n      float val6 = (*(data2_256+(Lidx2+144)));\n      float val7 = (*(data2_256+(Lidx2+16)));\n      float val8 = (*(data2_256+(Lidx2+160)));\n      float val9 = (*(data2_256+(Lidx2+176)));\n      float val10 = (*(data2_256+(Lidx2+192)));\n      float val11 = (*(data2_256+(Lidx2+208)));\n      float val12 = (*(data2_256+(Lidx2+224)));\n      float val13 = (*(data2_256+(Lidx2+240)));\n      float val14 = (*(data2_256+(Lidx2+32)));\n      float val15 = (*(data2_256+(Lidx2+48)));\n      float val16 = (*(data2_256+(Lidx2+64)));\n      float val17 = (*(data2_256+(Lidx2+80)));\n      float val18 = (*(data2_256+(Lidx2+96)));\n      float val19 = (*(data2_256+Lidx2));\n      *(data0_256+(alu0+Lidx2)) = ((val3[0]*val19)+(val3[1]*val7)+(val3[2]*val14)+(val3[3]*val15)+(val1[0]*val16)+(val1[1]*val17)+(val1[2]*val18)+(val1[3]*val4)+(val2[0]*val5)+(val2[1]*val6)+(val2[2]*val8)+(val2[3]*val9)+(val0[0]*val10)+(val0[1]*val11)+(val0[2]*val12)+(val0[3]*val13));\n    }\n  }\n}\n",
+    "est": {
+     "ops": 7936,
+     "lds": 18432,
+     "mem": 3072
+    },
+    "uops": 163
+   },
+   "manual opts_to_apply": {
+    "name": "r_4_4_4_4_4_4",
+    "opts": [
+     "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=4, arg=(4, AxisType.UPCAST))"
+    ],
+    "src": "typedef float float4 __attribute__((aligned(4),ext_vector_type(4)));\nstruct r_4_4_4_4_4_4_args { float* arg0; float* arg1; float* arg2; };\nvoid r_4_4_4_4_4_4(const struct r_4_4_4_4_4_4_args* args) {\n  float* data0_256 = args->arg0;\n  float* data1_256 = args->arg1;\n  float* data2_256 = args->arg2;\n  float buf0[16];\n  for (int Lidx1 = 0; Lidx1 < 4; Lidx1++) {\n    int alu0 = (Lidx1<<6);\n    for (int Lidx2 = 0; Lidx2 < 4; Lidx2++) {\n      int alu1 = (Lidx2<<2);\n      *(buf0+0) = 0.0f;\n      *(buf0+1) = 0.0f;\n      *(buf0+10) = 0.0f;\n      *(buf0+11) = 0.0f;\n      *(buf0+12) = 0.0f;\n      *(buf0+13) = 0.0f;\n      *(buf0+14) = 0.0f;\n      *(buf0+15) = 0.0f;\n      *(buf0+2) = 0.0f;\n      *(buf0+3) = 0.0f;\n      *(buf0+4) = 0.0f;\n      *(buf0+5) = 0.0f;\n      *(buf0+6) = 0.0f;\n      *(buf0+7) = 0.0f;\n      *(buf0+8) = 0.0f;\n      *(buf0+9) = 0.0f;\n      for (int Lidx0 = 0; Lidx0 < 4; Lidx0++) {\n        int alu18 = ((Lidx0<<2)+alu0);\n        float4 val0 = (*((float4*)((data1_256+(alu18+16)))));\n        float4 val1 = (*((float4*)((data1_256+(alu18+32)))));\n        float4 val2 = (*((float4*)((data1_256+(alu18+48)))));\n        float4 val3 = (*((float4*)((data1_256+alu18))));\n        int alu19 = ((Lidx0<<6)+alu1);\n        float4 val4 = (*((float4*)((data2_256+(alu19+16)))));\n        float4 val5 = (*((float4*)((data2_256+(alu19+32)))));\n        float4 val6 = (*((float4*)((data2_256+(alu19+48)))));\n        float4 val7 = (*((float4*)((data2_256+alu19))));\n        *(buf0+0) = ((*(buf0+0))+(val3[0]*val7[0])+(val3[1]*val4[0])+(val3[2]*val5[0])+(val3[3]*val6[0]));\n        *(buf0+1) = ((*(buf0+1))+(val3[0]*val7[1])+(val3[1]*val4[1])+(val3[2]*val5[1])+(val3[3]*val6[1]));\n        *(buf0+10) = ((*(buf0+10))+(val1[0]*val7[2])+(val1[1]*val4[2])+(val1[2]*val5[2])+(val1[3]*val6[2]));\n        *(buf0+11) = ((*(buf0+11))+(val1[0]*val7[3])+(val1[1]*val4[3])+(val1[2]*val5[3])+(val1[3]*val6[3]));\n        *(buf0+12) = ((*(buf0+12))+(val2[0]*val7[0])+(val2[1]*val4[0])+(val2[2]*val5[0])+(val2[3]*val6[0]));\n        *(buf0+13) = ((*(buf0+13))+(val2[0]*val7[1])+(val2[1]*val4[1])+(val2[2]*val5[1])+(val2[3]*val6[1]));\n        *(buf0+14) = ((*(buf0+14))+(val2[0]*val7[2])+(val2[1]*val4[2])+(val2[2]*val5[2])+(val2[3]*val6[2]));\n        *(buf0+15) = ((*(buf0+15))+(val2[0]*val7[3])+(val2[1]*val4[3])+(val2[2]*val5[3])+(val2[3]*val6[3]));\n        *(buf0+2) = ((*(buf0+2))+(val3[0]*val7[2])+(val3[1]*val4[2])+(val3[2]*val5[2])+(val3[3]*val6[2]));\n        *(buf0+3) = ((*(buf0+3))+(val3[0]*val7[3])+(val3[1]*val4[3])+(val3[2]*val5[3])+(val3[3]*val6[3]));\n        *(buf0+4) = ((*(buf0+4))+(val0[0]*val7[0])+(val0[1]*val4[0])+(val0[2]*val5[0])+(val0[3]*val6[0]));\n        *(buf0+5) = ((*(buf0+5))+(val0[0]*val7[1])+(val0[1]*val4[1])+(val0[2]*val5[1])+(val0[3]*val6[1]));\n        *(buf0+6) = ((*(buf0+6))+(val0[0]*val7[2])+(val0[1]*val4[2])+(val0[2]*val5[2])+(val0[3]*val6[2]));\n        *(buf0+7) = ((*(buf0+7))+(val0[0]*val7[3])+(val0[1]*val4[3])+(val0[2]*val5[3])+(val0[3]*val6[3]));\n        *(buf0+8) = ((*(buf0+8))+(val1[0]*val7[0])+(val1[1]*val4[0])+(val1[2]*val5[0])+(val1[3]*val6[0]));\n        *(buf0+9) = ((*(buf0+9))+(val1[0]*val7[1])+(val1[1]*val4[1])+(val1[2]*val5[1])+(val1[3]*val6[1]));\n      }\n      int alu37 = (alu0+alu1);\n      *((float4*)((data0_256+(alu37+16)))) = (float4){(*(buf0+4)),(*(buf0+5)),(*(buf0+6)),(*(buf0+7))};\n      *((float4*)((data0_256+(alu37+32)))) = (float4){(*(buf0+8)),(*(buf0+9)),(*(buf0+10)),(*(buf0+11))};\n      *((float4*)((data0_256+(alu37+48)))) = (float4){(*(buf0+12)),(*(buf0+13)),(*(buf0+14)),(*(buf0+15))};\n      *((float4*)((data0_256+alu37))) = (float4){(*(buf0+0)),(*(buf0+1)),(*(buf0+2)),(*(buf0+3))};\n    }\n  }\n}\n",
+    "est": {
+     "ops": 8192,
+     "lds": 9216,
+     "mem": 3072
+    },
+    "uops": 376
+   }
+  },
+  "OpenCL": {
+   "NOOPT=1": {
+    "name": "r_16_16_16",
+    "opts": [],
+    "src": "__kernel void r_16_16_16(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[1];\n  int gidx0 = get_group_id(0); /* 16 */\n  int gidx1 = get_group_id(1); /* 16 */\n  int alu0 = (gidx1<<4);\n  *(buf0+0) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 16; Lidx0++) {\n    float val0 = (*(data1_256+(alu0+Lidx0)));\n    float val1 = (*(data2_256+((Lidx0<<4)+gidx0)));\n    *(buf0+0) = ((*(buf0+0))+(val0*val1));\n  }\n  *(data0_256+(alu0+gidx0)) = (*(buf0+0));\n}",
+    "est": {
+     "ops": 8192,
+     "lds": 33792,
+     "mem": 3072
+    },
+    "uops": 42
+   },
+   "default (hand_coded_optimizations)": {
+    "name": "r_16_16_16",
+    "opts": [
+     "Opt(op=OptOps.SPLIT, axis=2, arg=(16, AxisType.LOCAL, True))"
+    ],
+    "src": "__kernel void r_16_16_16(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[1];\n  __attribute__ ((aligned (16))) __local float buf1[16];\n  int gidx1 = get_group_id(1); /* 16 */\n  int lidx0 = get_local_id(0); /* 16 */\n  int alu0 = (gidx1<<4);\n  float val0 = (*(data1_256+(alu0+lidx0)));\n  int gidx0 = get_group_id(0); /* 16 */\n  float val1 = (*(data2_256+((lidx0<<4)+gidx0)));\n  *(buf1+lidx0) = (val0*val1);\n  barrier(CLK_LOCAL_MEM_FENCE);\n  *(buf0+0) = 0.0f;\n  for (int Lidx103 = 0; Lidx103 < 16; Lidx103++) {\n    float val2 = (*(buf1+Lidx103));\n    *(buf0+0) = ((*(buf0+0))+val2);\n  }\n  if ((lidx0==0)) {\n    *(data0_256+(alu0+gidx0)) = (*(buf0+0));\n  }\n}",
+    "est": {
+     "ops": 73728,
+     "lds": 312320,
+     "mem": 3072
+    },
+    "uops": 53
+   },
+   "manual opts_to_apply": {
+    "name": "r_4_4_4_4_16",
+    "opts": [
+     "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.LOCAL))"
+    ],
+    "src": "__kernel void r_4_4_4_4_16(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[16];\n  int gidx0 = get_group_id(0); /* 4 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int alu0 = (gidx0<<2);\n  int alu1 = (lidx0<<6);\n  *(buf0+0) = 0.0f;\n  *(buf0+1) = 0.0f;\n  *(buf0+10) = 0.0f;\n  *(buf0+11) = 0.0f;\n  *(buf0+12) = 0.0f;\n  *(buf0+13) = 0.0f;\n  *(buf0+14) = 0.0f;\n  *(buf0+15) = 0.0f;\n  *(buf0+2) = 0.0f;\n  *(buf0+3) = 0.0f;\n  *(buf0+4) = 0.0f;\n  *(buf0+5) = 0.0f;\n  *(buf0+6) = 0.0f;\n  *(buf0+7) = 0.0f;\n  *(buf0+8) = 0.0f;\n  *(buf0+9) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 16; Lidx0++) {\n    int alu18 = (alu1+Lidx0);\n    float val0 = (*(data1_256+(alu18+16)));\n    float val1 = (*(data1_256+(alu18+32)));\n    float val2 = (*(data1_256+(alu18+48)));\n    float val3 = (*(data1_256+alu18));\n    float4 val4 = (*((__global float4*)((data2_256+(alu0+(Lidx0<<4))))));\n    *(buf0+0) = ((*(buf0+0))+(val3*val4.x));\n    *(buf0+1) = ((*(buf0+1))+(val0*val4.x));\n    *(buf0+10) = ((*(buf0+10))+(val1*val4.z));\n    *(buf0+11) = ((*(buf0+11))+(val2*val4.z));\n    *(buf0+12) = ((*(buf0+12))+(val3*val4.w));\n    *(buf0+13) = ((*(buf0+13))+(val0*val4.w));\n    *(buf0+14) = ((*(buf0+14))+(val1*val4.w));\n    *(buf0+15) = ((*(buf0+15))+(val2*val4.w));\n    *(buf0+2) = ((*(buf0+2))+(val1*val4.x));\n    *(buf0+3) = ((*(buf0+3))+(val2*val4.x));\n    *(buf0+4) = ((*(buf0+4))+(val3*val4.y));\n    *(buf0+5) = ((*(buf0+5))+(val0*val4.y));\n    *(buf0+6) = ((*(buf0+6))+(val1*val4.y));\n    *(buf0+7) = ((*(buf0+7))+(val2*val4.y));\n    *(buf0+8) = ((*(buf0+8))+(val3*val4.z));\n    *(buf0+9) = ((*(buf0+9))+(val0*val4.z));\n  }\n  int alu36 = (alu0+alu1);\n  *((__global float4*)((data0_256+(alu36+16)))) = (float4)((*(buf0+1)),(*(buf0+5)),(*(buf0+9)),(*(buf0+13)));\n  *((__global float4*)((data0_256+(alu36+32)))) = (float4)((*(buf0+2)),(*(buf0+6)),(*(buf0+10)),(*(buf0+14)));\n  *((__global float4*)((data0_256+(alu36+48)))) = (float4)((*(buf0+3)),(*(buf0+7)),(*(buf0+11)),(*(buf0+15)));\n  *((__global float4*)((data0_256+alu36))) = (float4)((*(buf0+0)),(*(buf0+4)),(*(buf0+8)),(*(buf0+12)));\n}",
+    "est": {
+     "ops": 8192,
+     "lds": 9216,
+     "mem": 3072
+    },
+    "uops": 238
+   }
+  }
+ },
+ "traces": {
+  "matmul 64x64 \u00b7 CPU": {
+   "start": [
+    [
+     64,
+     "WEAK"
+    ],
+    [
+     64,
+     "WEAK"
+    ],
+    [
+     64,
+     "WEAK"
+    ]
+   ],
+   "log": [
+    {
+     "opt": "Opt(op=OptOps.TC, axis=0, arg=(-1, 0, 1))",
+     "ok": false,
+     "err": "no tensor core available",
+     "shape": [
+      [
+       64,
+       "WEAK"
+      ],
+      [
+       64,
+       "WEAK"
+      ],
+      [
+       64,
+       "WEAK"
+      ]
+     ],
+     "inner": false
+    },
+    {
+     "opt": "Opt(op=OptOps.TC, axis=1, arg=(-1, 0, 1))",
+     "ok": false,
+     "err": "no tensor core available",
+     "shape": [
+      [
+       64,
+       "WEAK"
+      ],
+      [
+       64,
+       "WEAK"
+      ],
+      [
+       64,
+       "WEAK"
+      ]
+     ],
+     "inner": false
+    },
+    {
+     "opt": "Opt(op=OptOps.TC, axis=2, arg=(-1, 0, 1))",
+     "ok": false,
+     "err": "no tensor core available",
+     "shape": [
+      [
+       64,
+       "WEAK"
+      ],
+      [
+       64,
+       "WEAK"
+      ],
+      [
+       64,
+       "WEAK"
+      ]
+     ],
+     "inner": false
+    },
+    {
+     "opt": "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+     "ok": true,
+     "shape": [
+      [
+       64,
+       "WEAK"
+      ],
+      [
+       16,
+       "WEAK"
+      ],
+      [
+       4,
+       "UPCAST"
+      ],
+      [
+       64,
+       "WEAK"
+      ]
+     ],
+     "inner": false
+    },
+    {
+     "opt": "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))",
+     "ok": true,
+     "shape": [
+      [
+       16,
+       "WEAK"
+      ],
+      [
+       16,
+       "WEAK"
+      ],
+      [
+       4,
+       "UPCAST"
+      ],
+      [
+       4,
+       "UPCAST"
+      ],
+      [
+       64,
+       "WEAK"
+      ]
+     ],
+     "inner": false
+    },
+    {
+     "opt": "Opt(op=OptOps.SPLIT, axis=4, arg=(4, AxisType.UPCAST))",
+     "ok": true,
+     "shape": [
+      [
+       16,
+       "WEAK"
+      ],
+      [
+       16,
+       "WEAK"
+      ],
+      [
+       4,
+       "UPCAST"
+      ],
+      [
+       4,
+       "UPCAST"
+      ],
+      [
+       16,
+       "WEAK"
+      ],
+      [
+       4,
+       "UPCAST"
+      ]
+     ],
+     "inner": false
+    }
+   ],
+   "final": [
+    [
+     16,
+     "WEAK"
+    ],
+    [
+     16,
+     "WEAK"
+    ],
+    [
+     4,
+     "UPCAST"
+    ],
+    [
+     4,
+     "UPCAST"
+    ],
+    [
+     16,
+     "WEAK"
+    ],
+    [
+     4,
+     "UPCAST"
+    ]
+   ],
+   "opts": [
+    "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+    "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))",
+    "Opt(op=OptOps.SPLIT, axis=4, arg=(4, AxisType.UPCAST))"
+   ],
+   "name": "r_16_16_4_4_16_4",
+   "src": "typedef float float4 __attribute__((aligned(4),ext_vector_type(4)));\nstruct r_16_16_4_4_16_4_args { float* arg0; float* arg1; float* arg2; };\nvoid r_16_16_4_4_16_4(const struct r_16_16_4_4_16_4_args* args) {\n  float* data0_4096 = args->arg0;\n  float* data1_4096 = args->arg1;\n  float* data2_4096 = args->arg2;\n  float buf0[16];\n  for (int Lidx1 = 0; Lidx1 < 16; Lidx1++) {\n    int alu0 = (Lidx1<<8);\n    for (int Lidx2 = 0; Lidx2 < 16; Lidx2++) {\n      int alu1 = (Lidx2<<2);\n      *(buf0+0) = 0.0f;\n      *(buf0+1) = 0.0f;\n      *(buf0+10) = 0.0f;\n      *(buf0+11) = 0.0f;\n      *(buf0+12) = 0.0f;\n      *(buf0+13) = 0.0f;\n      *(buf0+14) = 0.0f;\n      *(buf0+15) = 0.0f;\n      *(buf0+2) = 0.0f;\n      *(buf0+3) = 0.0f;\n      *(buf0+4) = 0.0f;\n      *(buf0+5) = 0.0f;\n      *(buf0+6) = 0.0f;\n      *(buf0+7) = 0.0f;\n      *(buf0+8) = 0.0f;\n      *(buf0+9) = 0.0f;\n      for (int Lidx0 = 0; Lidx0 < 16; Lidx0++) {\n        int alu18 = ((Lidx0<<2)+alu0);\n        float4 val0 = (*((float4*)((data1_4096+(alu18+128)))));\n        float4 val1 = (*((float4*)((data1_4096+(alu18+192)))));\n        float4 val2 = (*((float4*)((data1_4096+(alu18+64)))));\n        float4 val3 = (*((float4*)((data1_4096+alu18))));\n        int alu19 = ((Lidx0<<8)+alu1);\n        float4 val4 = (*((float4*)((data2_4096+(alu19+128)))));\n        float4 val5 = (*((float4*)((data2_4096+(alu19+192)))));\n        float4 val6 = (*((float4*)((data2_4096+(alu19+64)))));\n        float4 val7 = (*((float4*)((data2_4096+alu19))));\n        *(buf0+0) = ((*(buf0+0))+(val3[0]*val7[0])+(val3[1]*val6[0])+(val3[2]*val4[0])+(val3[3]*val5[0]));\n        *(buf0+1) = ((*(buf0+1))+(val3[0]*val7[1])+(val3[1]*val6[1])+(val3[2]*val4[1])+(val3[3]*val5[1]));\n        *(buf0+10) = ((*(buf0+10))+(val0[0]*val7[2])+(val0[1]*val6[2])+(val0[2]*val4[2])+(val0[3]*val5[2]));\n        *(buf0+11) = ((*(buf0+11))+(val0[0]*val7[3])+(val0[1]*val6[3])+(val0[2]*val4[3])+(val0[3]*val5[3]));\n        *(buf0+12) = ((*(buf0+12))+(val1[0]*val7[0])+(val1[1]*val6[0])+(val1[2]*val4[0])+(val1[3]*val5[0]));\n        *(buf0+13) = ((*(buf0+13))+(val1[0]*val7[1])+(val1[1]*val6[1])+(val1[2]*val4[1])+(val1[3]*val5[1]));\n        *(buf0+14) = ((*(buf0+14))+(val1[0]*val7[2])+(val1[1]*val6[2])+(val1[2]*val4[2])+(val1[3]*val5[2]));\n        *(buf0+15) = ((*(buf0+15))+(val1[0]*val7[3])+(val1[1]*val6[3])+(val1[2]*val4[3])+(val1[3]*val5[3]));\n        *(buf0+2) = ((*(buf0+2))+(val3[0]*val7[2])+(val3[1]*val6[2])+(val3[2]*val4[2])+(val3[3]*val5[2]));\n        *(buf0+3) = ((*(buf0+3))+(val3[0]*val7[3])+(val3[1]*val6[3])+(val3[2]*val4[3])+(val3[3]*val5[3]));\n        *(buf0+4) = ((*(buf0+4))+(val2[0]*val7[0])+(val2[1]*val6[0])+(val2[2]*val4[0])+(val2[3]*val5[0]));\n        *(buf0+5) = ((*(buf0+5))+(val2[0]*val7[1])+(val2[1]*val6[1])+(val2[2]*val4[1])+(val2[3]*val5[1]));\n        *(buf0+6) = ((*(buf0+6))+(val2[0]*val7[2])+(val2[1]*val6[2])+(val2[2]*val4[2])+(val2[3]*val5[2]));\n        *(buf0+7) = ((*(buf0+7))+(val2[0]*val7[3])+(val2[1]*val6[3])+(val2[2]*val4[3])+(val2[3]*val5[3]));\n        *(buf0+8) = ((*(buf0+8))+(val0[0]*val7[0])+(val0[1]*val6[0])+(val0[2]*val4[0])+(val0[3]*val5[0]));\n        *(buf0+9) = ((*(buf0+9))+(val0[0]*val7[1])+(val0[1]*val6[1])+(val0[2]*val4[1])+(val0[3]*val5[1]));\n      }\n      int alu37 = (alu0+alu1);\n      *((float4*)((data0_4096+(alu37+128)))) = (float4){(*(buf0+8)),(*(buf0+9)),(*(buf0+10)),(*(buf0+11))};\n      *((float4*)((data0_4096+(alu37+192)))) = (float4){(*(buf0+12)),(*(buf0+13)),(*(buf0+14)),(*(buf0+15))};\n      *((float4*)((data0_4096+(alu37+64)))) = (float4){(*(buf0+4)),(*(buf0+5)),(*(buf0+6)),(*(buf0+7))};\n      *((float4*)((data0_4096+alu37))) = (float4){(*(buf0+0)),(*(buf0+1)),(*(buf0+2)),(*(buf0+3))};\n    }\n  }\n}\n",
+   "est": {
+    "ops": 524288,
+    "lds": 540672,
+    "mem": 49152
+   }
+  },
+  "matmul 64x64 \u00b7 OpenCL": {
+   "start": [
+    [
+     64,
+     "GLOBAL"
+    ],
+    [
+     64,
+     "GLOBAL"
+    ],
+    [
+     64,
+     "WEAK"
+    ]
+   ],
+   "log": [
+    {
+     "opt": "Opt(op=OptOps.TC, axis=0, arg=(-1, 0, 1))",
+     "ok": false,
+     "err": "no tensor core available",
+     "shape": [
+      [
+       64,
+       "GLOBAL"
+      ],
+      [
+       64,
+       "GLOBAL"
+      ],
+      [
+       64,
+       "WEAK"
+      ]
+     ],
+     "inner": false
+    },
+    {
+     "opt": "Opt(op=OptOps.TC, axis=1, arg=(-1, 0, 1))",
+     "ok": false,
+     "err": "no tensor core available",
+     "shape": [
+      [
+       64,
+       "GLOBAL"
+      ],
+      [
+       64,
+       "GLOBAL"
+      ],
+      [
+       64,
+       "WEAK"
+      ]
+     ],
+     "inner": false
+    },
+    {
+     "opt": "Opt(op=OptOps.TC, axis=2, arg=(-1, 0, 1))",
+     "ok": false,
+     "err": "no tensor core available",
+     "shape": [
+      [
+       64,
+       "GLOBAL"
+      ],
+      [
+       64,
+       "GLOBAL"
+      ],
+      [
+       64,
+       "WEAK"
+      ]
+     ],
+     "inner": false
+    },
+    {
+     "opt": "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+     "ok": true,
+     "shape": [
+      [
+       64,
+       "GLOBAL"
+      ],
+      [
+       16,
+       "GLOBAL"
+      ],
+      [
+       4,
+       "UPCAST"
+      ],
+      [
+       64,
+       "WEAK"
+      ]
+     ],
+     "inner": false
+    },
+    {
+     "opt": "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))",
+     "ok": true,
+     "shape": [
+      [
+       16,
+       "GLOBAL"
+      ],
+      [
+       16,
+       "GLOBAL"
+      ],
+      [
+       4,
+       "UPCAST"
+      ],
+      [
+       4,
+       "UPCAST"
+      ],
+      [
+       64,
+       "WEAK"
+      ]
+     ],
+     "inner": false
+    },
+    {
+     "opt": "Opt(op=OptOps.SPLIT, axis=4, arg=(4, AxisType.UPCAST))",
+     "ok": true,
+     "shape": [
+      [
+       16,
+       "GLOBAL"
+      ],
+      [
+       16,
+       "GLOBAL"
+      ],
+      [
+       4,
+       "UPCAST"
+      ],
+      [
+       4,
+       "UPCAST"
+      ],
+      [
+       16,
+       "WEAK"
+      ],
+      [
+       4,
+       "UPCAST"
+      ]
+     ],
+     "inner": false
+    },
+    {
+     "opt": "Opt(op=OptOps.SPLIT, axis=0, arg=(8, AxisType.LOCAL))",
+     "ok": true,
+     "shape": [
+      [
+       2,
+       "GLOBAL"
+      ],
+      [
+       16,
+       "GLOBAL"
+      ],
+      [
+       8,
+       "LOCAL"
+      ],
+      [
+       4,
+       "UPCAST"
+      ],
+      [
+       4,
+       "UPCAST"
+      ],
+      [
+       16,
+       "WEAK"
+      ],
+      [
+       4,
+       "UPCAST"
+      ]
+     ],
+     "inner": false
+    },
+    {
+     "opt": "Opt(op=OptOps.SPLIT, axis=1, arg=(16, AxisType.LOCAL))",
+     "ok": true,
+     "shape": [
+      [
+       2,
+       "GLOBAL"
+      ],
+      [
+       8,
+       "LOCAL"
+      ],
+      [
+       16,
+       "LOCAL"
+      ],
+      [
+       4,
+       "UPCAST"
+      ],
+      [
+       4,
+       "UPCAST"
+      ],
+      [
+       16,
+       "WEAK"
+      ],
+      [
+       4,
+       "UPCAST"
+      ]
+     ],
+     "inner": false
+    }
+   ],
+   "final": [
+    [
+     2,
+     "GLOBAL"
+    ],
+    [
+     8,
+     "LOCAL"
+    ],
+    [
+     16,
+     "LOCAL"
+    ],
+    [
+     4,
+     "UPCAST"
+    ],
+    [
+     4,
+     "UPCAST"
+    ],
+    [
+     16,
+     "WEAK"
+    ],
+    [
+     4,
+     "UPCAST"
+    ]
+   ],
+   "opts": [
+    "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+    "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))",
+    "Opt(op=OptOps.SPLIT, axis=4, arg=(4, AxisType.UPCAST))",
+    "Opt(op=OptOps.SPLIT, axis=0, arg=(8, AxisType.LOCAL))",
+    "Opt(op=OptOps.SPLIT, axis=1, arg=(16, AxisType.LOCAL))"
+   ],
+   "name": "r_2_8_16_4_4_16_4",
+   "src": "__kernel void r_2_8_16_4_4_16_4(__global float* data0_4096, __global float* data1_4096, __global float* data2_4096) {\n  float buf0[16];\n  int gidx0 = get_group_id(0); /* 2 */\n  int lidx0 = get_local_id(0); /* 8 */\n  int lidx1 = get_local_id(1); /* 16 */\n  int alu0 = ((gidx0<<11)+(lidx0<<8));\n  int alu1 = (lidx1<<2);\n  *(buf0+0) = 0.0f;\n  *(buf0+1) = 0.0f;\n  *(buf0+10) = 0.0f;\n  *(buf0+11) = 0.0f;\n  *(buf0+12) = 0.0f;\n  *(buf0+13) = 0.0f;\n  *(buf0+14) = 0.0f;\n  *(buf0+15) = 0.0f;\n  *(buf0+2) = 0.0f;\n  *(buf0+3) = 0.0f;\n  *(buf0+4) = 0.0f;\n  *(buf0+5) = 0.0f;\n  *(buf0+6) = 0.0f;\n  *(buf0+7) = 0.0f;\n  *(buf0+8) = 0.0f;\n  *(buf0+9) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 16; Lidx0++) {\n    int alu18 = (alu0+(Lidx0<<2));\n    float4 val0 = (*((__global float4*)((data1_4096+(alu18+128)))));\n    float4 val1 = (*((__global float4*)((data1_4096+(alu18+192)))));\n    float4 val2 = (*((__global float4*)((data1_4096+(alu18+64)))));\n    float4 val3 = (*((__global float4*)((data1_4096+alu18))));\n    int alu19 = (alu1+(Lidx0<<8));\n    float4 val4 = (*((__global float4*)((data2_4096+(alu19+128)))));\n    float4 val5 = (*((__global float4*)((data2_4096+(alu19+192)))));\n    float4 val6 = (*((__global float4*)((data2_4096+(alu19+64)))));\n    float4 val7 = (*((__global float4*)((data2_4096+alu19))));\n    *(buf0+0) = ((*(buf0+0))+(val3.x*val7.x)+(val3.y*val6.x)+(val3.z*val4.x)+(val3.w*val5.x));\n    *(buf0+1) = ((*(buf0+1))+(val3.x*val7.y)+(val3.y*val6.y)+(val3.z*val4.y)+(val3.w*val5.y));\n    *(buf0+10) = ((*(buf0+10))+(val0.x*val7.z)+(val0.y*val6.z)+(val0.z*val4.z)+(val0.w*val5.z));\n    *(buf0+11) = ((*(buf0+11))+(val0.x*val7.w)+(val0.y*val6.w)+(val0.z*val4.w)+(val0.w*val5.w));\n    *(buf0+12) = ((*(buf0+12))+(val1.x*val7.x)+(val1.y*val6.x)+(val1.z*val4.x)+(val1.w*val5.x));\n    *(buf0+13) = ((*(buf0+13))+(val1.x*val7.y)+(val1.y*val6.y)+(val1.z*val4.y)+(val1.w*val5.y));\n    *(buf0+14) = ((*(buf0+14))+(val1.x*val7.z)+(val1.y*val6.z)+(val1.z*val4.z)+(val1.w*val5.z));\n    *(buf0+15) = ((*(buf0+15))+(val1.x*val7.w)+(val1.y*val6.w)+(val1.z*val4.w)+(val1.w*val5.w));\n    *(buf0+2) = ((*(buf0+2))+(val3.x*val7.z)+(val3.y*val6.z)+(val3.z*val4.z)+(val3.w*val5.z));\n    *(buf0+3) = ((*(buf0+3))+(val3.x*val7.w)+(val3.y*val6.w)+(val3.z*val4.w)+(val3.w*val5.w));\n    *(buf0+4) = ((*(buf0+4))+(val2.x*val7.x)+(val2.y*val6.x)+(val2.z*val4.x)+(val2.w*val5.x));\n    *(buf0+5) = ((*(buf0+5))+(val2.x*val7.y)+(val2.y*val6.y)+(val2.z*val4.y)+(val2.w*val5.y));\n    *(buf0+6) = ((*(buf0+6))+(val2.x*val7.z)+(val2.y*val6.z)+(val2.z*val4.z)+(val2.w*val5.z));\n    *(buf0+7) = ((*(buf0+7))+(val2.x*val7.w)+(val2.y*val6.w)+(val2.z*val4.w)+(val2.w*val5.w));\n    *(buf0+8) = ((*(buf0+8))+(val0.x*val7.x)+(val0.y*val6.x)+(val0.z*val4.x)+(val0.w*val5.x));\n    *(buf0+9) = ((*(buf0+9))+(val0.x*val7.y)+(val0.y*val6.y)+(val0.z*val4.y)+(val0.w*val5.y));\n  }\n  int alu37 = (alu0+alu1);\n  *((__global float4*)((data0_4096+(alu37+128)))) = (float4)((*(buf0+8)),(*(buf0+9)),(*(buf0+10)),(*(buf0+11)));\n  *((__global float4*)((data0_4096+(alu37+192)))) = (float4)((*(buf0+12)),(*(buf0+13)),(*(buf0+14)),(*(buf0+15)));\n  *((__global float4*)((data0_4096+(alu37+64)))) = (float4)((*(buf0+4)),(*(buf0+5)),(*(buf0+6)),(*(buf0+7)));\n  *((__global float4*)((data0_4096+alu37))) = (float4)((*(buf0+0)),(*(buf0+1)),(*(buf0+2)),(*(buf0+3)));\n}",
+   "est": {
+    "ops": 524288,
+    "lds": 540672,
+    "mem": 49152
+   }
+  },
+  "sum (64,256)\u2192(64,) \u00b7 OpenCL": {
+   "start": [
+    [
+     64,
+     "GLOBAL"
+    ],
+    [
+     256,
+     "WEAK"
+    ]
+   ],
+   "log": [
+    {
+     "opt": "Opt(op=OptOps.TC, axis=0, arg=(-1, 0, 1))",
+     "ok": false,
+     "err": "no tensor core available",
+     "shape": [
+      [
+       64,
+       "GLOBAL"
+      ],
+      [
+       256,
+       "WEAK"
+      ]
+     ],
+     "inner": false
+    },
+    {
+     "opt": "Opt(op=OptOps.TC, axis=1, arg=(-1, 0, 1))",
+     "ok": false,
+     "err": "no tensor core available",
+     "shape": [
+      [
+       64,
+       "GLOBAL"
+      ],
+      [
+       256,
+       "WEAK"
+      ]
+     ],
+     "inner": false
+    },
+    {
+     "opt": "Opt(op=OptOps.TC, axis=2, arg=(-1, 0, 1))",
+     "ok": false,
+     "err": "no tensor core available",
+     "shape": [
+      [
+       64,
+       "GLOBAL"
+      ],
+      [
+       256,
+       "WEAK"
+      ]
+     ],
+     "inner": false
+    },
+    {
+     "opt": "Opt(op=OptOps.SPLIT, axis=1, arg=(16, AxisType.LOCAL, True))",
+     "ok": true,
+     "shape": [
+      [
+       64,
+       "GLOBAL"
+      ],
+      [
+       16,
+       "LOCAL"
+      ],
+      [
+       16,
+       "WEAK"
+      ]
+     ],
+     "inner": false
+    }
+   ],
+   "final": [
+    [
+     64,
+     "GLOBAL"
+    ],
+    [
+     16,
+     "LOCAL"
+    ],
+    [
+     16,
+     "WEAK"
+    ]
+   ],
+   "opts": [
+    "Opt(op=OptOps.SPLIT, axis=1, arg=(16, AxisType.LOCAL, True))"
+   ],
+   "name": "r_64_16_16",
+   "src": "__kernel void r_64_16_16(__global float* data0_64, __global float* data1_16384) {\n  float buf0[1];\n  float buf1[1];\n  __attribute__ ((aligned (16))) __local float buf2[16];\n  int gidx0 = get_group_id(0); /* 64 */\n  int lidx0 = get_local_id(0); /* 16 */\n  *(buf0+0) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 16; Lidx0++) {\n    float val0 = (*(data1_16384+((lidx0<<4)+Lidx0+(gidx0<<8))));\n    *(buf0+0) = ((*(buf0+0))+val0);\n  }\n  *(buf2+lidx0) = (*(buf0+0));\n  barrier(CLK_LOCAL_MEM_FENCE);\n  *(buf1+0) = 0.0f;\n  for (int Lidx102 = 0; Lidx102 < 16; Lidx102++) {\n    float val1 = (*(buf2+Lidx102));\n    *(buf1+0) = ((*(buf1+0))+val1);\n  }\n  if ((lidx0==0)) {\n    *(data0_64+gidx0) = (*(buf1+0));\n  }\n}",
+   "est": {
+    "ops": 33792,
+    "lds": 139264,
+    "mem": 65792
+   }
+  },
+  "sum 4096\u2192() \u00b7 OpenCL": {
+   "start": [
+    [
+     4096,
+     "WEAK"
+    ]
+   ],
+   "log": [
+    {
+     "opt": "Opt(op=OptOps.TC, axis=0, arg=(-1, 0, 1))",
+     "ok": false,
+     "err": "no tensor core available",
+     "shape": [
+      [
+       4096,
+       "WEAK"
+      ]
+     ],
+     "inner": false
+    },
+    {
+     "opt": "Opt(op=OptOps.TC, axis=1, arg=(-1, 0, 1))",
+     "ok": false,
+     "err": "no tensor core available",
+     "shape": [
+      [
+       4096,
+       "WEAK"
+      ]
+     ],
+     "inner": false
+    },
+    {
+     "opt": "Opt(op=OptOps.TC, axis=2, arg=(-1, 0, 1))",
+     "ok": false,
+     "err": "no tensor core available",
+     "shape": [
+      [
+       4096,
+       "WEAK"
+      ]
+     ],
+     "inner": false
+    },
+    {
+     "opt": "Opt(op=OptOps.SPLIT, axis=0, arg=(16, AxisType.LOCAL, True))",
+     "ok": true,
+     "shape": [
+      [
+       16,
+       "LOCAL"
+      ],
+      [
+       256,
+       "WEAK"
+      ]
+     ],
+     "inner": false
+    }
+   ],
+   "final": [
+    [
+     16,
+     "LOCAL"
+    ],
+    [
+     256,
+     "WEAK"
+    ]
+   ],
+   "opts": [
+    "Opt(op=OptOps.SPLIT, axis=0, arg=(16, AxisType.LOCAL, True))"
+   ],
+   "name": "r_16_256",
+   "src": "__kernel void r_16_256(__global float* data0_1, __global float* data1_4096) {\n  float buf0[1];\n  float buf1[1];\n  __attribute__ ((aligned (16))) __local float buf2[16];\n  int lidx0 = get_local_id(0); /* 16 */\n  *(buf0+0) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 256; Lidx0++) {\n    float val0 = (*(data1_4096+((lidx0<<8)+Lidx0)));\n    *(buf0+0) = ((*(buf0+0))+val0);\n  }\n  *(buf2+lidx0) = (*(buf0+0));\n  barrier(CLK_LOCAL_MEM_FENCE);\n  *(buf1+0) = 0.0f;\n  for (int Lidx101 = 0; Lidx101 < 16; Lidx101++) {\n    float val1 = (*(buf2+Lidx101));\n    *(buf1+0) = ((*(buf1+0))+val1);\n  }\n  if ((lidx0==0)) {\n    *(data0_1+0) = (*(buf1+0));\n  }\n}",
+   "est": {
+    "ops": 4368,
+    "lds": 17536,
+    "mem": 16388
+   }
+  },
+  "matvec (256,)@(256,64) \u00b7 OpenCL": {
+   "start": [
+    [
+     64,
+     "GLOBAL"
+    ],
+    [
+     256,
+     "WEAK"
+    ]
+   ],
+   "log": [
+    {
+     "opt": "Opt(op=OptOps.TC, axis=0, arg=(-1, 0, 1))",
+     "ok": false,
+     "err": "no tensor core available",
+     "shape": [
+      [
+       64,
+       "GLOBAL"
+      ],
+      [
+       256,
+       "WEAK"
+      ]
+     ],
+     "inner": false
+    },
+    {
+     "opt": "Opt(op=OptOps.TC, axis=1, arg=(-1, 0, 1))",
+     "ok": false,
+     "err": "no tensor core available",
+     "shape": [
+      [
+       64,
+       "GLOBAL"
+      ],
+      [
+       256,
+       "WEAK"
+      ]
+     ],
+     "inner": false
+    },
+    {
+     "opt": "Opt(op=OptOps.TC, axis=2, arg=(-1, 0, 1))",
+     "ok": false,
+     "err": "no tensor core available",
+     "shape": [
+      [
+       64,
+       "GLOBAL"
+      ],
+      [
+       256,
+       "WEAK"
+      ]
+     ],
+     "inner": false
+    },
+    {
+     "opt": "Opt(op=OptOps.SPLIT, axis=1, arg=(8, AxisType.LOCAL))",
+     "ok": true,
+     "shape": [
+      [
+       64,
+       "GLOBAL"
+      ],
+      [
+       8,
+       "LOCAL"
+      ],
+      [
+       32,
+       "WEAK"
+      ]
+     ],
+     "inner": false
+    },
+    {
+     "opt": "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.LOCAL))",
+     "ok": true,
+     "shape": [
+      [
+       16,
+       "GLOBAL"
+      ],
+      [
+       8,
+       "LOCAL"
+      ],
+      [
+       4,
+       "LOCAL"
+      ],
+      [
+       32,
+       "WEAK"
+      ]
+     ],
+     "inner": false
+    },
+    {
+     "opt": "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))",
+     "ok": true,
+     "shape": [
+      [
+       4,
+       "GLOBAL"
+      ],
+      [
+       8,
+       "LOCAL"
+      ],
+      [
+       4,
+       "LOCAL"
+      ],
+      [
+       4,
+       "UPCAST"
+      ],
+      [
+       32,
+       "WEAK"
+      ]
+     ],
+     "inner": false
+    }
+   ],
+   "final": [
+    [
+     4,
+     "GLOBAL"
+    ],
+    [
+     8,
+     "LOCAL"
+    ],
+    [
+     4,
+     "LOCAL"
+    ],
+    [
+     4,
+     "UPCAST"
+    ],
+    [
+     32,
+     "WEAK"
+    ]
+   ],
+   "opts": [
+    "Opt(op=OptOps.SPLIT, axis=1, arg=(8, AxisType.LOCAL))",
+    "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.LOCAL))",
+    "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))"
+   ],
+   "name": "r_4_8_4_4_32",
+   "src": "__kernel void r_4_8_4_4_32(__global float* data0_64, __global float* data1_256, __global float* data2_16384) {\n  float buf0[4];\n  float buf1[4];\n  __attribute__ ((aligned (16))) __local float buf2[128];\n  int gidx0 = get_group_id(0); /* 4 */\n  int lidx0 = get_local_id(0); /* 8 */\n  int lidx1 = get_local_id(1); /* 4 */\n  int alu0 = ((gidx0<<4)+lidx1);\n  *(buf0+0) = 0.0f;\n  *(buf0+1) = 0.0f;\n  *(buf0+2) = 0.0f;\n  *(buf0+3) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 32; Lidx0++) {\n    float val0 = (*(data1_256+((Lidx0<<3)+lidx0)));\n    int alu5 = (alu0+(lidx0<<6)+(Lidx0<<9));\n    float val1 = (*(data2_16384+(alu5+12)));\n    float val2 = (*(data2_16384+(alu5+4)));\n    float val3 = (*(data2_16384+(alu5+8)));\n    float val4 = (*(data2_16384+alu5));\n    *(buf0+0) = ((*(buf0+0))+(val0*val4));\n    *(buf0+1) = ((*(buf0+1))+(val0*val2));\n    *(buf0+2) = ((*(buf0+2))+(val0*val3));\n    *(buf0+3) = ((*(buf0+3))+(val0*val1));\n  }\n  int alu11 = (lidx1<<5);\n  *((__local float4*)((buf2+((lidx0<<2)+alu11)))) = (float4)((*(buf0+0)),(*(buf0+1)),(*(buf0+2)),(*(buf0+3)));\n  barrier(CLK_LOCAL_MEM_FENCE);\n  *(buf1+0) = 0.0f;\n  *(buf1+1) = 0.0f;\n  *(buf1+2) = 0.0f;\n  *(buf1+3) = 0.0f;\n  for (int Lidx102 = 0; Lidx102 < 8; Lidx102++) {\n    float4 val5 = (*((__local float4*)((buf2+(alu11+(Lidx102<<2))))));\n    *(buf1+0) = ((*(buf1+0))+val5.x);\n    *(buf1+1) = ((*(buf1+1))+val5.y);\n    *(buf1+2) = ((*(buf1+2))+val5.z);\n    *(buf1+3) = ((*(buf1+3))+val5.w);\n  }\n  bool alu23 = (lidx0==0);\n  if (alu23) {\n    *(data0_64+(alu0+12)) = (*(buf1+3));\n  }\n  if (alu23) {\n    *(data0_64+(alu0+4)) = (*(buf1+1));\n  }\n  if (alu23) {\n    *(data0_64+(alu0+8)) = (*(buf1+2));\n  }\n  if (alu23) {\n    *(data0_64+alu0) = (*(buf1+0));\n  }\n}",
+   "est": {
+    "ops": 36992,
+    "lds": 102400,
+    "mem": 66816
+   }
+  },
+  "matmul 64x64 fp32 \u00b7 Metal (TC)": {
+   "start": [
+    [
+     64,
+     "GLOBAL"
+    ],
+    [
+     64,
+     "GLOBAL"
+    ],
+    [
+     64,
+     "WEAK"
+    ]
+   ],
+   "log": [
+    {
+     "opt": "Opt(op=OptOps.TC, axis=0, arg=(-1, 0, 1))",
+     "ok": true,
+     "shape": [
+      [
+       8,
+       "GLOBAL"
+      ],
+      [
+       8,
+       "GLOBAL"
+      ],
+      [
+       32,
+       "WARP"
+      ],
+      [
+       2,
+       "UPCAST"
+      ],
+      [
+       8,
+       "WEAK"
+      ]
+     ],
+     "inner": false
+    },
+    {
+     "opt": "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))",
+     "ok": true,
+     "shape": [
+      [
+       2,
+       "GLOBAL"
+      ],
+      [
+       8,
+       "GLOBAL"
+      ],
+      [
+       32,
+       "WARP"
+      ],
+      [
+       2,
+       "UPCAST"
+      ],
+      [
+       4,
+       "UPCAST"
+      ],
+      [
+       8,
+       "WEAK"
+      ]
+     ],
+     "inner": false
+    },
+    {
+     "opt": "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+     "ok": true,
+     "shape": [
+      [
+       2,
+       "GLOBAL"
+      ],
+      [
+       2,
+       "GLOBAL"
+      ],
+      [
+       32,
+       "WARP"
+      ],
+      [
+       2,
+       "UPCAST"
+      ],
+      [
+       4,
+       "UPCAST"
+      ],
+      [
+       4,
+       "UPCAST"
+      ],
+      [
+       8,
+       "WEAK"
+      ]
+     ],
+     "inner": false
+    },
+    {
+     "opt": "Opt(op=OptOps.SPLIT, axis=1, arg=(2, AxisType.LOCAL))",
+     "ok": true,
+     "shape": [
+      [
+       2,
+       "GLOBAL"
+      ],
+      [
+       2,
+       "LOCAL"
+      ],
+      [
+       32,
+       "WARP"
+      ],
+      [
+       2,
+       "UPCAST"
+      ],
+      [
+       4,
+       "UPCAST"
+      ],
+      [
+       4,
+       "UPCAST"
+      ],
+      [
+       8,
+       "WEAK"
+      ]
+     ],
+     "inner": false
+    }
+   ],
+   "final": [
+    [
+     2,
+     "GLOBAL"
+    ],
+    [
+     2,
+     "LOCAL"
+    ],
+    [
+     32,
+     "WARP"
+    ],
+    [
+     2,
+     "UPCAST"
+    ],
+    [
+     4,
+     "UPCAST"
+    ],
+    [
+     4,
+     "UPCAST"
+    ],
+    [
+     8,
+     "WEAK"
+    ]
+   ],
+   "opts": [
+    "Opt(op=OptOps.TC, axis=0, arg=(-1, 0, 1))",
+    "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))",
+    "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+    "Opt(op=OptOps.SPLIT, axis=1, arg=(2, AxisType.LOCAL))"
+   ],
+   "name": "r_2_2_32_2_4_4_8",
+   "src": "#include <metal_stdlib>\nusing namespace metal;\nfloat2 __WMMA_8_8_8_f32_f32(float2 a, float2 b, float2 c){\n  simdgroup_float8x8 mat_a, mat_b; simdgroup_float8x8 mat_c;\n  mat_a.thread_elements()[0] = a[0]; mat_b.thread_elements()[0] = b[0]; mat_c.thread_elements()[0] = c[0];\n  mat_a.thread_elements()[1] = a[1]; mat_b.thread_elements()[1] = b[1]; mat_c.thread_elements()[1] = c[1];\n  simdgroup_multiply_accumulate(mat_c, mat_a, mat_b, mat_c);\n  return float2(mat_c.thread_elements()[0], mat_c.thread_elements()[1]);\n}\nstruct r_2_2_32_2_4_4_8_args { device float* arg0; device float* arg1; device float* arg2; };\nkernel void r_2_2_32_2_4_4_8(constant struct r_2_2_32_2_4_4_8_args* args, uint3 gid [[threadgroup_position_in_grid]], uint3 lid [[thread_position_in_threadgroup]]) {\n  device float* data0_4096 = args->arg0;\n  device float* data1_4096 = args->arg1;\n  device float* data2_4096 = args->arg2;\n  float buf0[32];\n  int gidx0 = gid.x; /* 2 */\n  int lidx0 = lid.x; /* 32 */\n  int lidx1 = lid.y; /* 2 */\n  int alu0 = (((lidx0>>1)&3)<<6);\n  int alu1 = ((lidx0>>4)<<8);\n  int alu2 = (alu0+(gidx0<<11)+alu1);\n  int alu3 = (((lidx0>>3)&1)<<2);\n  int alu4 = ((lidx0&1)<<1);\n  int alu5 = (alu3+(lidx1<<5)+alu4);\n  *(buf0+0) = 0.0f;\n  *(buf0+1) = 0.0f;\n  *(buf0+10) = 0.0f;\n  *(buf0+11) = 0.0f;\n  *(buf0+12) = 0.0f;\n  *(buf0+13) = 0.0f;\n  *(buf0+14) = 0.0f;\n  *(buf0+15) = 0.0f;\n  *(buf0+16) = 0.0f;\n  *(buf0+17) = 0.0f;\n  *(buf0+18) = 0.0f;\n  *(buf0+19) = 0.0f;\n  *(buf0+2) = 0.0f;\n  *(buf0+20) = 0.0f;\n  *(buf0+21) = 0.0f;\n  *(buf0+22) = 0.0f;\n  *(buf0+23) = 0.0f;\n  *(buf0+24) = 0.0f;\n  *(buf0+25) = 0.0f;\n  *(buf0+26) = 0.0f;\n  *(buf0+27) = 0.0f;\n  *(buf0+28) = 0.0f;\n  *(buf0+29) = 0.0f;\n  *(buf0+3) = 0.0f;\n  *(buf0+30) = 0.0f;\n  *(buf0+31) = 0.0f;\n  *(buf0+4) = 0.0f;\n  *(buf0+5) = 0.0f;\n  *(buf0+6) = 0.0f;\n  *(buf0+7) = 0.0f;\n  *(buf0+8) = 0.0f;\n  *(buf0+9) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 8; Lidx0++) {\n    int alu38 = (alu2+alu3+(Lidx0<<3)+alu4);\n    float2 val0 = (*((device float2*)((data1_4096+(alu38+1024)))));\n    float2 val1 = (*((device float2*)((data1_4096+(alu38+1536)))));\n    float2 val2 = (*((device float2*)((data1_4096+(alu38+512)))));\n    float2 val3 = (*((device float2*)((data1_4096+alu38))));\n    int alu39 = (alu1+alu0+(Lidx0<<9)+alu5);\n    float2 val4 = (*((device float2*)((data2_4096+(alu39+16)))));\n    float2 val5 = (*((device float2*)((data2_4096+(alu39+24)))));\n    float2 val6 = (*((device float2*)((data2_4096+(alu39+8)))));\n    float2 val7 = (*((device float2*)((data2_4096+alu39))));\n    float2 wmma0 = __WMMA_8_8_8_f32_f32(val0, val4, float2((*(buf0+18)),(*(buf0+22))));\n    float2 wmma1 = __WMMA_8_8_8_f32_f32(val0, val5, float2((*(buf0+26)),(*(buf0+30))));\n    float2 wmma2 = __WMMA_8_8_8_f32_f32(val0, val6, float2((*(buf0+10)),(*(buf0+14))));\n    float2 wmma3 = __WMMA_8_8_8_f32_f32(val0, val7, float2((*(buf0+2)),(*(buf0+6))));\n    float2 wmma4 = __WMMA_8_8_8_f32_f32(val1, val4, float2((*(buf0+19)),(*(buf0+23))));\n    float2 wmma5 = __WMMA_8_8_8_f32_f32(val1, val5, float2((*(buf0+27)),(*(buf0+31))));\n    float2 wmma6 = __WMMA_8_8_8_f32_f32(val1, val6, float2((*(buf0+11)),(*(buf0+15))));\n    float2 wmma7 = __WMMA_8_8_8_f32_f32(val1, val7, float2((*(buf0+3)),(*(buf0+7))));\n    float2 wmma8 = __WMMA_8_8_8_f32_f32(val2, val4, float2((*(buf0+17)),(*(buf0+21))));\n    float2 wmma9 = __WMMA_8_8_8_f32_f32(val2, val5, float2((*(buf0+25)),(*(buf0+29))));\n    float2 wmma10 = __WMMA_8_8_8_f32_f32(val2, val6, float2((*(buf0+9)),(*(buf0+13))));\n    float2 wmma11 = __WMMA_8_8_8_f32_f32(val2, val7, float2((*(buf0+1)),(*(buf0+5))));\n    float2 wmma12 = __WMMA_8_8_8_f32_f32(val3, val4, float2((*(buf0+16)),(*(buf0+20))));\n    float2 wmma13 = __WMMA_8_8_8_f32_f32(val3, val5, float2((*(buf0+24)),(*(buf0+28))));\n    float2 wmma14 = __WMMA_8_8_8_f32_f32(val3, val6, float2((*(buf0+8)),(*(buf0+12))));\n    float2 wmma15 = __WMMA_8_8_8_f32_f32(val3, val7, float2((*(buf0+0)),(*(buf0+4))));\n    *(buf0+0) = wmma15.x;\n    *(buf0+1) = wmma11.x;\n    *(buf0+10) = wmma2.x;\n    *(buf0+11) = wmma6.x;\n    *(buf0+12) = wmma14.y;\n    *(buf0+13) = wmma10.y;\n    *(buf0+14) = wmma2.y;\n    *(buf0+15) = wmma6.y;\n    *(buf0+16) = wmma12.x;\n    *(buf0+17) = wmma8.x;\n    *(buf0+18) = wmma0.x;\n    *(buf0+19) = wmma4.x;\n    *(buf0+2) = wmma3.x;\n    *(buf0+20) = wmma12.y;\n    *(buf0+21) = wmma8.y;\n    *(buf0+22) = wmma0.y;\n    *(buf0+23) = wmma4.y;\n    *(buf0+24) = wmma13.x;\n    *(buf0+25) = wmma9.x;\n    *(buf0+26) = wmma1.x;\n    *(buf0+27) = wmma5.x;\n    *(buf0+28) = wmma13.y;\n    *(buf0+29) = wmma9.y;\n    *(buf0+3) = wmma7.x;\n    *(buf0+30) = wmma1.y;\n    *(buf0+31) = wmma5.y;\n    *(buf0+4) = wmma15.y;\n    *(buf0+5) = wmma11.y;\n    *(buf0+6) = wmma3.y;\n    *(buf0+7) = wmma7.y;\n    *(buf0+8) = wmma14.x;\n    *(buf0+9) = wmma10.x;\n  }\n  int alu73 = (alu2+alu5);\n  *((device float2*)((data0_4096+(alu73+1024)))) = float2((*(buf0+2)),(*(buf0+6)));\n  *((device float2*)((data0_4096+(alu73+1032)))) = float2((*(buf0+10)),(*(buf0+14)));\n  *((device float2*)((data0_4096+(alu73+1040)))) = float2((*(buf0+18)),(*(buf0+22)));\n  *((device float2*)((data0_4096+(alu73+1048)))) = float2((*(buf0+26)),(*(buf0+30)));\n  *((device float2*)((data0_4096+(alu73+1536)))) = float2((*(buf0+3)),(*(buf0+7)));\n  *((device float2*)((data0_4096+(alu73+1544)))) = float2((*(buf0+11)),(*(buf0+15)));\n  *((device float2*)((data0_4096+(alu73+1552)))) = float2((*(buf0+19)),(*(buf0+23)));\n  *((device float2*)((data0_4096+(alu73+1560)))) = float2((*(buf0+27)),(*(buf0+31)));\n  *((device float2*)((data0_4096+(alu73+16)))) = float2((*(buf0+16)),(*(buf0+20)));\n  *((device float2*)((data0_4096+(alu73+24)))) = float2((*(buf0+24)),(*(buf0+28)));\n  *((device float2*)((data0_4096+(alu73+512)))) = float2((*(buf0+1)),(*(buf0+5)));\n  *((device float2*)((data0_4096+(alu73+520)))) = float2((*(buf0+9)),(*(buf0+13)));\n  *((device float2*)((data0_4096+(alu73+528)))) = float2((*(buf0+17)),(*(buf0+21)));\n  *((device float2*)((data0_4096+(alu73+536)))) = float2((*(buf0+25)),(*(buf0+29)));\n  *((device float2*)((data0_4096+(alu73+8)))) = float2((*(buf0+8)),(*(buf0+12)));\n  *((device float2*)((data0_4096+alu73))) = float2((*(buf0+0)),(*(buf0+4)));\n}",
+   "est": {
+    "ops": 524288,
+    "lds": 81920,
+    "mem": 49152
+   }
+  }
+ },
+ "tensor_cores": [
+  {
+   "renderer": "Metal (Apple7+)",
+   "dims_NMK": [
+    8,
+    8,
+    8
+   ],
+   "threads": 32,
+   "in": "f32",
+   "out": "f32"
+  },
+  {
+   "renderer": "Metal (Apple7+)",
+   "dims_NMK": [
+    8,
+    8,
+    8
+   ],
+   "threads": 32,
+   "in": "f16",
+   "out": "f32"
+  },
+  {
+   "renderer": "Metal (Apple7+)",
+   "dims_NMK": [
+    8,
+    8,
+    8
+   ],
+   "threads": 32,
+   "in": "f16",
+   "out": "f16"
+  },
+  {
+   "renderer": "Metal (Apple7+)",
+   "dims_NMK": [
+    8,
+    8,
+    8
+   ],
+   "threads": 32,
+   "in": "bf16",
+   "out": "f32"
+  },
+  {
+   "renderer": "Metal (Apple7+)",
+   "dims_NMK": [
+    8,
+    8,
+    8
+   ],
+   "threads": 32,
+   "in": "bf16",
+   "out": "bf16"
+  },
+  {
+   "renderer": "CUDA sm_80",
+   "dims_NMK": [
+    8,
+    16,
+    16
+   ],
+   "threads": 32,
+   "in": "f16",
+   "out": "f32"
+  },
+  {
+   "renderer": "CUDA sm_80",
+   "dims_NMK": [
+    8,
+    16,
+    16
+   ],
+   "threads": 32,
+   "in": "bf16",
+   "out": "f32"
+  },
+  {
+   "renderer": "CUDA sm_80",
+   "dims_NMK": [
+    8,
+    16,
+    16
+   ],
+   "threads": 32,
+   "in": "f16",
+   "out": "f16"
+  },
+  {
+   "renderer": "CUDA sm_80",
+   "dims_NMK": [
+    8,
+    16,
+    8
+   ],
+   "threads": 32,
+   "in": "f16",
+   "out": "f32"
+  },
+  {
+   "renderer": "CUDA sm_80",
+   "dims_NMK": [
+    8,
+    16,
+    8
+   ],
+   "threads": 32,
+   "in": "f16",
+   "out": "f16"
+  },
+  {
+   "renderer": "CUDA sm_80",
+   "dims_NMK": [
+    8,
+    16,
+    8
+   ],
+   "threads": 32,
+   "in": "f32",
+   "out": "f32"
+  },
+  {
+   "renderer": "CUDA sm_89",
+   "dims_NMK": [
+    8,
+    16,
+    16
+   ],
+   "threads": 32,
+   "in": "f16",
+   "out": "f32"
+  },
+  {
+   "renderer": "CUDA sm_89",
+   "dims_NMK": [
+    8,
+    16,
+    16
+   ],
+   "threads": 32,
+   "in": "bf16",
+   "out": "f32"
+  },
+  {
+   "renderer": "CUDA sm_89",
+   "dims_NMK": [
+    8,
+    16,
+    16
+   ],
+   "threads": 32,
+   "in": "f16",
+   "out": "f16"
+  },
+  {
+   "renderer": "CUDA sm_89",
+   "dims_NMK": [
+    8,
+    16,
+    8
+   ],
+   "threads": 32,
+   "in": "f16",
+   "out": "f32"
+  },
+  {
+   "renderer": "CUDA sm_89",
+   "dims_NMK": [
+    8,
+    16,
+    8
+   ],
+   "threads": 32,
+   "in": "f16",
+   "out": "f16"
+  },
+  {
+   "renderer": "CUDA sm_89",
+   "dims_NMK": [
+    8,
+    16,
+    8
+   ],
+   "threads": 32,
+   "in": "f32",
+   "out": "f32"
+  },
+  {
+   "renderer": "CUDA sm_89",
+   "dims_NMK": [
+    8,
+    16,
+    32
+   ],
+   "threads": 32,
+   "in": "fp8e4m3",
+   "out": "f32"
+  },
+  {
+   "renderer": "CUDA sm_89",
+   "dims_NMK": [
+    8,
+    16,
+    32
+   ],
+   "threads": 32,
+   "in": "fp8e5m2",
+   "out": "f32"
+  },
+  {
+   "renderer": "AMD RDNA3",
+   "dims_NMK": [
+    16,
+    16,
+    16
+   ],
+   "threads": 32,
+   "in": "f16",
+   "out": "f32"
+  },
+  {
+   "renderer": "AMD RDNA3",
+   "dims_NMK": [
+    16,
+    16,
+    16
+   ],
+   "threads": 32,
+   "in": "f16",
+   "out": "f16"
+  },
+  {
+   "renderer": "AMD RDNA3",
+   "dims_NMK": [
+    16,
+    16,
+    16
+   ],
+   "threads": 32,
+   "in": "bf16",
+   "out": "f32"
+  },
+  {
+   "renderer": "AMD RDNA3",
+   "dims_NMK": [
+    16,
+    16,
+    16
+   ],
+   "threads": 32,
+   "in": "i8",
+   "out": "i32"
+  },
+  {
+   "renderer": "AMD RDNA4",
+   "dims_NMK": [
+    16,
+    16,
+    16
+   ],
+   "threads": 32,
+   "in": "f16",
+   "out": "f32"
+  },
+  {
+   "renderer": "AMD RDNA4",
+   "dims_NMK": [
+    16,
+    16,
+    16
+   ],
+   "threads": 32,
+   "in": "f16",
+   "out": "f16"
+  },
+  {
+   "renderer": "AMD RDNA4",
+   "dims_NMK": [
+    16,
+    16,
+    16
+   ],
+   "threads": 32,
+   "in": "bf16",
+   "out": "f32"
+  },
+  {
+   "renderer": "AMD RDNA4",
+   "dims_NMK": [
+    16,
+    16,
+    16
+   ],
+   "threads": 32,
+   "in": "bf16",
+   "out": "bf16"
+  },
+  {
+   "renderer": "AMD RDNA4",
+   "dims_NMK": [
+    16,
+    16,
+    16
+   ],
+   "threads": 32,
+   "in": "fp8e4m3",
+   "out": "f32"
+  },
+  {
+   "renderer": "AMD RDNA4",
+   "dims_NMK": [
+    16,
+    16,
+    16
+   ],
+   "threads": 32,
+   "in": "fp8e5m2",
+   "out": "f32"
+  },
+  {
+   "renderer": "AMD RDNA4",
+   "dims_NMK": [
+    16,
+    16,
+    16
+   ],
+   "threads": 32,
+   "in": "i8",
+   "out": "i32"
+  },
+  {
+   "renderer": "AMD CDNA3",
+   "dims_NMK": [
+    16,
+    16,
+    32
+   ],
+   "threads": 64,
+   "in": "fp8e5m2fnuz",
+   "out": "f32"
+  },
+  {
+   "renderer": "AMD CDNA3",
+   "dims_NMK": [
+    16,
+    16,
+    32
+   ],
+   "threads": 64,
+   "in": "fp8e4m3fnuz",
+   "out": "f32"
+  },
+  {
+   "renderer": "AMD CDNA3",
+   "dims_NMK": [
+    16,
+    16,
+    16
+   ],
+   "threads": 64,
+   "in": "f16",
+   "out": "f32"
+  },
+  {
+   "renderer": "AMD CDNA3",
+   "dims_NMK": [
+    16,
+    16,
+    16
+   ],
+   "threads": 64,
+   "in": "bf16",
+   "out": "f32"
+  }
+ ],
+ "tc_variants": {
+  "Metal fp32 8x8x8": {
+   "shape": [
+    [
+     2,
+     "GLOBAL"
+    ],
+    [
+     2,
+     "GLOBAL"
+    ],
+    [
+     32,
+     "WARP"
+    ],
+    [
+     2,
+     "UPCAST"
+    ],
+    [
+     2,
+     "WEAK"
+    ]
+   ],
+   "wmma_arg": "((8, 8, 8), dtypes.f32, 32, ((((AxisType.UPCAST, 3), 2),), (((AxisType.UPCAST, 3), 2),), (((AxisType.UPCAST, 3), 2),)))",
+   "name": "r_2_2_32_2_2",
+   "src": "#include <metal_stdlib>\nusing namespace metal;\nfloat2 __WMMA_8_8_8_f32_f32(float2 a, float2 b, float2 c){\n  simdgroup_float8x8 mat_a, mat_b; simdgroup_float8x8 mat_c;\n  mat_a.thread_elements()[0] = a[0]; mat_b.thread_elements()[0] = b[0]; mat_c.thread_elements()[0] = c[0];\n  mat_a.thread_elements()[1] = a[1]; mat_b.thread_elements()[1] = b[1]; mat_c.thread_elements()[1] = c[1];\n  simdgroup_multiply_accumulate(mat_c, mat_a, mat_b, mat_c);\n  return float2(mat_c.thread_elements()[0], mat_c.thread_elements()[1]);\n}\nstruct r_2_2_32_2_2_args { device float* arg0; device float* arg1; device float* arg2; };\nkernel void r_2_2_32_2_2(constant struct r_2_2_32_2_2_args* args, uint3 gid [[threadgroup_position_in_grid]], uint3 lid [[thread_position_in_threadgroup]]) {\n  device float* data0_256 = args->arg0;\n  device float* data1_256 = args->arg1;\n  device float* data2_256 = args->arg2;\n  float buf0[2];\n  int gidx0 = gid.x; /* 2 */\n  int gidx1 = gid.y; /* 2 */\n  int lidx0 = lid.x; /* 32 */\n  int alu0 = (((lidx0>>4)<<6)+(((lidx0>>1)&3)<<4));\n  int alu1 = (alu0+(gidx1<<7));\n  int alu2 = (((lidx0>>3)&1)<<2);\n  int alu3 = ((lidx0&1)<<1);\n  int alu4 = (alu2+(gidx0<<3)+alu3);\n  *(buf0+0) = 0.0f;\n  *(buf0+1) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 2; Lidx0++) {\n    float2 val0 = (*((device float2*)((data1_256+(alu1+alu2+(Lidx0<<3)+alu3)))));\n    float2 val1 = (*((device float2*)((data2_256+(alu0+(Lidx0<<7)+alu4)))));\n    float2 wmma0 = __WMMA_8_8_8_f32_f32(val0, val1, float2((*(buf0+0)),(*(buf0+1))));\n    *(buf0+0) = wmma0.x;\n    *(buf0+1) = wmma0.y;\n  }\n  *((device float2*)((data0_256+(alu1+alu4)))) = float2((*(buf0+0)),(*(buf0+1)));\n}",
+   "est": {
+    "ops": 8192,
+    "lds": 5120,
+    "mem": 3072
+   }
+  },
+  "CUDA fp16 m16n8k16": {
+   "shape": [
+    [
+     2,
+     "GLOBAL"
+    ],
+    [
+     32,
+     "WARP"
+    ],
+    [
+     2,
+     "UPCAST"
+    ],
+    [
+     2,
+     "UPCAST"
+    ],
+    [
+     2,
+     "UPCAST"
+    ]
+   ],
+   "wmma_arg": "((8, 16, 16), dtypes.f16, 32, ((((AxisType.UPCAST, 4), 2), ((AxisType.UPCAST, 3), 2), ((AxisType.UPCAST, 8), 2)), (((AxisType.UPCAST, 4), 2), ((AxisType.UPCAST, 3), 2), ((AxisType.UPCAST, 8), 1)), (((AxisType.UPCAST, 4), 2), ((AxisType.UPCAST, 3), 2), ((AxisType.UPCAST, 8), 1))))",
+   "name": "r_2_32_2_2_2",
+   "src": "typedef unsigned int uint;\n#define INFINITY (__int_as_float(0x7f800000))\n#define NAN (__int_as_float(0x7fffffff))\ntemplate <class T, class F> __device__ __forceinline__ T tg_bitcast(F v) { union U { F f; T t; }; U u; u.f = v; return u.t; }\n#include <cuda_fp16.h>\nstruct __align__(16) half8 { half x, y, z, w, a, b, c, d; }; __device__ half8 make_half8(half x, half y, half z, half w, half a, half b, half c, half d) { half8 r={x, y, z, w, a, b, c, d}; return r; }\nstruct __align__(8) half4 { half x, y, z, w; }; __device__ half4 make_half4(half x, half y, half z, half w) { half4 r={x, y, z, w}; return r; }\n__device__ float4 __WMMA_8_16_16_f16_f32(half8 a, half4 b, float4 c){\n  int *a_pk = (int *)(&a), *b_pk = (int *)(&b), *c_pk = (int *)(&c);\n  asm(\"mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32\"\n      \"{%0, %1, %2, %3}, {%4, %5, %6, %7},\"\n      \"{%8, %9}, {%0, %1, %2, %3};\"\n    : \"+r\"(c_pk[0]), \"+r\"(c_pk[1]), \"+r\"(c_pk[2]), \"+r\"(c_pk[3])\n    : \"r\"(a_pk[0]), \"r\"(a_pk[1]), \"r\"(a_pk[2]), \"r\"(a_pk[3]), \"r\"(b_pk[0]), \"r\"(b_pk[1]));\n  return c;\n}\nextern \"C\" __global__ void __launch_bounds__(32) r_2_32_2_2_2(half* data0_256, half* data1_256, half* data2_256) {\n  int gidx0 = blockIdx.x; /* 2 */\n  int lidx0 = threadIdx.x; /* 32 */\n  int alu0 = (gidx0<<3);\n  int alu1 = (lidx0>>2);\n  int alu2 = (lidx0&3);\n  int alu3 = (alu0+alu1+(alu2<<5));\n  half val0 = (*(data2_256+(alu3+128)));\n  half val1 = (*(data2_256+(alu3+144)));\n  half val2 = (*(data2_256+(alu3+16)));\n  half val3 = (*(data2_256+alu3));\n  int alu4 = (alu1<<4);\n  int alu5 = (alu2<<1);\n  int alu6 = (alu4+alu5);\n  half2 val4 = (*((half2*)((data1_256+(alu6+128)))));\n  half2 val5 = (*((half2*)((data1_256+(alu6+136)))));\n  half2 val6 = (*((half2*)((data1_256+(alu6+8)))));\n  half2 val7 = (*((half2*)((data1_256+alu6))));\n  float4 wmma0 = __WMMA_8_16_16_f16_f32(make_half8(val7.x,val7.y,val4.x,val4.y,val6.x,val6.y,val5.x,val5.y), make_half4(val3,val2,val0,val1), make_float4(0.0f,0.0f,0.0f,0.0f));\n  int alu7 = (alu5+alu0+alu4);\n  *((half2*)((data0_256+(alu7+128)))) = make_half2(((half)(wmma0.z)),((half)(wmma0.w)));\n  *((half2*)((data0_256+alu7))) = make_half2(((half)(wmma0.x)),((half)(wmma0.y)));\n}",
+   "est": {
+    "ops": 8192,
+    "lds": 2048,
+    "mem": 1536
+   }
+  }
+ },
+ "beam": {
+  "records": [
+   {
+    "opts": [
+     "Opt(op=OptOps.SPLIT, axis=0, arg=(2, AxisType.UPCAST))"
+    ],
+    "t": 1.3999e-05,
+    "uops": 70
+   },
+   {
+    "opts": [
+     "Opt(op=OptOps.SPLIT, axis=1, arg=(2, AxisType.UPCAST))"
+    ],
+    "t": 1.1214e-05,
+    "uops": 67
+   },
+   {
+    "opts": [
+     "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))"
+    ],
+    "t": 1.2176999999999999e-05,
+    "uops": 108
+   },
+   {
+    "opts": [
+     "Opt(op=OptOps.SPLIT, axis=2, arg=(2, AxisType.UPCAST))"
+    ],
+    "t": 1.4489e-05,
+    "uops": 61
+   },
+   {
+    "opts": [
+     "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))"
+    ],
+    "t": 6.575e-06,
+    "uops": 91
+   },
+   {
+    "opts": [
+     "Opt(op=OptOps.SPLIT, axis=2, arg=(0, AxisType.UPCAST))"
+    ],
+    "t": 6.0429999999999996e-06,
+    "uops": 313
+   },
+   {
+    "opts": [
+     "Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.UPCAST))"
+    ],
+    "t": 1.8747e-05,
+    "uops": 81
+   },
+   {
+    "opts": [
+     "Opt(op=OptOps.SPLIT, axis=2, arg=(0, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=0, arg=(2, AxisType.UPCAST))"
+    ],
+    "t": 5.1119999999999995e-06,
+    "uops": 451
+   },
+   {
+    "opts": [
+     "Opt(op=OptOps.SPLIT, axis=2, arg=(0, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=1, arg=(2, AxisType.UPCAST))"
+    ],
+    "t": 8.774e-06,
+    "uops": 444
+   },
+   {
+    "opts": [
+     "Opt(op=OptOps.SPLIT, axis=2, arg=(0, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))"
+    ],
+    "t": 5.876e-06,
+    "uops": 634
+   },
+   {
+    "opts": [
+     "Opt(op=OptOps.SPLIT, axis=2, arg=(0, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))"
+    ],
+    "t": 4.846e-06,
+    "uops": 723
+   },
+   {
+    "opts": [
+     "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=1, arg=(0, AxisType.UPCAST))"
+    ],
+    "t": 5.222e-06,
+    "uops": 464
+   },
+   {
+    "opts": [
+     "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=0, arg=(2, AxisType.UPCAST))"
+    ],
+    "t": 5.501e-06,
+    "uops": 140
+   },
+   {
+    "opts": [
+     "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=1, arg=(2, AxisType.UPCAST))"
+    ],
+    "t": 5.633e-06,
+    "uops": 141
+   },
+   {
+    "opts": [
+     "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=3, arg=(2, AxisType.UPCAST))"
+    ],
+    "t": 6.407e-06,
+    "uops": 113
+   },
+   {
+    "opts": [
+     "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.UPCAST))"
+    ],
+    "t": 7.349e-06,
+    "uops": 147
+   },
+   {
+    "opts": [
+     "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))"
+    ],
+    "t": 4.8710000000000005e-06,
+    "uops": 243
+   },
+   {
+    "opts": [
+     "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))"
+    ],
+    "t": 2.1687999999999996e-05,
+    "uops": 251
+   },
+   {
+    "opts": [
+     "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=0, arg=(0, AxisType.UPCAST))"
+    ],
+    "t": 1.8985e-05,
+    "uops": 1714
+   },
+   {
+    "opts": [
+     "Opt(op=OptOps.SPLIT, axis=2, arg=(0, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=0, arg=(2, AxisType.UPCAST))"
+    ],
+    "t": 1.8485e-05,
+    "uops": 1265
+   },
+   {
+    "opts": [
+     "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=1, arg=(0, AxisType.UPCAST))"
+    ],
+    "t": 1.4771e-05,
+    "uops": 1624
+   },
+   {
+    "opts": [
+     "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=0, arg=(2, AxisType.UPCAST))"
+    ],
+    "t": 2.5699e-05,
+    "uops": 454
+   },
+   {
+    "opts": [
+     "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=4, arg=(2, AxisType.UPCAST))"
+    ],
+    "t": 5.7220000000000004e-06,
+    "uops": 292
+   },
+   {
+    "opts": [
+     "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=1, arg=(2, AxisType.UPCAST))"
+    ],
+    "t": 5.011e-06,
+    "uops": 447
+   },
+   {
+    "opts": [
+     "Opt(op=OptOps.SPLIT, axis=2, arg=(0, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=1, arg=(2, AxisType.UPCAST))"
+    ],
+    "t": 1.9006e-05,
+    "uops": 1044
+   },
+   {
+    "opts": [
+     "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=4, arg=(4, AxisType.UPCAST))"
+    ],
+    "t": 5.724999999999999e-06,
+    "uops": 377
+   },
+   {
+    "opts": [
+     "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))"
+    ],
+    "t": 3.7496e-05,
+    "uops": 849
+   },
+   {
+    "opts": [
+     "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))",
+     "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))"
+    ],
+    "t": 2.7911999999999996e-05,
+    "uops": 876
+   }
+  ],
+  "start": [
+   [
+    32,
+    "WEAK"
+   ],
+   [
+    32,
+    "WEAK"
+   ],
+   [
+    32,
+    "WEAK"
+   ]
+  ],
+  "final_opts": [
+   "Opt(op=OptOps.SPLIT, axis=2, arg=(0, AxisType.UPCAST))",
+   "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))"
+  ],
+  "final": [
+   [
+    8,
+    "WEAK"
+   ],
+   [
+    32,
+    "WEAK"
+   ],
+   [
+    4,
+    "UPCAST"
+   ],
+   [
+    32,
+    "UPCAST"
+   ]
+  ],
+  "secs": 2.0182807880000837
+ }
+}

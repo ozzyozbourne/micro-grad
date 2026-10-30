@@ -1,0 +1,1041 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>14. Optimizations, tensor cores &amp; BEAM — tinygrad internals</title>
+<link rel="stylesheet" href="../assets/vendor/hljs-dark.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/vendor/highlight.min.js"></script>
+<script src="../assets/vendor/dagre.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/chapters.js"></script>
+<script src="../assets/guide.js"></script>
+<style>
+.ch14-shape { display: flex; gap: 3px; flex-wrap: wrap; margin: 6px 0; font-family: var(--mono); font-size: 12px; }
+.ch14-shape .ax { border-radius: 5px; padding: 3px 6px; color: #000; font-weight: 700; text-align: center; min-width: 30px; }
+.ch14-shape .ax small { display: block; font-weight: 400; font-size: 9.5px; opacity: .75; }
+.ch14-src { font-family: var(--mono); font-size: 12px; background: #0a0c0e; border: 1px solid var(--line); border-left: 3px solid var(--green); border-radius: 8px; padding: 10px 12px; overflow: auto; max-height: 480px; white-space: pre; line-height: 1.45; color: #cfd8dc; }
+.ch14-menu { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.ch14-menu button.err { opacity: .45; text-decoration: line-through; }
+.ch14-crumbs { font-family: var(--mono); font-size: 12.5px; margin: 6px 0; color: var(--dim); }
+.ch14-crumbs a { cursor: pointer; }
+.ch14-stats { display: flex; gap: 18px; flex-wrap: wrap; font-family: var(--mono); font-size: 13px; margin: 6px 0; }
+.ch14-stats b { color: var(--yellow); }
+.ch14-grid { position: relative; height: 230px; margin: 10px 0; }
+.ch14-grid .c { position: absolute; width: 38px; height: 38px; border-radius: 5px; display: flex; align-items: center; justify-content: center; font-family: var(--mono); font-size: 13px; color: #000; font-weight: 700; transition: transform .8s cubic-bezier(.65,0,.35,1), background .4s; cursor: default; }
+.ch14-formula { font-family: var(--mono); font-size: 14px; min-height: 1.6em; }
+.ch14-formula b { color: var(--yellow); }
+.ch14-log { font-family: var(--mono); font-size: 12.5px; background: #0d0f12; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; max-height: 260px; overflow: auto; }
+.ch14-log div { padding: 1px 4px; border-radius: 4px; }
+.ch14-log div.cur { background: rgba(244,211,69,.18); }
+.ch14-log .fail { color: var(--red); }
+.ch14-log .ok { color: var(--green); }
+main .uopgraph svg, .ch14-beam svg { max-width: none; }
+.ch14-beam svg { background: #0d0f12; border: 1px solid var(--line); border-radius: 8px; }
+.ch14-beam text { font-family: var(--mono); font-size: 10.5px; fill: #ddd; }
+.ch14-beam .bn { cursor: pointer; }
+.ch14-beam .bn rect { stroke-width: 1.2; transition: opacity .3s; }
+.ch14-beam .bn.kept rect { stroke: var(--yellow); stroke-width: 2.6; }
+.ch14-beam .bn.hidden, .ch14-beam .be.hidden { opacity: 0; pointer-events: none; }
+.ch14-beam .be { fill: none; stroke: #4a525c; stroke-width: 1.1; transition: opacity .3s; }
+.ch14-beam .be.kept { stroke: var(--yellow); stroke-width: 2; }
+.ch14-tip { font-family: var(--mono); font-size: 12.5px; background: #0d0f12; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; min-height: 3.2em; white-space: pre-wrap; margin-top: 8px; }
+.ch14-tbl td code { white-space: nowrap; }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="sidebar" id="sidebar"></nav>
+<main>
+  <h1><span class="chnum">CHAPTER 14</span>Optimizations, tensor cores &amp; BEAM</h1>
+  <p class="lede">The AST from <a href="13-kernel-ast.html">Chapter 13</a> says <i>what</i> to compute. This chapter is about <i>how the work is shaped</i>:
+  which loops become GPU threads, which become vector lanes or unrolled code, which reductions are split across a workgroup. In this version of tinygrad all of it
+  comes down to one operation, splitting a RANGE in two with <code>shift_to</code>. We look at that operation, then at the hand-written heuristic that picks
+  splits, tensor cores, and BEAM search, which times real candidates. Everything shown is real output from this checkout.</p>
+
+  <h2 id="intuition"><span class="sec">14.1</span>Intuition: same arithmetic, different loop shapes</h2>
+  <p>A 16×16 matmul needs 16·16·16 multiply-adds however you arrange it. The arrangement still decides the speed:</p>
+  <ul>
+    <li><b>GLOBAL</b>: give each output element (or block of them) its own GPU work-item. The hardware runs the loop in parallel.</li>
+    <li><b>LOCAL</b>: group work-items into a workgroup that shares fast on-chip memory and can synchronize.</li>
+    <li><b>UPCAST</b>: unroll a loop completely inside one thread, so its iterations become independent registers or vector lanes (<code>float4</code>).
+    On a reduce axis this is classic loop <b>unrolling</b>.</li>
+    <li><b>GROUP</b>: split a <i>reduction</i> across the threads of a workgroup. Each thread reduces a slice, the partial results meet in local memory, and one more reduce finishes the job.</li>
+    <li><b>TC</b>: hand a whole small matrix tile to a tensor-core instruction (<code>WMMA</code>).</li>
+  </ul>
+  <div class="callout analogy"><span class="title">Analogy: a kitchen</span>
+  GLOBAL is opening more kitchens. LOCAL is putting several cooks in one kitchen so they can pass ingredients over the counter (shared memory) and wait for each other (barrier).
+  UPCAST is a cook chopping four carrots in one stroke. GROUP is several cooks each counting part of the stock, then adding up their tallies on the counter.
+  The recipe (the AST) is the same in every case.</div>
+  <div class="callout aha"><span class="title">The key idea</span>
+  Every one of these is "split a RANGE of size \(n\) into two RANGEs of sizes \(n/k\) and \(k\), and give the new one an AxisType". A RANGE is a value, so the split is the substitution
+  \(r \to r_{\text{outer}}\cdot k + r_{\text{inner}}\). It is applied to the AST with <code>substitute</code>. Later passes read the AxisTypes: the expander unrolls UPCAST ranges,
+  gpudims turns GLOBAL/LOCAL into <code>gidx</code>/<code>lidx</code>, and <code>fix_group_for_reduce</code> builds local-memory reductions.</div>
+
+  <h2 id="where"><span class="sec">14.2</span>Where optimization runs</h2>
+  <p><a class="src" data-path="tinygrad/codegen/__init__.py" data-line="263">full_rewrite_to_sink</a>, before any lowering:</p>
+  <pre><code class="language-python">  if optimize:
+    sink = graph_rewrite(sink, pm_load_collapse, name="load collapse")          # indexing-by-tensor reduce → load
+    sink = graph_rewrite(sink, pm_split_ranges+pm_flatten_range, init_ctx=MapCtx, name="split ranges")
+    sink = graph_rewrite(sink, sym+pm_flatten_range, name="initial symbolic")
+    sink = graph_rewrite(sink, pm_flatten_range+pm_simplify_ranges, init_ctx=MapCtx, name="simplify ranges")  # merges ranges (E_12!)
+    # do postrange optimization, BEAM or hand_coded_optimizations
+    sink = apply_opts(sink, ren, beam=ast.arg.beam)</code></pre>
+  <p>and <a class="src" data-path="tinygrad/codegen/opt/postrange.py" data-line="239">apply_opts</a> picks one of four strategies:</p>
+  <pre><code class="language-python">def apply_opts(ast:UOp, ren:Renderer, beam:int=0) -> UOp:
+  if ast.arg is not None and ast.arg.optimized: return ast
+  k = Scheduler(ast, ren)
+  k.convert_loop_to_global()
+  if ast.arg is not None and ast.arg.opts_to_apply is not None:
+    for opt in ast.arg.opts_to_apply: k.apply_opt(opt)
+  elif beam >= 1:
+    from tinygrad.codegen.opt.search import beam_search
+    rawbufs, var_vals = args_from_ast(ast, ren.target.device)
+    # beam search may open devices
+    with Context(ALLOW_DEVICE_USAGE=1):
+      k = beam_search(k, rawbufs, var_vals, beam, bool(getenv("BEAM_ESTIMATE", 1)))
+  elif not NOOPT and (ast.arg is None or ast.arg.applied_opts == ()):
+    from tinygrad.codegen.opt.heuristic import hand_coded_optimizations
+    # NOTE: hand_coded_optimizations doesn't support multiblock opts yet
+    if not any(u.op is Ops.STAGE for u in ast.backward_slice):
+      k = hand_coded_optimizations(k)
+  return k.get_optimized_ast(name_override=ast.arg.name if ast.arg is not None and ast.arg.name != "test" else None)</code></pre>
+  <div class="demo" id="demo-strategy">
+    <div class="demo-title">Which branch runs?</div>
+    <div class="demo-desc">Toggle the inputs to see which branch of <code>apply_opts</code> is taken. This mirrors the code above exactly.</div>
+    <div class="controls">
+      <label><input type="checkbox" data-k="optimized"> KernelInfo.optimized</label>
+      <label><input type="checkbox" data-k="opts"> opts_to_apply set</label>
+      <label>BEAM <select data-k="beam"><option>0</option><option>1</option><option>2</option><option>4</option></select></label>
+      <label><input type="checkbox" data-k="noopt"> NOOPT=1</label>
+      <label><input type="checkbox" data-k="stage"> AST contains STAGE</label>
+    </div>
+    <div class="ch14-tip strat"></div>
+  </div>
+  <p>Note the first thing it always does: <a class="src" data-path="tinygrad/codegen/opt/postrange.py" data-line="52">convert_loop_to_global</a>. If the renderer
+  <code>has_local</code> (GPU-style), every non-reduce output range (the WEAK ranges ended by the top-level END) becomes <code>GLOBAL</code>. On the CPU (<code>ClangRenderer.has_local = False</code>) they stay WEAK and become plain loops.
+  This is why the same AST starts as <code>16:WEAK 16:WEAK 16:WEAK</code> on CPU and <code>16:GLOBAL 16:GLOBAL 16:WEAK</code> on OpenCL.</p>
+  <div class="callout note"><span class="title">How the BEAM env var gets there</span>
+  <code>BEAM=n</code> is read in <a class="src" data-path="tinygrad/engine/realize.py" data-line="277">compile_linear</a>, which rewrites every kernel CALL with
+  <a class="src" data-path="tinygrad/engine/realize.py" data-line="220">pm_beam</a> to set <code>KernelInfo.beam = n</code>. The beam value is part of the AST, so it
+  also changes <code>ast.key</code> and therefore the to_program cache key.</div>
+
+  <h2 id="optops"><span class="sec">14.3</span>Opt and OptOps: only four, and SPLIT does almost everything</h2>
+  <p>The definitions, in full (<a class="src" data-path="tinygrad/codegen/opt/__init__.py" data-line="6">codegen/opt/__init__.py</a>):</p>
+  <pre><code class="language-python">class OptOps(Enum):
+  TC = auto(); SPLIT = auto(); PADTO = auto(); SWAP = auto() # noqa: E702
+  def __lt__(self, x:OptOps): return self.value < x.value
+
+@dataclass(frozen=True, order=True)
+class Opt:
+  op: OptOps
+  axis: int|None = None
+  arg: int|tuple|None = None</code></pre>
+  <div class="codecap"><b>examples/14_optimizations.py</b>: run with <code>DEV=CPU python3 examples/14_optimizations.py</code> (full source at the end of the chapter)</div>
+  <pre class="output"><code>OptOps members : [&#x27;TC&#x27;, &#x27;SPLIT&#x27;, &#x27;PADTO&#x27;, &#x27;SWAP&#x27;]
+AxisType order : [&#x27;DEVICE&#x27;, &#x27;GLOBAL&#x27;, &#x27;LOCAL&#x27;, &#x27;WARP&#x27;, &#x27;WEAK&#x27;, &#x27;LOOP&#x27;, &#x27;UPCAST&#x27;, &#x27;PLACEHOLDER&#x27;]
+split_targets  : {&#x27;UPCAST&#x27;: [&#x27;GLOBAL&#x27;, &#x27;LOCAL&#x27;, &#x27;WEAK&#x27;], &#x27;LOCAL&#x27;: [&#x27;GLOBAL&#x27;, &#x27;WEAK&#x27;]}</code></pre>
+  <div class="callout warn"><span class="title">Historical note</span>
+  Older tinygrad had separate <code>OptOps.LOCAL</code>, <code>UPCAST</code>, <code>UNROLL</code>, <code>GROUP</code>, <code>GROUPTOP</code>, <code>NOLOCALS</code>, <code>THREAD</code>, …
+  None of them exist at this commit. All the range-splitting ones are now one <code>OptOps.SPLIT</code> whose arg says which AxisType the new range gets.
+  The old names survive only as handy vocabulary, and this chapter uses them that way:</div>
+  <table class="ch14-tbl">
+    <tr><th>old name (vocabulary)</th><th>today's Opt</th><th>on which range</th><th>effect</th></tr>
+    <tr><td>UPCAST k</td><td><code>Opt(SPLIT, a, (k, AxisType.UPCAST))</code></td><td>non-reduce</td><td>k independent outputs per thread, which become vectors</td></tr>
+    <tr><td>UNROLL k</td><td><code>Opt(SPLIT, a, (k, AxisType.UPCAST))</code></td><td>reduce</td><td>k reduce steps per loop iteration, unrolled</td></tr>
+    <tr><td>LOCAL k</td><td><code>Opt(SPLIT, a, (k, AxisType.LOCAL))</code></td><td>non-reduce (GLOBAL)</td><td>k threads per workgroup on this axis</td></tr>
+    <tr><td>GROUP k</td><td><code>Opt(SPLIT, a, (k, AxisType.LOCAL))</code></td><td>reduce</td><td>k threads share one reduction, inner split</td></tr>
+    <tr><td>GROUPTOP k</td><td><code>Opt(SPLIT, a, (k, AxisType.LOCAL, True))</code></td><td>reduce</td><td>same as GROUP but the new range is the <i>outer</i> (top) part</td></tr>
+    <tr><td>full upcast</td><td><code>Opt(SPLIT, a, (0, AxisType.UPCAST))</code></td><td>any</td><td>amount 0 means "the whole axis" (<code>amt = rng.vmax+1</code>)</td></tr>
+    <tr><td>TC</td><td><code>Opt(TC, axis, (tc_select, tc_opt, use_tc))</code></td><td>matmul-like reduce</td><td>use a tensor core instruction</td></tr>
+    <tr><td>PADTO k</td><td><code>Opt(PADTO, a, k)</code></td><td>const-size axis</td><td>round the range up to a multiple of k and gate the excess</td></tr>
+    <tr><td>SWAP b</td><td><code>Opt(SWAP, a, b)</code></td><td>two GLOBALs</td><td>swap their axis ids, which changes the launch-dimension order</td></tr>
+  </table>
+  <p>Which target types may be split off which source types is <a class="src" data-path="tinygrad/codegen/opt/postrange.py" data-line="14">split_targets</a>: UPCAST may come out of GLOBAL, LOCAL or WEAK;
+  LOCAL out of GLOBAL or WEAK. You cannot split an UPCAST again, and LOCAL needs <code>ren.has_local</code>. Other checks in
+  <a class="src" data-path="tinygrad/codegen/opt/postrange.py" data-line="94">apply_opt (SPLIT)</a>: no more than 16 for an upcast, or 32 for an unroll; the GROUP shared-memory size must
+  fit in <code>ren.shared_max</code>; no group inside another reduce. A failed check raises <code>KernelOptError</code>, which the heuristic and BEAM catch and skip.</p>
+
+  <h2 id="scheduler"><span class="sec">14.4</span>The Scheduler and the axis-number trap</h2>
+  <p>Opts are applied by <a class="src" data-path="tinygrad/codegen/opt/postrange.py" data-line="17">Scheduler</a>, a thin wrapper that holds the current AST and exposes it as a list of axes:</p>
+  <pre><code class="language-python">  @property
+  def rngs(self):
+    # Keep serial/vectorized reduction axes last, deriving their role from REDUCE rather than the axis type.
+    # void RANGEs are loops, not opt axes. the DEVICE axis is launched, not an opt axis
+    red = self.reduce_ranges
+    return sorted([u for u in self.ast.backward_slice if u.op is Ops.RANGE and u.dtype is not dtypes.void and u.vmax > 0
+                   and u.axis_type is not AxisType.DEVICE],
+                  key=lambda x: (x in red and x.axis_type in (AxisType.WEAK, AxisType.UPCAST), x.arg))
+  @property
+  def full_shape(self): return [ssimplify(x.src[0]) for x in self.rngs]
+  @property
+  def axis_types(self) -> list[AxisType]: return [x.axis_type for x in self.rngs]</code></pre>
+  <p><code>Opt.axis</code> is an index into <b>this list, as it is right now</b>. After every opt the list is re-sorted: new UPCAST ranges sort after GLOBAL/WEAK ones (enum order),
+  and serial reduce ranges always come last. So "axis 2" means different things before and after an opt. The example hit this: splitting axis 0 of a matmul by 4 makes the
+  reduce axis move from index 2 to index 3. After one more UPCAST it is at index 4. The hand-written list in the example therefore reads <code>(0, …), (1, …), (4, …)</code>.</p>
+  <div class="quiz" data-answer="1">
+    <div class="q">A CPU matmul starts as <code>[16:WEAK, 16:WEAK, 16:WEAK(reduce)]</code>. You apply <code>SPLIT(axis=0,(4,UPCAST))</code>. What is axis 2 now?</div>
+    <button class="opt">The reduce axis, still 16</button>
+    <button class="opt">The new 4:UPCAST range, since UPCAST sorts after the WEAK output ranges and the reduce axis is pushed to the end</button>
+    <button class="opt">The outer part of axis 0</button>
+    <div class="explain">rngs become [4:WEAK, 16:WEAK, 4:UPCAST, 16:WEAK(reduce)]. Axis 0 is the shrunk original, axis 1 the other output, axis 2 the new UPCAST, axis 3 the reduce. That is exactly the error the first draft of the example hit: "UPCAST is from (GLOBAL, LOCAL, WEAK), not UPCAST".</div>
+  </div>
+
+  <h2 id="shift"><span class="sec">14.5</span><code>shift_to</code>: splitting one RANGE into two</h2>
+  <p><a class="src" data-path="tinygrad/codegen/opt/postrange.py" data-line="65">Scheduler.shift_to</a>, all of it:</p>
+  <pre><code class="language-python">  def shift_to(self, rng:UOp, amount:int, new_type:AxisType, top:bool=False, input_new_rng:UOp|None=None):
+    check(rng.axis_type in split_targets[new_type], f"{new_type} is from {split_targets[new_type]}, not {rng.axis_type}")
+    if (old_sz:=rng.src[0].divides(amount)) is None:
+      raise KernelOptError(f"{amount} can't divide {rng.src[0]} in {self.colored_shape()}")
+    new_rng = UOp.range(amount, next(self.opt_range), new_type, dtype=rng.dtype) if input_new_rng is None else input_new_rng
+    replaced_rng = rng.replace(src=(old_sz,))
+    sub_axis = (new_rng * old_sz + replaced_rng) if top else (replaced_rng * amount + new_rng)
+    self.ast = self.ast.substitute({rng:sub_axis}, extra_pm=pm_flatten_range, name=f"shift {rng.axis_id} {amount} {new_type.name.lower()}")
+    return replaced_rng, new_rng</code></pre>
+  <p>Step by step:</p>
+  <ol>
+    <li><code>old_sz = n / amount</code> (symbolically. <code>divides</code> returns None if it is not exact, and then the opt fails).</li>
+    <li>The <b>old range keeps its identity</b> (same axis type and axis id) but gets the smaller bound: <code>rng.replace(src=(old_sz,))</code>.</li>
+    <li>A brand-new range of size <code>amount</code> with a fresh axis id (<code>opt_range</code> counts up from the largest id in the AST) and the requested type.</li>
+    <li>Every use of the old range is replaced by <code>replaced*amount + new</code> (new is the fast, inner part) or, with <code>top=True</code>, by <code>new*old_sz + replaced</code> (new is the slow, outer part).</li>
+    <li><code>pm_flatten_range</code> re-flattens the range lists of END/REDUCE, so <code>END(…, r)</code> becomes <code>END(…, r_outer, r_new)</code>.</li>
+  </ol>
+  <p>Here it is on <code>Tensor.empty(16)+1</code>:</p>
+  <pre class="output"><code>== shift_to: E(16)+1 on CPU.  before: 16:WEAK
+%0 = param 16 : dtype=f32 slot=0 device=CPU
+%1 = range 16 : WEAK 0
+%2 = index %0, %1
+%3 = param 16 : dtype=f32 slot=1 device=CPU
+%4 = index %3, %1
+%5 = add %4, 1.0
+%6 = store %2, %5
+%7 = end %6, %1
+%8 = sink %7 : test
+after Opt(SPLIT, axis=0, arg=(4, UPCAST)): 4:WEAK 4:UPCAST
+%0 = param 16 : dtype=f32 slot=0 device=CPU
+%1 = range 4 : WEAK 0
+%2 = mul %1, 4
+%3 = range 4 : UPCAST 1
+%4 = add %2, %3
+%5 = index %0, %4
+%6 = param 16 : dtype=f32 slot=1 device=CPU
+%7 = index %6, %4
+%8 = add %7, 1.0
+%9 = store %5, %8
+%10 = end %9, %1, %3
+%11 = sink %10 : test
+C with UPCAST 4:
+typedef float float4 __attribute__((aligned(4),ext_vector_type(4)));
+struct E_4_4_args { float* arg0; float* arg1; };
+void E_4_4(const struct E_4_4_args* args) {
+  float* data0_16 = args-&gt;arg0;
+  float* data1_16 = args-&gt;arg1;
+  for (int Lidx0 = 0; Lidx0 &lt; 4; Lidx0++) {
+    int alu0 = (Lidx0&lt;&lt;2);
+    float4 val0 = (*((float4*)((data1_16+alu0))));
+    *((float4*)((data0_16+alu0))) = (float4){(val0[0]+1.0f),(val0[1]+1.0f),(val0[2]+1.0f),(val0[3]+1.0f)};
+  }
+}</code></pre>
+  <p>The index is now <code>%1*4 + %3</code> with <code>%3 = range 4 : UPCAST 1</code>, and the END closes both ranges. Later the expander replaces the UPCAST range by the vector constant
+  <code>(0,1,2,3)</code> (<a class="src" data-path="tinygrad/codegen/__init__.py" data-line="78">expander</a>), and the loads and stores become <code>float4</code> once
+  memory coalescing sees four consecutive addresses. That is the C above.</p>
+  <div class="demo" id="demo-shift">
+    <div class="demo-title">shift_to animation: one loop of 16 becomes two</div>
+    <div class="demo-desc">The 16 cells are the 16 iterations of the original range <code>r</code>, labeled with the address they touch. Pick an amount and <code>top</code>, then press <b>split</b>:
+    each cell moves to its (old, new) coordinate. Hover a cell to see the formula. Colors show the value of the <b>new</b> range, so for an UPCAST the cells of one color all land in the same vector lane.
+    The formula is copied from <code>shift_to</code>.</div>
+    <div class="controls">
+      <label>amount <select class="amt"><option>2</option><option selected>4</option><option>8</option></select></label>
+      <label><input type="checkbox" class="top"> top=True (GROUPTOP style)</label>
+      <label>new type <select class="ty"><option>UPCAST</option><option>LOCAL</option></select></label>
+      <button class="primary go">split ▶</button><button class="back">⟲ unsplit</button>
+    </div>
+    <div class="ch14-grid"></div>
+    <div class="ch14-formula"></div>
+    <div class="ch14-tip uir"></div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">After <code>SPLIT(axis=0, (4, UPCAST))</code> on a RANGE of 16, which axis id does the size-4 <b>outer</b> range have?</div>
+    <button class="opt">The original id. The old RANGE keeps its arg and only its bound changes (16 → 4). The fresh id goes to the new UPCAST range</button>
+    <button class="opt">A fresh id; the old range is deleted</button>
+    <button class="opt">Both get fresh ids</button>
+    <div class="explain"><code>replaced_rng = rng.replace(src=(old_sz,))</code>. In the output above: <code>range 4 : WEAK 0</code> (old id 0) and <code>range 4 : UPCAST 1</code> (new id 1).</div>
+  </div>
+
+  <h2 id="lowered"><span class="sec">14.6</span>What each AxisType turns into</h2>
+  <p>The opts only relabel ranges. The code-shape changes happen later, in passes that check axis types:</p>
+  <table>
+    <tr><th>AxisType</th><th>handled by</th><th>result in code</th></tr>
+    <tr><td>GLOBAL / LOCAL</td><td><a class="src" data-path="tinygrad/codegen/gpudims.py" data-line="44">group_gpudims</a> then <code>pm_range_to_special</code></td><td><code>gidx0 = get_group_id(0)</code>, <code>lidx0 = get_local_id(0)</code>; launch sizes in ProgramInfo</td></tr>
+    <tr><td>UPCAST</td><td><a class="src" data-path="tinygrad/codegen/__init__.py" data-line="76">expander</a> (RANGE → vector CONST), devectorizer, memory_coalescing</td><td>no loop; vector loads/stores (<code>float4</code>) and unrolled ALUs</td></tr>
+    <tr><td>UPCAST on reduce</td><td><code>expand_reduce</code> + <a class="src" data-path="tinygrad/codegen/__init__.py" data-line="182">lower_reduce</a> (horizontal)</td><td><code>acc += a0*b0 + a1*b1 + a2*b2 + a3*b3</code></td></tr>
+    <tr><td>LOCAL on reduce (GROUP)</td><td><a class="src" data-path="tinygrad/codegen/__init__.py" data-line="148">fix_group_for_reduce</a></td><td>partial reduce → <code>__local</code> buffer → barrier → final reduce → store from <code>lidx0==0</code></td></tr>
+    <tr><td>WARP</td><td>TC opt + WMMA expansion</td><td>the 32 lanes that execute one tensor-core instruction</td></tr>
+    <tr><td>WEAK / LOOP</td><td>linearizer</td><td>a <code>for</code> loop</td></tr>
+  </table>
+  <p>A GROUP is worth seeing in full. On a GPU-style renderer (OpenCL, rendered here without any device) the heuristic groups the reduce of a 4096-element sum by 16:</p>
+  <pre class="output"><code>-- OpenCL source for the GROUPed sum (local memory + barrier):
+__kernel void r_16_256(__global float* data0_1, __global float* data1_4096) {
+  float buf0[1];
+  float buf1[1];
+  __attribute__ ((aligned (16))) __local float buf2[16];
+  int lidx0 = get_local_id(0); /* 16 */
+  *(buf0+0) = 0.0f;
+  for (int Lidx0 = 0; Lidx0 &lt; 256; Lidx0++) {
+    float val0 = (*(data1_4096+((lidx0&lt;&lt;8)+Lidx0)));
+    *(buf0+0) = ((*(buf0+0))+val0);
+  }
+  *(buf2+lidx0) = (*(buf0+0));
+  barrier(CLK_LOCAL_MEM_FENCE);
+  *(buf1+0) = 0.0f;
+  for (int Lidx101 = 0; Lidx101 &lt; 16; Lidx101++) {
+    float val1 = (*(buf2+Lidx101));
+    *(buf1+0) = ((*(buf1+0))+val1);
+  }
+  if ((lidx0==0)) {
+    *(data0_1+0) = (*(buf1+0));
+  }
+}</code></pre>
+  <p>Each of the 16 threads sums 256 elements into a register (<code>buf0</code>), writes its partial into <code>__local float buf2[16]</code>, waits at the <code>barrier</code>
+  (inserted by <a class="src" data-path="tinygrad/codegen/__init__.py" data-line="229">add_raw_barrier</a>), sums the 16 partials (range <code>Lidx101</code>, whose id is the original +100 from <code>fix_group_for_reduce</code>),
+  and only thread 0 stores. With <code>top=True</code> each thread reads a <i>contiguous</i> block (<code>(lidx0&lt;&lt;8)+Lidx0</code>).</p>
+
+  <h2 id="three"><span class="sec">14.7</span>The same kernel, three ways</h2>
+  <p>To force an explicit list of opts, set <code>KernelInfo.opts_to_apply</code> on the AST. <code>apply_opts</code> then applies exactly those, and neither the heuristic nor BEAM runs.
+  In the example:</p>
+  <pre><code class="language-python">def with_opts(ast: UOp, opts) -> UOp:
+  return ast.replace(arg=KernelInfo(opts_to_apply=tuple(opts)))
+manual = [Opt(OptOps.SPLIT, 0, (4, AxisType.UPCAST)), Opt(OptOps.SPLIT, 1, (4, AxisType.UPCAST)), Opt(OptOps.SPLIT, 4, (4, AxisType.UPCAST))]</code></pre>
+  <pre class="output"><code>== matmul 16x16 @ 16x16. the AST has ranges: 16:WEAK 16:WEAK 16:WEAK
+[CPU (Clang)] NOOPT=1                              -&gt; r_16_16_16         uops=  46 {&#x27;ops&#x27;: 8192, &#x27;lds&#x27;: 33792, &#x27;mem&#x27;: 3072}  opts=[]
+[CPU (Clang)] default (hand_coded_optimizations)   -&gt; r_16_16_16         uops= 163 {&#x27;ops&#x27;: 7936, &#x27;lds&#x27;: 18432, &#x27;mem&#x27;: 3072}  opts=[Opt(op=OptOps.SPLIT, axis=2, arg=(0, AxisType.UPCAST))]
+[CPU (Clang)] manual opts_to_apply                 -&gt; r_4_4_4_4_4_4      uops= 376 {&#x27;ops&#x27;: 8192, &#x27;lds&#x27;: 9216, &#x27;mem&#x27;: 3072}  opts=[Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST)), Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST)), Opt(op=OptOps.SPLIT, axis=4, arg=(4, AxisType.UPCAST))]
+[OpenCL     ] NOOPT=1                              -&gt; r_16_16_16         uops=  42 {&#x27;ops&#x27;: 8192, &#x27;lds&#x27;: 33792, &#x27;mem&#x27;: 3072}  opts=[]
+[OpenCL     ] default (hand_coded_optimizations)   -&gt; r_16_16_16         uops=  53 {&#x27;ops&#x27;: 73728, &#x27;lds&#x27;: 312320, &#x27;mem&#x27;: 3072}  opts=[Opt(op=OptOps.SPLIT, axis=2, arg=(16, AxisType.LOCAL, True))]
+[OpenCL     ] manual opts_to_apply                 -&gt; r_4_4_4_4_16       uops= 238 {&#x27;ops&#x27;: 8192, &#x27;lds&#x27;: 9216, &#x27;mem&#x27;: 3072}  opts=[Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST)), Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST)), Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.LOCAL))]</code></pre>
+  <p>Read the numbers. <code>lds</code> (bytes moved) falls from 33792 to 9216 with the manual 4×4 register tile, because every loaded <code>float4</code> is reused 4 times. <code>ops</code> stays 8192: same math.
+  The uop count grows with unrolling (46 → 376). On OpenCL the default heuristic picks a GROUPTOP of 16, because the output (256 elements) is small enough
+  (≤ 2048) that splitting the reduction across threads is worth it. Its <code>ops</code> estimate jumps to 73728 because every one of the 4096 threads runs the 16-step final
+  reduce loop, even though only thread 0 stores the result.</p>
+  <div class="demo" id="demo-three">
+    <div class="demo-title">NOOPT vs heuristic vs manual: real generated source</div>
+    <div class="demo-desc">Switch renderer and variant. Note the <code>float4</code> vectors and <code>buf0[16]</code> accumulators of the manual CPU version, and the <code>__local</code> buffer + <code>barrier</code> of the OpenCL default.</div>
+    <div class="controls rsel"></div><div class="controls vsel"></div>
+    <div class="ch14-stats stats"></div>
+    <div class="ch14-src src"></div>
+  </div>
+
+  <h2 id="playground"><span class="sec">14.8</span>The opt playground</h2>
+  <p>The example also walked a tree of opt sequences for a 16×16×16 matmul on OpenCL: every opt in a menu (UPCAST/LOCAL by 4 on output axes, UNROLL/GROUP/GROUPTOP by 4 on the reduce
+  axis) from the start state and from each resulting state, two levels deep. Each node was really applied with <code>Scheduler.apply_opt</code>, lowered and rendered. Failed opts carry the real
+  <code>KernelOptError</code> message.</p>
+  <div class="demo" id="demo-play">
+    <div class="demo-title">Opt playground: 61 real variants</div>
+    <div class="demo-desc">Click an opt to apply it. Crossed-out ones failed in tinygrad; hover them for the reason. The bar shows <code>Scheduler.rngs</code> (size and AxisType) in order, which is also the kernel name.
+    Use the breadcrumbs to go back.</div>
+    <div class="ch14-crumbs"></div>
+    <div class="ch14-shape shape"></div>
+    <div class="ch14-stats stats"></div>
+    <div class="ch14-menu menu"></div>
+    <div class="ch14-src src"></div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">In the playground, GROUP and GROUPTOP on the reduce axis both create a LOCAL range of 4. What is the difference in the generated code?</div>
+    <button class="opt">GROUPTOP doesn't use local memory</button>
+    <button class="opt">GROUP needs a barrier and GROUPTOP doesn't</button>
+    <button class="opt">The index arithmetic. GROUP: k = r*4 + lidx (threads interleave, so neighbouring threads read neighbouring elements). GROUPTOP: k = lidx*4 + r (each thread reads a contiguous block)</button>
+    <div class="explain">That is the <code>top</code> flag of <code>shift_to</code>: <code>new*old_sz + replaced</code> vs <code>replaced*amount + new</code>. Both lower to the same local-buffer reduction.</div>
+  </div>
+
+  <h2 id="heuristic"><span class="sec">14.9</span><code>hand_coded_optimizations</code>, decision by decision</h2>
+  <p><a class="src" data-path="tinygrad/codegen/opt/heuristic.py" data-line="8">heuristic.py</a> is a fixed sequence of rules. Each rule calls <code>k.apply_opt</code> and catches <code>KernelOptError</code>:</p>
+  <table>
+    <tr><th>lines</th><th>rule</th></tr>
+    <tr><td><a class="src" data-path="tinygrad/codegen/opt/heuristic.py" data-line="28">28–44</a></td><td><b>Tensor cores first.</b> If there is one reduce axis (or TC_OPT≥1), try <code>Opt(TC, axis, (TC_SELECT, TC_OPT, USE_TC))</code> for axis 0,1,2 on a copy. On success, upcast/local the TC's M and N ranges and <b>return</b>.</td></tr>
+    <tr><td><a class="src" data-path="tinygrad/codegen/opt/heuristic.py" data-line="50">50–58</a></td><td>IMAGE only: upcast by 4 a unit-stride axis of an image buffer.</td></tr>
+    <tr><td><a class="src" data-path="tinygrad/codegen/opt/heuristic.py" data-line="61">61–78</a></td><td><b>Matvec.</b> GPU, reduce of a MUL of two INDEXes, where the first index has the reduce range as a plain addend: GROUP the reduce by MV_THREADS_PER_ROW=8, LOCAL a global by MV_BLOCKSIZE=4, UPCAST it by MV_ROWS_PER_THREAD=4, and return.</td></tr>
+    <tr><td><a class="src" data-path="tinygrad/codegen/opt/heuristic.py" data-line="81">81–89</a></td><td><b>Grouping.</b> If the product of upcastable (output) dims is ≤ 2048 (240 on QCOM), GROUPTOP the first reduce axis by 16. If that worked, stop.</td></tr>
+    <tr><td><a class="src" data-path="tinygrad/codegen/opt/heuristic.py" data-line="94">94–109</a></td><td><b>Masked axes.</b> Fully upcast small (≤7) axes used in WHERE gates (pad/stack/cat patterns).</td></tr>
+    <tr><td><a class="src" data-path="tinygrad/codegen/opt/heuristic.py" data-line="114">114–137</a></td><td><b>More upcasts.</b> While upcastable work ≥ 1024 and upcast size &lt; 32: among axes that some buffer <i>doesn't</i> index (reuse!), upcast by 3 or 4 the one with the fewest/smallest strides.</td></tr>
+    <tr><td><a class="src" data-path="tinygrad/codegen/opt/heuristic.py" data-line="141">141–150</a></td><td><b>Unroll the reduce.</b> If the last reduce dim is ≤ 32, upcast it fully (and a second one if both ≤ 3). Otherwise unroll by 4 if divisible.</td></tr>
+    <tr><td><a class="src" data-path="tinygrad/codegen/opt/heuristic.py" data-line="153">153–154</a></td><td>If nothing is upcast yet, upcast the last output axis by 4.</td></tr>
+    <tr><td><a class="src" data-path="tinygrad/codegen/opt/heuristic.py" data-line="158">158–186</a></td><td><b>Locals</b> (GPU only). Rank global axes: "expand" axes (some buffer ignores them) first, then higher axis first. Give each a local size from [32 (axis 0 only), 16, 8, 4, 3, 2] with the total ≤ 128. Apply up to 3.</td></tr>
+  </table>
+  <p>The example monkey-patches <code>Scheduler.apply_opt</code> to log every call, both successes and failures, during real heuristic runs:</p>
+  <pre class="output"><code>== heuristic trace: matmul 64x64 · CPU   start 64:WEAK 64:WEAK 64:WEAK
+   FAIL         Opt(op=OptOps.TC, axis=0, arg=(-1, 0, 1)) -&gt; 64:WEAK 64:WEAK 64:WEAK   # no tensor core available
+   FAIL         Opt(op=OptOps.TC, axis=1, arg=(-1, 0, 1)) -&gt; 64:WEAK 64:WEAK 64:WEAK   # no tensor core available
+   FAIL         Opt(op=OptOps.TC, axis=2, arg=(-1, 0, 1)) -&gt; 64:WEAK 64:WEAK 64:WEAK   # no tensor core available
+   ok           Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST)) -&gt; 64:WEAK 16:WEAK 4:UPCAST 64:WEAK 
+   ok           Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST)) -&gt; 16:WEAK 16:WEAK 4:UPCAST 4:UPCAST 64:WEAK 
+   ok           Opt(op=OptOps.SPLIT, axis=4, arg=(4, AxisType.UPCAST)) -&gt; 16:WEAK 16:WEAK 4:UPCAST 4:UPCAST 16:WEAK 4:UPCAST 
+   final: r_16_16_4_4_16_4 [Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST)), Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST)), Opt(op=OptOps.SPLIT, axis=4, arg=(4, AxisType.UPCAST))]
+
+== heuristic trace: matmul 64x64 · OpenCL   start 64:GLOBAL 64:GLOBAL 64:WEAK
+   FAIL         Opt(op=OptOps.TC, axis=0, arg=(-1, 0, 1)) -&gt; 64:GLOBAL 64:GLOBAL 64:WEAK   # no tensor core available
+   FAIL         Opt(op=OptOps.TC, axis=1, arg=(-1, 0, 1)) -&gt; 64:GLOBAL 64:GLOBAL 64:WEAK   # no tensor core available
+   FAIL         Opt(op=OptOps.TC, axis=2, arg=(-1, 0, 1)) -&gt; 64:GLOBAL 64:GLOBAL 64:WEAK   # no tensor core available
+   ok           Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST)) -&gt; 64:GLOBAL 16:GLOBAL 4:UPCAST 64:WEAK 
+   ok           Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST)) -&gt; 16:GLOBAL 16:GLOBAL 4:UPCAST 4:UPCAST 64:WEAK 
+   ok           Opt(op=OptOps.SPLIT, axis=4, arg=(4, AxisType.UPCAST)) -&gt; 16:GLOBAL 16:GLOBAL 4:UPCAST 4:UPCAST 16:WEAK 4:UPCAST 
+   ok           Opt(op=OptOps.SPLIT, axis=0, arg=(8, AxisType.LOCAL)) -&gt; 2:GLOBAL 16:GLOBAL 8:LOCAL 4:UPCAST 4:UPCAST 16:WEAK 4:UPCAST 
+   ok           Opt(op=OptOps.SPLIT, axis=1, arg=(16, AxisType.LOCAL)) -&gt; 2:GLOBAL 8:LOCAL 16:LOCAL 4:UPCAST 4:UPCAST 16:WEAK 4:UPCAST 
+   final: r_2_8_16_4_4_16_4 [Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST)), Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST)), Opt(op=OptOps.SPLIT, axis=4, arg=(4, AxisType.UPCAST)), Opt(op=OptOps.SPLIT, axis=0, arg=(8, AxisType.LOCAL)), Opt(op=OptOps.SPLIT, axis=1, arg=(16, AxisType.LOCAL))]
+
+== heuristic trace: sum (64,256)→(64,) · OpenCL   start 64:GLOBAL 256:WEAK
+   FAIL         Opt(op=OptOps.TC, axis=0, arg=(-1, 0, 1)) -&gt; 64:GLOBAL 256:WEAK   # no tensor core available
+   FAIL         Opt(op=OptOps.TC, axis=1, arg=(-1, 0, 1)) -&gt; 64:GLOBAL 256:WEAK   # no tensor core available
+   FAIL         Opt(op=OptOps.TC, axis=2, arg=(-1, 0, 1)) -&gt; 64:GLOBAL 256:WEAK   # no tensor core available
+   ok           Opt(op=OptOps.SPLIT, axis=1, arg=(16, AxisType.LOCAL, True)) -&gt; 64:GLOBAL 16:LOCAL 16:WEAK 
+   final: r_64_16_16 [Opt(op=OptOps.SPLIT, axis=1, arg=(16, AxisType.LOCAL, True))]
+
+== heuristic trace: sum 4096→() · OpenCL   start 4096:WEAK
+   FAIL         Opt(op=OptOps.TC, axis=0, arg=(-1, 0, 1)) -&gt; 4096:WEAK   # no tensor core available
+   FAIL         Opt(op=OptOps.TC, axis=1, arg=(-1, 0, 1)) -&gt; 4096:WEAK   # no tensor core available
+   FAIL         Opt(op=OptOps.TC, axis=2, arg=(-1, 0, 1)) -&gt; 4096:WEAK   # no tensor core available
+   ok           Opt(op=OptOps.SPLIT, axis=0, arg=(16, AxisType.LOCAL, True)) -&gt; 16:LOCAL 256:WEAK 
+   final: r_16_256 [Opt(op=OptOps.SPLIT, axis=0, arg=(16, AxisType.LOCAL, True))]
+
+== heuristic trace: matvec (256,)@(256,64) · OpenCL   start 64:GLOBAL 256:WEAK
+   FAIL         Opt(op=OptOps.TC, axis=0, arg=(-1, 0, 1)) -&gt; 64:GLOBAL 256:WEAK   # no tensor core available
+   FAIL         Opt(op=OptOps.TC, axis=1, arg=(-1, 0, 1)) -&gt; 64:GLOBAL 256:WEAK   # no tensor core available
+   FAIL         Opt(op=OptOps.TC, axis=2, arg=(-1, 0, 1)) -&gt; 64:GLOBAL 256:WEAK   # no tensor core available
+   ok           Opt(op=OptOps.SPLIT, axis=1, arg=(8, AxisType.LOCAL)) -&gt; 64:GLOBAL 8:LOCAL 32:WEAK 
+   ok           Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.LOCAL)) -&gt; 16:GLOBAL 8:LOCAL 4:LOCAL 32:WEAK 
+   ok           Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST)) -&gt; 4:GLOBAL 8:LOCAL 4:LOCAL 4:UPCAST 32:WEAK 
+   final: r_4_8_4_4_32 [Opt(op=OptOps.SPLIT, axis=1, arg=(8, AxisType.LOCAL)), Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.LOCAL)), Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))]
+
+== heuristic trace: matmul 64x64 fp32 · Metal (TC)   start 64:GLOBAL 64:GLOBAL 64:WEAK
+   ok           Opt(op=OptOps.TC, axis=0, arg=(-1, 0, 1)) -&gt; 8:GLOBAL 8:GLOBAL 32:WARP 2:UPCAST 8:WEAK 
+   ok           Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST)) -&gt; 2:GLOBAL 8:GLOBAL 32:WARP 2:UPCAST 4:UPCAST 8:WEAK 
+   ok           Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST)) -&gt; 2:GLOBAL 2:GLOBAL 32:WARP 2:UPCAST 4:UPCAST 4:UPCAST 8:WEAK 
+   ok           Opt(op=OptOps.SPLIT, axis=1, arg=(2, AxisType.LOCAL)) -&gt; 2:GLOBAL 2:LOCAL 32:WARP 2:UPCAST 4:UPCAST 4:UPCAST 8:WEAK 
+   final: r_2_2_32_2_4_4_8 [Opt(op=OptOps.TC, axis=0, arg=(-1, 0, 1)), Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST)), Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST)), Opt(op=OptOps.SPLIT, axis=1, arg=(2, AxisType.LOCAL))]</code></pre>
+  <div class="demo" id="demo-heur">
+    <div class="demo-title">Heuristic trace viewer</div>
+    <div class="demo-desc">Pick a kernel and step through the real <code>apply_opt</code> calls. The bar is <code>Scheduler.rngs</code> after each call, and the caption names the heuristic rule responsible.</div>
+    <div class="controls tsel"></div>
+    <div class="ch14-shape shape"></div>
+    <div class="stepwrap"></div>
+    <div class="ch14-log log"></div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">Why does the 64×64 matmul on OpenCL <i>not</i> get grouped, while the 16×16 one does?</div>
+    <button class="opt">64 is not divisible by 16</button>
+    <button class="opt">The grouping rule needs prod(output dims) ≤ 2048. 64·64 = 4096 fails, 16·16 = 256 passes. Big outputs already have enough parallelism without splitting the reduce</button>
+    <button class="opt">Grouping is CPU-only</button>
+    <div class="explain">heuristic.py:81. The rationale: a GPU needs thousands of threads; when the output alone provides them, splitting the reduce only adds barriers.</div>
+  </div>
+
+  <h2 id="tc"><span class="sec">14.10</span>Tensor cores</h2>
+  <p>A tensor core computes \(D = A\cdot B + C\) for a small fixed tile (e.g. 8×8×8) cooperatively across a warp. Each lane holds a few elements of each fragment.
+  <a class="src" data-path="tinygrad/renderer/tc.py" data-line="7">TensorCore</a> describes one instruction by its dtypes and, for A, B and C, which bits of the lane id and which bits of the
+  per-lane element index map to which bits of the m/n/k tile coordinates. <code>dims</code> (N, M, K) and <code>threads</code> are derived from those bit lists:</p>
+  <pre class="output"><code>== tensor cores (renderer/tc.py)
+  Metal (Apple7+)  [((8, 8, 8), 32)] [&#x27;bf16-&gt;bf16&#x27;, &#x27;bf16-&gt;f32&#x27;, &#x27;f16-&gt;f16&#x27;, &#x27;f16-&gt;f32&#x27;, &#x27;f32-&gt;f32&#x27;]
+  CUDA sm_80       [((8, 16, 8), 32), ((8, 16, 16), 32)] [&#x27;bf16-&gt;f32&#x27;, &#x27;f16-&gt;f16&#x27;, &#x27;f16-&gt;f32&#x27;, &#x27;f32-&gt;f32&#x27;]
+  CUDA sm_89       [((8, 16, 8), 32), ((8, 16, 16), 32), ((8, 16, 32), 32)] [&#x27;bf16-&gt;f32&#x27;, &#x27;f16-&gt;f16&#x27;, &#x27;f16-&gt;f32&#x27;, &#x27;f32-&gt;f32&#x27;, &#x27;fp8e4m3-&gt;f32&#x27;, &#x27;fp8e5m2-&gt;f32&#x27;]
+  AMD RDNA3        [((16, 16, 16), 32)] [&#x27;bf16-&gt;f32&#x27;, &#x27;f16-&gt;f16&#x27;, &#x27;f16-&gt;f32&#x27;, &#x27;i8-&gt;i32&#x27;]
+  AMD RDNA4        [((16, 16, 16), 32)] [&#x27;bf16-&gt;bf16&#x27;, &#x27;bf16-&gt;f32&#x27;, &#x27;f16-&gt;f16&#x27;, &#x27;f16-&gt;f32&#x27;, &#x27;fp8e4m3-&gt;f32&#x27;, &#x27;fp8e5m2-&gt;f32&#x27;, &#x27;i8-&gt;i32&#x27;]
+  AMD CDNA3        [((16, 16, 16), 64), ((16, 16, 32), 64)] [&#x27;bf16-&gt;f32&#x27;, &#x27;f16-&gt;f32&#x27;, &#x27;fp8e4m3fnuz-&gt;f32&#x27;, &#x27;fp8e5m2fnuz-&gt;f32&#x27;]
+  CPU (Clang) tensor_cores: []   OpenCL: []</code></pre>
+  <p>So: <b>Metal</b> (Apple7+, <a class="src" data-path="tinygrad/renderer/cstyle.py" data-line="377">cstyle.py:377</a>), <b>CUDA</b>/<b>PTX</b>/NV (sm_75+, <code>get_cuda</code>), <b>AMD</b> HIP/AMDLLVM (RDNA3/4, CDNA3/4, <code>get_amd</code>),
+  and the <b>PYTHON</b> emulator when given such an arch (<code>DEV=PYTHON::sm_80</code>, <code>::gfx1100</code>, <code>::METAL</code>; see ops_python.py). The CPU and OpenCL renderers have none.</p>
+  <h3>How the TC opt is applied</h3>
+  <p><a class="src" data-path="tinygrad/codegen/opt/postrange.py" data-line="157">_apply_tc_opt</a>: the first REDUCE must be an ADD of a MUL (optionally CAST). For each candidate TensorCore with matching dtypes, it collects
+  ranges only in <code>in0</code>, only in <code>in1</code>, and the reduce ranges. <code>opt.axis</code> picks one (N, M, K) triple from their product. Each axis is padded if needed (TC_OPT≥2),
+  then split into 2s with <code>shift_to</code>, once per bit in <code>axis_coords()</code>. Lane bits (<code>frag_c[0]</code>) go into a single WARP range of size <code>threads</code>
+  (<code>input_new_rng=warp//2**i%2</code>), and element bits become UPCAST ranges. Finally the REDUCE is replaced by <code>UOp.wmma(a, b, acc, dims, threads, tc_upcast_axes)</code>:</p>
+  <pre class="output"><code>  TC on Metal fp32 8x8x8: shape after TC opt = 2:GLOBAL 2:GLOBAL 32:WARP 2:UPCAST 2:WEAK
+     WMMA arg = ((8, 8, 8), dtypes.f32, 32, ((((AxisType.UPCAST, 3), 2),), (((AxisType.UPCAST, 3), 2),), (((AxisType.UPCAST, 3), 2),)))
+  TC on CUDA fp16 m16n8k16: shape after TC opt = 2:GLOBAL 32:WARP 2:UPCAST 2:UPCAST 2:UPCAST
+     WMMA arg = ((8, 16, 16), dtypes.f16, 32, ((((AxisType.UPCAST, 4), 2), ((AxisType.UPCAST, 3), 2), ((AxisType.UPCAST, 8), 2)), (((AxisType.UPCAST, 4), 2), ((AxisType.UPCAST, 3), 2), ((AxisType.UPCAST, 8), 1)), (((AxisType.UPCAST, 4), 2), ((AxisType.UPCAST, 3), 2), ((AxisType.UPCAST, 8), 1))))</code></pre>
+  <div class="tabs">
+    <div class="tabpane" data-title="Metal fp32 (simdgroup 8×8×8)"><pre class="output"><code>#include &lt;metal_stdlib&gt;
+using namespace metal;
+float2 __WMMA_8_8_8_f32_f32(float2 a, float2 b, float2 c){
+  simdgroup_float8x8 mat_a, mat_b; simdgroup_float8x8 mat_c;
+  mat_a.thread_elements()[0] = a[0]; mat_b.thread_elements()[0] = b[0]; mat_c.thread_elements()[0] = c[0];
+  mat_a.thread_elements()[1] = a[1]; mat_b.thread_elements()[1] = b[1]; mat_c.thread_elements()[1] = c[1];
+  simdgroup_multiply_accumulate(mat_c, mat_a, mat_b, mat_c);
+  return float2(mat_c.thread_elements()[0], mat_c.thread_elements()[1]);
+}
+struct r_2_2_32_2_2_args { device float* arg0; device float* arg1; device float* arg2; };
+kernel void r_2_2_32_2_2(constant struct r_2_2_32_2_2_args* args, uint3 gid [[threadgroup_position_in_grid]], uint3 lid [[thread_position_in_threadgroup]]) {
+  device float* data0_256 = args-&gt;arg0;
+  device float* data1_256 = args-&gt;arg1;
+  device float* data2_256 = args-&gt;arg2;
+  float buf0[2];
+  int gidx0 = gid.x; /* 2 */
+  int gidx1 = gid.y; /* 2 */
+  int lidx0 = lid.x; /* 32 */
+  int alu0 = (((lidx0&gt;&gt;4)&lt;&lt;6)+(((lidx0&gt;&gt;1)&amp;3)&lt;&lt;4));
+  int alu1 = (alu0+(gidx1&lt;&lt;7));
+  int alu2 = (((lidx0&gt;&gt;3)&amp;1)&lt;&lt;2);
+  int alu3 = ((lidx0&amp;1)&lt;&lt;1);
+  int alu4 = (alu2+(gidx0&lt;&lt;3)+alu3);
+  *(buf0+0) = 0.0f;
+  *(buf0+1) = 0.0f;
+  for (int Lidx0 = 0; Lidx0 &lt; 2; Lidx0++) {
+    float2 val0 = (*((device float2*)((data1_256+(alu1+alu2+(Lidx0&lt;&lt;3)+alu3)))));
+    float2 val1 = (*((device float2*)((data2_256+(alu0+(Lidx0&lt;&lt;7)+alu4)))));
+    float2 wmma0 = __WMMA_8_8_8_f32_f32(val0, val1, float2((*(buf0+0)),(*(buf0+1))));
+    *(buf0+0) = wmma0.x;
+    *(buf0+1) = wmma0.y;
+  }
+  *((device float2*)((data0_256+(alu1+alu4)))) = float2((*(buf0+0)),(*(buf0+1)));
+}</code></pre></div>
+    <div class="tabpane" data-title="CUDA fp16 (mma.m16n8k16)"><div class="ch14-src tccuda"></div></div>
+  </div>
+  <p>The <code>WMMA</code> becomes a call to a helper the renderer emits (<code>__WMMA_8_8_8_f32_f32</code> using <code>simdgroup_multiply_accumulate</code>, or inline PTX <code>mma.sync</code>), and the
+  32 lanes of <code>lidx0</code> each hand in their 2 (Metal) or 8+4 (CUDA) fragment elements. The heuristic run on Metal in 14.9 then adds UPCASTs and a LOCAL on top of the TC.</p>
+  <div class="callout note"><span class="title">The knobs</span>
+  <code>TC</code> (the env name of the <code>USE_TC</code> ContextVar, helpers.py:242: 0 off, 1 on, 2 "shape only, no WMMA"), <code>TC_SELECT</code> (−1 = first match), <code>TC_OPT</code> (0: single reduce axis, direct
+  MUL; 1: allow CASTs and multiple reduce axes; 2: allow padding), <code>TC_MIN_GLOBALS</code>. On CUDA/NV, fp32 inputs (TF32) are skipped unless <code>ALLOW_TF32</code>.</div>
+
+  <h2 id="beam"><span class="sec">14.11</span>BEAM search</h2>
+  <p>The heuristic is a guess. BEAM measures. <a class="src" data-path="tinygrad/codegen/opt/search.py" data-line="105">beam_search</a> in outline:</p>
+  <ol>
+    <li><b>Cache.</b> The key is <code>{ast.key, amt, allow_test_size, device, suffix}</code> in the sqlite diskcache table <code>beam_search</code>. On a hit, re-apply the stored opts and return.
+    It is skipped with <code>IGNORE_BEAM_CACHE=1</code> or <code>CACHELEVEL=0</code>.</li>
+    <li><b>Actions.</b> A fixed list of 209 Opts (<a class="src" data-path="tinygrad/codegen/opt/search.py" data-line="14">search.py:14–22</a>): UPCAST by {0,2,3,4,5,7} on axes 0–9, LOCAL by {0,2,3,4,8,13,16,29} on axes 0–7,
+    GROUPTOP by {13,16,28,29,32,49,64,256}, one LOCAL 32, 10 TC variants, 10 SWAPs (+ PADTO with BEAM_PADTO).
+    <a class="src" data-path="tinygrad/codegen/opt/search.py" data-line="84">get_kernel_actions</a> applies each to a copy of every beam member and drops failures and anything over
+    BEAM_UPCAST_MAX=256 upcast or BEAM_LOCAL_MAX=1024 local.</li>
+    <li><b>Compile</b> every candidate (in the worker pool, PARALLEL = CPU count) with a timeout (BEAM_TIMEOUT_SEC=10) and a size limit (BEAM_UOPS_MAX=3000). Identical binaries are deduplicated (<code>seen_libs</code>),
+    and candidates whose estimated ops exceed 1000× the smallest are skipped.</li>
+    <li><b>Time</b> each on the real device with <a class="src" data-path="tinygrad/codegen/opt/search.py" data-line="34">_time_program</a>: 3 runs, minimum taken, early stop if slower than 3× the current best.
+    Huge global sizes are shrunk to ≤ 65536 and the time is scaled back up.</li>
+    <li><b>Keep the best <code>amt</code></b> (BEAM=2 → 2) and repeat from step 2, until no candidate improves the best by at least BEAM_MIN_PROGRESS (0.01 µs).</li>
+  </ol>
+  <p>The example ran <code>BEAM=2</code> on the CPU for a 32×32 matmul, wrapping <code>search._time_program</code> to record every timed candidate:</p>
+  <pre class="output"><code>== BEAM=2 on CPU, matmul 32x32: timed 49 candidates in 6.8s
+   start shape: [[32, &#x27;WEAK&#x27;], [32, &#x27;WEAK&#x27;], [32, &#x27;WEAK&#x27;]] 
+   winner opts: [&#x27;Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))&#x27;, &#x27;Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))&#x27;, &#x27;Opt(op=OptOps.SPLIT, axis=4, arg=(4, AxisType.UPCAST))&#x27;, &#x27;Opt(op=OptOps.SPLIT, axis=1, arg=(2, AxisType.UPCAST))&#x27;] 
+   winner shape: [[8, &#x27;WEAK&#x27;], [4, &#x27;WEAK&#x27;], [4, &#x27;UPCAST&#x27;], [4, &#x27;UPCAST&#x27;], [2, &#x27;UPCAST&#x27;], [8, &#x27;WEAK&#x27;], [4, &#x27;UPCAST&#x27;]]
+       4.34 us  [&#x27;Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))&#x27;, &#x27;Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))&#x27;, &#x27;Opt(op=OptOps.SPLIT, axis=4, arg=(4, AxisType.UPCAST))&#x27;, &#x27;Opt(op=OptOps.SPLIT, axis=1, arg=(2, AxisType.UPCAST))&#x27;]
+       4.47 us  [&#x27;Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))&#x27;, &#x27;Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))&#x27;, &#x27;Opt(op=OptOps.SPLIT, axis=4, arg=(4, AxisType.UPCAST))&#x27;, &#x27;Opt(op=OptOps.SPLIT, axis=0, arg=(2, AxisType.UPCAST))&#x27;]
+       4.52 us  [&#x27;Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))&#x27;, &#x27;Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))&#x27;, &#x27;Opt(op=OptOps.SPLIT, axis=4, arg=(4, AxisType.UPCAST))&#x27;, &#x27;Opt(op=OptOps.SPLIT, axis=1, arg=(2, AxisType.UPCAST))&#x27;, &#x27;Opt(op=OptOps.SPLIT, axis=0, arg=(2, AxisType.UPCAST))&#x27;]
+       4.98 us  [&#x27;Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))&#x27;, &#x27;Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))&#x27;, &#x27;Opt(op=OptOps.SPLIT, axis=4, arg=(4, AxisType.UPCAST))&#x27;]
+       5.11 us  [&#x27;Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))&#x27;, &#x27;Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))&#x27;]</code></pre>
+  <div class="demo" id="demo-beam">
+    <div class="demo-title">The real BEAM=2 search tree</div>
+    <div class="demo-desc">Columns are rounds (number of opts applied). Each box is one candidate that was compiled and timed on this machine's CPU, colored from fast (green) to slow (red).
+    Yellow outlines mark the 2 kept in the beam, i.e. those that have children in the next round. Step through the rounds, and hover a box for its opts and time.
+    (CPU timings of a few µs are noisy. A rerun gives a slightly different tree. If you see one candidate at milliseconds, that is an OS hiccup on its first run: <code>_time_program</code> stops early, without the other 2 runs, once a run is slower than 3× the current best. It cannot win anyway.)</div>
+    <div class="stepwrap"></div>
+    <div class="ch14-beam"></div>
+    <div class="ch14-tip tip">hover a candidate</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">You run a model twice with BEAM=2. Why is the second run's compile much faster?</div>
+    <button class="opt">beam_search stores the winning opts in the diskcache keyed by the AST key (and device, amt), so the second run re-applies them without timing anything</button>
+    <button class="opt">The kernels are already compiled into the binary</button>
+    <button class="opt">BEAM only searches on the first call of a process</button>
+    <div class="explain">search.py:107 (diskcache_get) and :172 (diskcache_put). Set IGNORE_BEAM_CACHE=1 to force a fresh search, as the example does.</div>
+  </div>
+  <div class="quiz" data-answer="2">
+    <div class="q">Why are there no LOCAL or GROUP candidates in the CPU BEAM tree?</div>
+    <button class="opt">BEAM filters them by timing</button>
+    <button class="opt">They were all too slow</button>
+    <button class="opt">ClangRenderer.has_local is False, so every SPLIT with a LOCAL target fails the <code>check(self.ren.has_local, …)</code> in apply_opt and never becomes a candidate</button>
+    <div class="explain">postrange.py:99. On a GPU the same search explores locals and groups too, and that is where most of the speedups come from.</div>
+  </div>
+
+  <h2 id="padswap"><span class="sec">14.12</span>PADTO and SWAP</h2>
+  <p><a class="src" data-path="tinygrad/codegen/opt/postrange.py" data-line="127">PADTO</a> rounds a constant-size range up to a multiple (e.g. 17 → 32) so it can be split. It replaces the range,
+  gates every INDEX that uses it with <code>valid = r &lt; 17</code> (the same Invalid mechanism as <a href="13-kernel-ast.html">Chapter 13</a>), and wraps reduce inputs in
+  <code>where(valid, x, identity)</code>. It refuses if padding would more than quadruple the work. TC padding with TC_OPT=2 uses it internally.
+  <a class="src" data-path="tinygrad/codegen/opt/postrange.py" data-line="144">SWAP</a> exchanges the axis ids of two GLOBAL ranges. That changes their sort order and therefore which one becomes
+  <code>gidx0</code> vs <code>gidx1</code>, which can matter for coalescing and launch limits.</p>
+
+  <h2 id="source"><span class="sec">14.13</span>The full example</h2>
+  <div class="codecap"><b>examples/14_optimizations.py</b>: run with <code>DEV=CPU python3 examples/14_optimizations.py</code> (~15 s, of which BEAM takes ~7 s)</div>
+  <pre><code class="language-python"># Chapter 14 — Optimizations, tensor cores &amp; BEAM
+# Run: DEV=CPU python3 examples/14_optimizations.py
+#
+# Everything here is real: we take kernel ASTs from the scheduler, apply OptOps with the real Scheduler
+# (codegen/opt/postrange.py), lower them with the real full_rewrite_to_sink, and render with real renderers.
+# GPU renderers (OpenCL, Metal, CUDA) are instantiated WITHOUT their compilers (no GPU / no driver here):
+# we only need .render(), never .compile(). BEAM search at the end really compiles and times CPU kernels.
+import json, os, sys, time
+from tinygrad import Tensor, Device, dtypes
+from tinygrad.uop.ops import Ops, UOp, KernelInfo, AxisType
+from tinygrad.helpers import Context, Target
+from tinygrad.renderer import Renderer, Estimates, tc
+from tinygrad.renderer.cstyle import OpenCLRenderer, MetalRenderer, CUDARenderer
+from tinygrad.codegen import full_rewrite_to_sink, line_rewrite, pm_linearize_cleanups, pm_alloc_to_buf
+from tinygrad.codegen.late.linearizer import linearize
+from tinygrad.codegen.opt import Opt, OptOps, KernelOptError
+from tinygrad.codegen.opt import postrange, heuristic
+from tinygrad.codegen.opt.postrange import Scheduler, split_targets
+from tinygrad.codegen.opt.heuristic import hand_coded_optimizations
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+OUT = {}
+
+def asts(*ts):
+  return [c.src[0] for c in Tensor.schedule_linear(*ts).src if c.op is Ops.CALL and c.src[0].op is Ops.SINK]
+
+def bare(cls, target, tcs=()):
+  # a renderer object without its compiler: Renderer.__init__ only stores the target
+  r = cls.__new__(cls); Renderer.__init__(r, target); r.tensor_cores = list(tcs); return r
+
+CPU = Device[&quot;CPU&quot;].renderer                                   # ClangRenderer: has_local=False, no tensor cores
+CL = OpenCLRenderer(Target(&quot;CL&quot;, &quot;CL&quot;, &quot;&quot;))                    # has_local=True, has_shared=True, no tensor cores
+METAL = bare(MetalRenderer, Target(&quot;METAL&quot;, &quot;METAL&quot;, &quot;Apple9&quot;), tc.metal)
+CUDA = bare(CUDARenderer, Target(&quot;CUDA&quot;, &quot;CUDA&quot;, &quot;sm_80&quot;), tc.get_cuda(&quot;sm_80&quot;))
+
+def lower(ast: UOp, ren):
+  &quot;&quot;&quot;the same steps do_to_program performs, minus compile: optimize+lower, linearize, render. returns (KernelInfo, src, Estimates, n_uops)&quot;&quot;&quot;
+  sink = full_rewrite_to_sink(ast, ren, optimize=not ast.arg.optimized)
+  lst = line_rewrite(linearize(sink), pm_linearize_cleanups + pm_alloc_to_buf)
+  return sink.arg, ren.render(lst), Estimates.from_uops(tuple(lst), ignore_indexing=True), len(lst)
+
+def with_opts(ast: UOp, opts) -&gt; UOp:
+  # the official way to force an explicit opt list: KernelInfo.opts_to_apply (apply_opts in postrange.py applies them in order)
+  return ast.replace(arg=KernelInfo(opts_to_apply=tuple(opts)))
+
+def est(e): return {&quot;ops&quot;: int(e.ops), &quot;lds&quot;: int(e.lds), &quot;mem&quot;: int(e.mem)}
+def shape_of(k: Scheduler): return [[int(s), t.name] for s, t in zip(k.full_shape, k.axis_types)]
+def fmt(k: Scheduler): return &quot; &quot;.join(f&quot;{s}:{t.name}&quot; for s, t in zip(k.full_shape, k.axis_types))
+
+# ---------------------------------------------------------------- 1. what exists
+print(&quot;OptOps members :&quot;, [o.name for o in OptOps])
+print(&quot;AxisType order :&quot;, [a.name for a in AxisType])
+print(&quot;split_targets  :&quot;, {k.name: [v.name for v in vs] for k, vs in split_targets.items()})
+OUT[&quot;optops&quot;] = [o.name for o in OptOps]
+
+# ---------------------------------------------------------------- 2. shift_to on one RANGE of 16
+ast16 = asts(Tensor.empty(16) + 1)[0]
+k = Scheduler(ast16, CPU)
+print(&quot;\n== shift_to: E(16)+1 on CPU.  before:&quot;, fmt(k))
+print(k.ast.render_uir())
+k.apply_opt(Opt(OptOps.SPLIT, 0, (4, AxisType.UPCAST)))
+print(&quot;after Opt(SPLIT, axis=0, arg=(4, UPCAST)):&quot;, fmt(k))
+print(k.ast.render_uir())
+k2 = Scheduler(ast16, CPU); k2.apply_opt(Opt(OptOps.SPLIT, 0, (4, AxisType.UPCAST, True)))
+OUT[&quot;shift&quot;] = {&quot;before&quot;: Scheduler(ast16, CPU).ast.render_uir(), &quot;after&quot;: k.ast.render_uir(), &quot;after_top&quot;: k2.ast.render_uir()}
+for nm, opts in [(&quot;noopt&quot;, None), (&quot;upcast4&quot;, [Opt(OptOps.SPLIT, 0, (4, AxisType.UPCAST))])]:
+  if opts is None:
+    with Context(NOOPT=1): ki, src, e, n = lower(ast16, CPU)
+  else: ki, src, e, n = lower(with_opts(ast16, opts), CPU)
+  OUT[&quot;shift&quot;][nm] = src
+print(&quot;C with UPCAST 4:\n&quot; + OUT[&quot;shift&quot;][&quot;upcast4&quot;])
+
+# ---------------------------------------------------------------- 3. the same matmul: NOOPT vs heuristic vs manual opts
+A, B = Tensor.empty(16, 16), Tensor.empty(16, 16)
+mm = asts(A @ B)[0]
+print(&quot;\n== matmul 16x16 @ 16x16. the AST has ranges:&quot;, fmt(Scheduler(mm, CPU)))
+# NOTE: Opt.axis indexes the CURRENT Scheduler.rngs list, which is re-sorted after every opt (UPCAST ranges sort after WEAK/GLOBAL ones,
+# reduce ranges last), so after splitting axis 0 the other output axis is still axis 1 and the reduce axis moves to index 4.
+manual = [Opt(OptOps.SPLIT, 0, (4, AxisType.UPCAST)), Opt(OptOps.SPLIT, 1, (4, AxisType.UPCAST)), Opt(OptOps.SPLIT, 4, (4, AxisType.UPCAST))]
+OUT[&quot;mm_variants&quot;] = {}
+for rname, ren in [(&quot;CPU (Clang)&quot;, CPU), (&quot;OpenCL&quot;, CL)]:
+  OUT[&quot;mm_variants&quot;][rname] = {}
+  for vname in [&quot;NOOPT=1&quot;, &quot;default (hand_coded_optimizations)&quot;, &quot;manual opts_to_apply&quot;]:
+    if vname.startswith(&quot;NOOPT&quot;):
+      with Context(NOOPT=1): ki, src, e, n = lower(mm, ren)
+    elif vname.startswith(&quot;default&quot;): ki, src, e, n = lower(mm, ren)
+    else: ki, src, e, n = lower(with_opts(mm, manual if ren is CPU else manual[:2] + [Opt(OptOps.SPLIT, 0, (4, AxisType.LOCAL))]), ren)
+    OUT[&quot;mm_variants&quot;][rname][vname] = {&quot;name&quot;: ki.function_name, &quot;opts&quot;: [str(o) for o in ki.applied_opts], &quot;src&quot;: src, &quot;est&quot;: est(e), &quot;uops&quot;: n}
+    print(f&quot;[{rname:11s}] {vname:36s} -&gt; {ki.function_name:18s} uops={n:4d} {est(e)}  opts={list(ki.applied_opts)}&quot;)
+print(&quot;\n-- CPU, manual opts (UPCAST 4 on both output axes, UNROLL the reduce by 4):&quot;)
+print(OUT[&quot;mm_variants&quot;][&quot;CPU (Clang)&quot;][&quot;manual opts_to_apply&quot;][&quot;src&quot;])
+
+# ---------------------------------------------------------------- 4. trace hand_coded_optimizations
+log = []
+_orig_apply = Scheduler.apply_opt
+def traced_apply(self, opt, append_opt=True):
+  try:
+    ret = _orig_apply(self, opt, append_opt)
+    log.append({&quot;opt&quot;: str(opt), &quot;ok&quot;: True, &quot;shape&quot;: shape_of(self), &quot;inner&quot;: not append_opt})
+    return ret
+  except KernelOptError as ex:
+    log.append({&quot;opt&quot;: str(opt), &quot;ok&quot;: False, &quot;err&quot;: str(ex)[:120], &quot;shape&quot;: shape_of(self), &quot;inner&quot;: not append_opt})
+    raise
+Scheduler.apply_opt = traced_apply
+traces = {}
+for tname, t, ren in [(&quot;matmul 64x64 · CPU&quot;, Tensor.empty(64, 64) @ Tensor.empty(64, 64), CPU),
+                      (&quot;matmul 64x64 · OpenCL&quot;, Tensor.empty(64, 64) @ Tensor.empty(64, 64), CL),
+                      (&quot;sum (64,256)→(64,) · OpenCL&quot;, Tensor.empty(64, 256).sum(1), CL),
+                      (&quot;sum 4096→() · OpenCL&quot;, Tensor.empty(4096).sum(), CL),
+                      (&quot;matvec (256,)@(256,64) · OpenCL&quot;, Tensor.empty(256) @ Tensor.empty(256, 64), CL),
+                      (&quot;matmul 64x64 fp32 · Metal (TC)&quot;, Tensor.empty(64, 64) @ Tensor.empty(64, 64), METAL)]:
+  ast = [a for a in asts(t) if any(u.op is Ops.REDUCE for u in a.toposort())][-1]
+  k = Scheduler(ast, ren); k.convert_loop_to_global()
+  start = shape_of(k)
+  log.clear()
+  k2 = hand_coded_optimizations(k)
+  ki, src, e, n = lower(k2.get_optimized_ast(), ren)
+  traces[tname] = {&quot;start&quot;: start, &quot;log&quot;: list(log), &quot;final&quot;: shape_of(k2), &quot;opts&quot;: [str(o) for o in k2.applied_opts],
+                   &quot;name&quot;: ki.function_name, &quot;src&quot;: src, &quot;est&quot;: est(e)}
+  print(f&quot;\n== heuristic trace: {tname}   start {&#x27; &#x27;.join(f&#x27;{s}:{t}&#x27; for s,t in start)}&quot;)
+  for l in log: print((&quot;   ok  &quot; if l[&quot;ok&quot;] else &quot;   FAIL&quot;) + (&quot; (inner)&quot; if l[&quot;inner&quot;] else &quot;        &quot;), l[&quot;opt&quot;], &quot;-&gt;&quot;, &quot; &quot;.join(f&quot;{s}:{t}&quot; for s, t in l[&quot;shape&quot;]), &quot;&quot; if l[&quot;ok&quot;] else &quot;  # &quot; + l[&quot;err&quot;])
+  print(&quot;   final:&quot;, ki.function_name, list(k2.applied_opts))
+Scheduler.apply_opt = _orig_apply
+OUT[&quot;traces&quot;] = traces
+print(&quot;\n-- OpenCL source for the GROUPed sum (local memory + barrier):&quot;)
+print(traces[&quot;sum 4096→() · OpenCL&quot;][&quot;src&quot;])
+
+# ---------------------------------------------------------------- 5. the opt playground (matmul 16x16x16, OpenCL)
+def menu(k: Scheduler):
+  red = k.axes_of(reduce=True)
+  items = []
+  for a in range(k.shape_len):
+    if k.full_shape[a] &lt; 4: continue
+    if a in red:
+      items += [Opt(OptOps.SPLIT, a, (4, AxisType.UPCAST)), Opt(OptOps.SPLIT, a, (4, AxisType.LOCAL)),            # UNROLL, GROUP
+                Opt(OptOps.SPLIT, a, (4, AxisType.LOCAL, True))]                                                 # GROUPTOP
+    else:
+      items += [Opt(OptOps.SPLIT, a, (4, AxisType.UPCAST)), Opt(OptOps.SPLIT, a, (4, AxisType.LOCAL))]         # UPCAST, LOCAL
+  return items
+def label(opt: Opt, k: Scheduler):
+  amt, t = opt.arg[0], opt.arg[1]
+  top = len(opt.arg) &gt; 2 and opt.arg[2]
+  red = opt.axis in k.axes_of(reduce=True)
+  kind = (&quot;GROUPTOP&quot; if top else &quot;GROUP&quot;) if (t is AxisType.LOCAL and red) else (&quot;UNROLL&quot; if red else t.name)
+  return f&quot;{kind} axis {opt.axis} by {amt}&quot;
+pg_ast = asts(Tensor.empty(16, 16) @ Tensor.empty(16, 16))[0]
+nodes = {}
+def explore(k: Scheduler, key: str, depth: int):
+  ki, src, e, n = lower(k.get_optimized_ast(), CL)
+  node = {&quot;opts&quot;: [str(o) for o in k.applied_opts], &quot;shape&quot;: shape_of(k), &quot;name&quot;: ki.function_name, &quot;src&quot;: src, &quot;est&quot;: est(e), &quot;uops&quot;: n, &quot;children&quot;: []}
+  nodes[key] = node
+  if depth == 0: return
+  for i, opt in enumerate(menu(k)):
+    k2 = k.copy()
+    try: k2.apply_opt(opt)
+    except KernelOptError as ex:
+      node[&quot;children&quot;].append({&quot;label&quot;: label(opt, k), &quot;opt&quot;: str(opt), &quot;err&quot;: str(ex)}); continue
+    ck = key + &quot;.&quot; + str(i)
+    node[&quot;children&quot;].append({&quot;label&quot;: label(opt, k), &quot;opt&quot;: str(opt), &quot;key&quot;: ck})
+    explore(k2, ck, depth - 1)
+k0 = Scheduler(pg_ast, CL); k0.convert_loop_to_global()
+explore(k0, &quot;r&quot;, 2)
+with open(os.path.join(HERE, &quot;..&quot;, &quot;data&quot;, &quot;ch14_playground.json&quot;), &quot;w&quot;) as f: json.dump(nodes, f, indent=0)
+print(f&quot;\n== playground: {len(nodes)} real variants of matmul 16x16x16 rendered for OpenCL&quot;)
+for key in [&quot;r&quot;, &quot;r.0&quot;, &quot;r.0.2&quot;, &quot;r.5&quot;]:
+  if key in nodes: print(f&quot;  {key:8s} {nodes[key][&#x27;name&#x27;]:22s} {nodes[key][&#x27;est&#x27;]} uops={nodes[key][&#x27;uops&#x27;]}&quot;)
+
+# ---------------------------------------------------------------- 6. tensor cores
+print(&quot;\n== tensor cores (renderer/tc.py)&quot;)
+tcs = []
+for rname, lst in [(&quot;Metal (Apple7+)&quot;, tc.metal), (&quot;CUDA sm_80&quot;, tc.get_cuda(&quot;sm_80&quot;)), (&quot;CUDA sm_89&quot;, tc.get_cuda(&quot;sm_89&quot;)),
+                   (&quot;AMD RDNA3&quot;, tc.amd_rdna3), (&quot;AMD RDNA4&quot;, tc.amd_rdna4), (&quot;AMD CDNA3&quot;, tc.amd_cdna3)]:
+  for t in lst:
+    tcs.append({&quot;renderer&quot;: rname, &quot;dims_NMK&quot;: t.dims, &quot;threads&quot;: t.threads, &quot;in&quot;: t.dtype_in.name, &quot;out&quot;: t.dtype_out.name})
+  print(f&quot;  {rname:16s}&quot;, sorted({(t.dims, t.threads) for t in lst}), sorted({f&#x27;{t.dtype_in.name}-&gt;{t.dtype_out.name}&#x27; for t in lst}))
+OUT[&quot;tensor_cores&quot;] = tcs
+print(&quot;  CPU (Clang) tensor_cores:&quot;, CPU.tensor_cores, &quot;  OpenCL:&quot;, CL.tensor_cores)
+tcv = {}
+for rname, ren, dt in [(&quot;Metal fp32 8x8x8&quot;, METAL, dtypes.float), (&quot;CUDA fp16 m16n8k16&quot;, CUDA, dtypes.half)]:
+  a = asts(Tensor.empty(16, 16, dtype=dt) @ Tensor.empty(16, 16, dtype=dt))[0]
+  k = Scheduler(a, ren); k.convert_loop_to_global()
+  k.apply_opt(Opt(OptOps.TC, 0, (-1, 0, 1)))
+  tc_ast = k.get_optimized_ast()
+  wmma = [u for u in tc_ast.toposort() if u.op is Ops.WMMA][0]
+  ki, src, e, n = lower(tc_ast, ren)
+  tcv[rname] = {&quot;shape&quot;: shape_of(k), &quot;wmma_arg&quot;: str(wmma.arg), &quot;name&quot;: ki.function_name, &quot;src&quot;: src, &quot;est&quot;: est(e)}
+  print(f&quot;  TC on {rname}: shape after TC opt = {fmt(k)}\n     WMMA arg = {wmma.arg}&quot;)
+OUT[&quot;tc_variants&quot;] = tcv
+print(tcv[&quot;Metal fp32 8x8x8&quot;][&quot;src&quot;])
+
+# ---------------------------------------------------------------- 7. BEAM=2 on the CPU, recording every timed candidate
+from tinygrad.codegen.opt import search
+records = []
+_orig_time = search._time_program
+def recording_time(prg, *args, **kwargs):
+  tms = _orig_time(prg, *args, **kwargs)
+  records.append({&quot;opts&quot;: [str(o) for o in prg.src[0].arg.applied_opts], &quot;t&quot;: min(tms), &quot;uops&quot;: len(prg.src[1].src)})
+  return tms
+search._time_program = recording_time
+_orig_bs = search.beam_search
+result = {}
+def wrapped_bs(s, *a, **kw):
+  t0 = time.perf_counter(); ret = _orig_bs(s, *a, **kw)
+  result.update({&quot;start&quot;: shape_of(s), &quot;final_opts&quot;: [str(o) for o in ret.applied_opts], &quot;final&quot;: shape_of(ret), &quot;secs&quot;: time.perf_counter() - t0})
+  return ret
+search.beam_search = wrapped_bs
+X, W = Tensor.empty(32, 32).realize(), Tensor.empty(32, 32).realize()
+with Context(BEAM=2, IGNORE_BEAM_CACHE=1, DEBUG=0):
+  (X @ W).realize()
+search._time_program, search.beam_search = _orig_time, _orig_bs
+print(f&quot;\n== BEAM=2 on CPU, matmul 32x32: timed {len(records)} candidates in {result[&#x27;secs&#x27;]:.1f}s&quot;)
+print(&quot;   start shape:&quot;, result[&quot;start&quot;], &quot;\n   winner opts:&quot;, result[&quot;final_opts&quot;], &quot;\n   winner shape:&quot;, result[&quot;final&quot;])
+for r in sorted(records, key=lambda r: r[&quot;t&quot;])[:5]: print(f&quot;   {r[&#x27;t&#x27;]*1e6:8.2f} us  {r[&#x27;opts&#x27;]}&quot;)
+OUT[&quot;beam&quot;] = {&quot;records&quot;: records, **result}
+
+with open(os.path.join(HERE, &quot;..&quot;, &quot;data&quot;, &quot;ch14_opts.json&quot;), &quot;w&quot;) as f: json.dump(OUT, f, indent=1, default=str)
+print(&quot;\nwrote data/ch14_opts.json&quot;)</code></pre>
+  <p>The rest of its output (the manual-opts CPU source):</p>
+  <pre class="output"><code>-- CPU, manual opts (UPCAST 4 on both output axes, UNROLL the reduce by 4):
+typedef float float4 __attribute__((aligned(4),ext_vector_type(4)));
+struct r_4_4_4_4_4_4_args { float* arg0; float* arg1; float* arg2; };
+void r_4_4_4_4_4_4(const struct r_4_4_4_4_4_4_args* args) {
+  float* data0_256 = args-&gt;arg0;
+  float* data1_256 = args-&gt;arg1;
+  float* data2_256 = args-&gt;arg2;
+  float buf0[16];
+  for (int Lidx1 = 0; Lidx1 &lt; 4; Lidx1++) {
+    int alu0 = (Lidx1&lt;&lt;6);
+    for (int Lidx2 = 0; Lidx2 &lt; 4; Lidx2++) {
+      int alu1 = (Lidx2&lt;&lt;2);
+      *(buf0+0) = 0.0f;
+      *(buf0+1) = 0.0f;
+      *(buf0+10) = 0.0f;
+      *(buf0+11) = 0.0f;
+      *(buf0+12) = 0.0f;
+      *(buf0+13) = 0.0f;
+      *(buf0+14) = 0.0f;
+      *(buf0+15) = 0.0f;
+      *(buf0+2) = 0.0f;
+      *(buf0+3) = 0.0f;
+      *(buf0+4) = 0.0f;
+      *(buf0+5) = 0.0f;
+      *(buf0+6) = 0.0f;
+      *(buf0+7) = 0.0f;
+      *(buf0+8) = 0.0f;
+      *(buf0+9) = 0.0f;
+      for (int Lidx0 = 0; Lidx0 &lt; 4; Lidx0++) {
+        int alu18 = ((Lidx0&lt;&lt;2)+alu0);
+        float4 val0 = (*((float4*)((data1_256+(alu18+16)))));
+        float4 val1 = (*((float4*)((data1_256+(alu18+32)))));
+        float4 val2 = (*((float4*)((data1_256+(alu18+48)))));
+        float4 val3 = (*((float4*)((data1_256+alu18))));
+        int alu19 = ((Lidx0&lt;&lt;6)+alu1);
+        float4 val4 = (*((float4*)((data2_256+(alu19+16)))));
+        float4 val5 = (*((float4*)((data2_256+(alu19+32)))));
+        float4 val6 = (*((float4*)((data2_256+(alu19+48)))));
+        float4 val7 = (*((float4*)((data2_256+alu19))));
+        *(buf0+0) = ((*(buf0+0))+(val3[0]*val7[0])+(val3[1]*val4[0])+(val3[2]*val5[0])+(val3[3]*val6[0]));
+        *(buf0+1) = ((*(buf0+1))+(val3[0]*val7[1])+(val3[1]*val4[1])+(val3[2]*val5[1])+(val3[3]*val6[1]));
+        *(buf0+10) = ((*(buf0+10))+(val1[0]*val7[2])+(val1[1]*val4[2])+(val1[2]*val5[2])+(val1[3]*val6[2]));
+        *(buf0+11) = ((*(buf0+11))+(val1[0]*val7[3])+(val1[1]*val4[3])+(val1[2]*val5[3])+(val1[3]*val6[3]));
+        *(buf0+12) = ((*(buf0+12))+(val2[0]*val7[0])+(val2[1]*val4[0])+(val2[2]*val5[0])+(val2[3]*val6[0]));
+        *(buf0+13) = ((*(buf0+13))+(val2[0]*val7[1])+(val2[1]*val4[1])+(val2[2]*val5[1])+(val2[3]*val6[1]));
+        *(buf0+14) = ((*(buf0+14))+(val2[0]*val7[2])+(val2[1]*val4[2])+(val2[2]*val5[2])+(val2[3]*val6[2]));
+        *(buf0+15) = ((*(buf0+15))+(val2[0]*val7[3])+(val2[1]*val4[3])+(val2[2]*val5[3])+(val2[3]*val6[3]));
+        *(buf0+2) = ((*(buf0+2))+(val3[0]*val7[2])+(val3[1]*val4[2])+(val3[2]*val5[2])+(val3[3]*val6[2]));
+        *(buf0+3) = ((*(buf0+3))+(val3[0]*val7[3])+(val3[1]*val4[3])+(val3[2]*val5[3])+(val3[3]*val6[3]));
+        *(buf0+4) = ((*(buf0+4))+(val0[0]*val7[0])+(val0[1]*val4[0])+(val0[2]*val5[0])+(val0[3]*val6[0]));
+        *(buf0+5) = ((*(buf0+5))+(val0[0]*val7[1])+(val0[1]*val4[1])+(val0[2]*val5[1])+(val0[3]*val6[1]));
+        *(buf0+6) = ((*(buf0+6))+(val0[0]*val7[2])+(val0[1]*val4[2])+(val0[2]*val5[2])+(val0[3]*val6[2]));
+        *(buf0+7) = ((*(buf0+7))+(val0[0]*val7[3])+(val0[1]*val4[3])+(val0[2]*val5[3])+(val0[3]*val6[3]));
+        *(buf0+8) = ((*(buf0+8))+(val1[0]*val7[0])+(val1[1]*val4[0])+(val1[2]*val5[0])+(val1[3]*val6[0]));
+        *(buf0+9) = ((*(buf0+9))+(val1[0]*val7[1])+(val1[1]*val4[1])+(val1[2]*val5[1])+(val1[3]*val6[1]));
+      }
+      int alu37 = (alu0+alu1);
+      *((float4*)((data0_256+(alu37+16)))) = (float4){(*(buf0+4)),(*(buf0+5)),(*(buf0+6)),(*(buf0+7))};
+      *((float4*)((data0_256+(alu37+32)))) = (float4){(*(buf0+8)),(*(buf0+9)),(*(buf0+10)),(*(buf0+11))};
+      *((float4*)((data0_256+(alu37+48)))) = (float4){(*(buf0+12)),(*(buf0+13)),(*(buf0+14)),(*(buf0+15))};
+      *((float4*)((data0_256+alu37))) = (float4){(*(buf0+0)),(*(buf0+1)),(*(buf0+2)),(*(buf0+3))};
+    }
+  }
+}</code></pre>
+
+  <div class="summary-box"><h3>Chapter summary</h3><ul>
+    <li>Optimization runs inside <code>full_rewrite_to_sink</code> via <code>apply_opts</code>: <code>opts_to_apply</code> → BEAM → heuristic (unless NOOPT) → <code>get_optimized_ast</code> (name, applied_opts, optimized=True).</li>
+    <li>There are only four OptOps (TC, SPLIT, PADTO, SWAP). UPCAST/UNROLL/LOCAL/GROUP/GROUPTOP are all <code>SPLIT(axis, (amount, AxisType, top))</code>.</li>
+    <li><code>shift_to</code> keeps the old RANGE (smaller bound) and substitutes <code>old*k + new</code> (or <code>new*old_sz + old</code> with top). Later passes act on the AxisTypes.</li>
+    <li><code>Opt.axis</code> indexes the current, re-sorted <code>Scheduler.rngs</code>, where reduce axes come last.</li>
+    <li>The heuristic: TC → (image) → matvec → group small outputs → upcast masked → upcast for reuse → unroll the reduce → locals.</li>
+    <li>Tensor cores: TensorCore fragments as bit layouts; the TC opt splits M/N/K into WARP and UPCAST ranges and inserts a WMMA. Available on Metal, CUDA/PTX, AMD, and the PYTHON emulator.</li>
+    <li>BEAM: 209 actions, keep the best <code>amt</code> by real timing each round, cache the result on disk by AST key.</li>
+  </ul></div>
+</main>
+</div>
+<script>
+(async function () {
+  const G = Guide, el = G.el;
+  const D = await G.loadJSON("../data/ch14_opts.json");
+  const PG = await G.loadJSON("../data/ch14_playground.json");
+  const TC = { GLOBAL: "#58C4DD", LOCAL: "#5CD0B3", WARP: "#9ff", WEAK: "#FC6255", LOOP: "#FC6255", UPCAST: "#F4D345" };
+  function shapeBar(box, shape) {
+    box.innerHTML = "";
+    shape.forEach(([s, t]) => box.append(el("div", { class: "ax", style: `background:${TC[t] || "#aaa"};flex:0 0 ${28 + Math.log2(Math.max(2, s)) * 10}px` }, String(s), el("small", {}, t))));
+  }
+  const short = (o) => { // Opt string -> compact label
+    const m = o.match(/OptOps\.(\w+), axis=(\d+), arg=(.*)\)$/); if (!m) return o;
+    if (m[1] === "SPLIT") { const a = m[3].match(/\((\d+), AxisType\.(\w+)(, True)?\)/); return `${a[2]}${a[3] ? "·top" : ""} a${m[2]}×${a[1] === "0" ? "all" : a[1]}`; }
+    return `${m[1]} a${m[2]} ${m[3]}`;
+  };
+
+  // ---------- strategy ----------
+  (function () {
+    const root = G.$("#demo-strategy"), out = G.$(".strat", root), ins = G.$$("input,select", root);
+    function upd() {
+      const v = {}; ins.forEach((i) => (v[i.dataset.k] = i.type === "checkbox" ? i.checked : +i.value));
+      let r;
+      if (v.optimized) r = "return ast unchanged: already optimized (e.g. it came out of BEAM's get_optimized_ast or a cached program)";
+      else if (v.opts) r = "Scheduler(ast).convert_loop_to_global(); apply exactly ast.arg.opts_to_apply, in order\n(no heuristic, no BEAM, and NOOPT is ignored)";
+      else if (v.beam >= 1) r = `beam_search(k, rawbufs, var_vals, amt=${v.beam}): allocates test buffers, compiles+times candidates on the device`;
+      else if (v.noopt) r = "no opts at all. Only convert_loop_to_global (GLOBAL dims on GPUs); the name is still computed";
+      else if (v.stage) r = "hand_coded_optimizations is skipped (multiblock / STAGE kernels unsupported), so no opts";
+      else r = "hand_coded_optimizations(k): the heuristic of section 14.9";
+      out.textContent = "→ " + r + "\n→ k.get_optimized_ast()  (sets name, applied_opts, optimized=True)";
+    }
+    ins.forEach((i) => i.addEventListener("change", upd)); upd();
+  })();
+
+  // ---------- shift_to animation ----------
+  (function () {
+    const root = G.$("#demo-shift"), grid = G.$(".ch14-grid", root), f = G.$(".ch14-formula", root), uir = G.$(".uir", root);
+    const N = 16, cells = [];
+    const pal = ["#58C4DD", "#F4D345", "#83C167", "#FC6255", "#9A72AC", "#5CD0B3", "#F0AC5F", "#D147BD"];
+    for (let i = 0; i < N; i++) { const c = el("div", { class: "c" }, String(i)); grid.append(c); cells.push(c); }
+    let split = false;
+    function layout() {
+      const k = +G.$(".amt", root).value, top = G.$(".top", root).checked, ty = G.$(".ty", root).value, old = N / k;
+      cells.forEach((c, i) => {
+        let x = i * 44, y = 8, nw = null, od = null;
+        if (split) {
+          if (top) { nw = Math.floor(i / old); od = i % old; }   // i = new*old_sz + replaced  -> row = new, col = replaced
+          else { od = Math.floor(i / k); nw = i % k; }           // i = replaced*amount + new  -> row = replaced, col = new
+          const row = top ? nw : od, colm = top ? od : nw;
+          x = colm * 44; y = 8 + row * 44;
+        }
+        c.style.transform = `translate(${x}px,${y}px)`;
+        c.style.background = split ? pal[nw % pal.length] : "#58C4DD";
+        c.onmouseenter = () => {
+          f.innerHTML = split ? (top ? `index = new·old_sz + replaced = <b>${nw}</b>·${old} + <b>${od}</b> = ${i}` : `index = replaced·amount + new = <b>${od}</b>·${k} + <b>${nw}</b> = ${i}`) +
+            `  &nbsp;(replaced: ${old}:WEAK, new: ${k}:${ty})` : `index = r = ${i}`;
+        };
+      });
+      grid.style.height = (split ? 8 + (top ? k : old) * 44 + 10 : 60) + "px";
+      f.innerHTML = split ? (top ? `top=True: sub_axis = new_rng * ${old} + replaced_rng   → rows are the new ${ty} range (${k}), columns the old range (${old})`
+        : `top=False: sub_axis = replaced_rng * ${k} + new_rng   → rows are the old range (${old}), columns the new ${ty} range (${k})`) + (ty === "UPCAST" && !top ? `: each row is one float${k}` : "")
+        : "one RANGE of 16: index = r";
+      const note = split && !(k === 4 && ty === "UPCAST") ? `(the captured render_uir is for amount=4, UPCAST; your choice changes only the sizes / type)\n` : "";
+      uir.textContent = note + (split ? `real AST after Opt(SPLIT, 0, (4, UPCAST${top ? ", True" : ""})):\n` + (top ? D.shift.after_top : D.shift.after) : "real AST before:\n" + D.shift.before);
+    }
+    G.$(".go", root).onclick = () => { split = true; layout(); };
+    G.$(".back", root).onclick = () => { split = false; layout(); };
+    G.$$("select,input", root).forEach((i) => i.addEventListener("change", layout));
+    layout();
+  })();
+
+  // ---------- three ways ----------
+  (function () {
+    const root = G.$("#demo-three"), rs = G.$(".rsel", root), vs = G.$(".vsel", root), st = G.$(".stats", root), sr = G.$(".src", root);
+    let R = "CPU (Clang)", V = "NOOPT=1";
+    function draw() {
+      rs.innerHTML = vs.innerHTML = "";
+      Object.keys(D.mm_variants).forEach((r) => rs.append(el("button", { class: r === R ? "active" : "", onclick: () => { R = r; draw(); } }, r)));
+      Object.keys(D.mm_variants[R]).forEach((v) => vs.append(el("button", { class: v === V ? "active" : "", onclick: () => { V = v; draw(); } }, v)));
+      const x = D.mm_variants[R][V];
+      st.innerHTML = `<span>name <b>${x.name}</b></span><span>ops <b>${x.est.ops}</b></span><span>lds <b>${x.est.lds}</b> B</span><span>mem <b>${x.est.mem}</b> B</span><span>uops <b>${x.uops}</b></span><span>opts <b>${x.opts.map(short).join(", ") || "()"}</b></span>`;
+      sr.textContent = x.src;
+    }
+    draw();
+  })();
+
+  // ---------- playground ----------
+  (function () {
+    const root = G.$("#demo-play"), crumbs = G.$(".ch14-crumbs", root), sh = G.$(".shape", root), st = G.$(".stats", root), menu = G.$(".menu", root), sr = G.$(".src", root);
+    let path = [["r", "start"]];
+    function go() {
+      const [key] = path[path.length - 1], n = PG[key];
+      crumbs.innerHTML = "";
+      path.forEach(([k, lab], i) => { if (i) crumbs.append(" → "); crumbs.append(el("a", { onclick: () => { path = path.slice(0, i + 1); go(); } }, lab)); });
+      shapeBar(sh, n.shape);
+      st.innerHTML = `<span>name <b>${n.name}</b></span><span>ops <b>${n.est.ops}</b></span><span>lds <b>${n.est.lds}</b> B</span><span>mem <b>${n.est.mem}</b> B</span><span>uops <b>${n.uops}</b></span>`;
+      menu.innerHTML = "";
+      if (!n.children.length) menu.append(el("span", { style: "color:var(--dim);font-size:13px" }, "(the captured tree is 2 opts deep: go back to try another branch)"));
+      n.children.forEach((c) => {
+        const b = el("button", { class: c.err ? "err" : "", title: c.err ? "KernelOptError: " + c.err : c.opt }, c.label);
+        if (!c.err) b.onclick = () => { path.push([c.key, c.label]); go(); };
+        menu.append(b);
+      });
+      sr.textContent = n.src;
+    }
+    go();
+  })();
+
+  // ---------- heuristic trace ----------
+  (function () {
+    const root = G.$("#demo-heur"), ts = G.$(".tsel", root), sh = G.$(".shape", root), sw = G.$(".stepwrap", root), lg = G.$(".log", root);
+    const WHY = {
+      "matmul 64x64 · CPU": ["TC rule (heuristic.py:28): ClangRenderer has no tensor_cores → 'no tensor core available'", "", "",
+        "grouping skipped (64·64=4096 > 2048). 'more upcasts' loop (114–137): axis 1 scores best (an input ignores it) → UPCAST 4", "'more upcasts', second round: upcast size 4 < 32, work still ≥1024 → UPCAST axis 0 by 4", "'unroll the reduce' (141–150): last reduce dim 64 > 32 but divisible by 4 → UPCAST(=UNROLL) by 4. No locals on CPU: done"],
+      "matmul 64x64 · OpenCL": ["TC: OpenCLRenderer has no tensor cores", "", "", "'more upcasts': UPCAST axis 1 by 4", "'more upcasts': UPCAST axis 0 by 4", "'unroll the reduce': by 4",
+        "'locals' (158–186): ranking puts axis 1 first (local 16), then axis 0 (32 doesn't divide 16, 16·16 > 128, so 8). Applied sorted by axis: axis 0 by 8 …", "… then axis 1 by 16, the whole axis, so its GLOBAL disappears"],
+      "sum (64,256)→(64,) · OpenCL": ["TC: no tensor cores", "", "", "'grouping' (81–89): output 64 ≤ 2048 → GROUPTOP the reduce by 16 → group_for_reduces > 0 → return"],
+      "sum 4096→() · OpenCL": ["TC: no tensor cores", "", "", "'grouping': output size 1 → GROUPTOP 16, then stop. See the OpenCL source in 14.6"],
+      "matvec (256,)@(256,64) · OpenCL": ["TC: no tensor cores", "", "", "'matvec' (61–78): MUL of two INDEXes, reduce range is a plain addend → GROUP the reduce by MV_THREADS_PER_ROW=8", "… LOCAL the global axis by MV_BLOCKSIZE=4", "… UPCAST it by MV_ROWS_PER_THREAD=4 → return"],
+      "matmul 64x64 fp32 · Metal (TC)": ["TC rule succeeds on the first try (Metal 8×8×8 fp32): ranges become 8:G 8:G 32:WARP 2:UPCAST 8:WEAK", "TC follow-up (TC_MIN_GLOBALS=0 branch, 40–43): upcast rngs[1] by the first of [5,4,3,2] that divides → 4", "… upcast rngs[0] by 4", "… local rngs[0] by the first of [4,2] that divides → 2. Return (no other rules run)"],
+    };
+    let cur = Object.keys(D.traces)[0];
+    function pick(t) {
+      cur = t; G.$$("button", ts).forEach((b) => b.classList.toggle("active", b.textContent === t));
+      const T = D.traces[t];
+      const steps = [{ shape: T.start, caption: `<b>start</b>: ${T.start.map((x) => x[0] + ":" + x[1]).join(" ")} (after convert_loop_to_global)` }]
+        .concat(T.log.map((l, i) => ({ shape: l.shape, i, caption: `${l.ok ? '<span style="color:var(--green)">ok</span>' : '<span style="color:var(--red)">KernelOptError</span>'} <code>${short(l.opt)}</code>${l.inner ? " (inner)" : ""} — ${(WHY[t] || [])[i] || (l.ok ? "" : l.err)}` })))
+        .concat([{ shape: T.final, caption: `<b>final</b> ${T.name} · ops ${T.est.ops} · lds ${T.est.lds} B · opts: ${T.opts.map(short).join(", ")}` }]);
+      lg.innerHTML = "";
+      const rows = T.log.map((l) => { const d = el("div", { class: l.ok ? "ok" : "fail" }, `${l.ok ? "ok  " : "FAIL"} ${l.opt}${l.ok ? "" : "   # " + l.err}`); lg.append(d); return d; });
+      sw.innerHTML = "";
+      G.stepper(sw, steps, (i, s) => { shapeBar(sh, s.shape); rows.forEach((r, j) => r.classList.toggle("cur", j === s.i)); }, { autoplayMs: 1500 });
+    }
+    Object.keys(D.traces).forEach((t) => ts.append(el("button", { onclick: () => pick(t) }, t)));
+    pick(cur);
+  })();
+
+  // ---------- TC cuda tab ----------
+  G.$(".tccuda").textContent = D.tc_variants["CUDA fp16 m16n8k16"].src;
+
+  // ---------- BEAM tree ----------
+  (function () {
+    const root = G.$("#demo-beam"), box = G.$(".ch14-beam", root), tip = G.$(".tip", root);
+    const R = D.beam.records, key = (o) => o.join("|");
+    const rounds = Math.max(...R.map((r) => r.opts.length));
+    const parents = new Set(R.map((r) => key(r.opts.slice(0, -1))));
+    const winner = key(D.beam.final_opts);
+    const ts_ = R.map((r) => r.t).sort((a, b) => a - b), tmin = ts_[0], tmax = ts_[Math.floor(0.9 * (ts_.length - 1))]; // clamp the color scale: one outlier is huge
+    const col = (t) => { const a = Math.min(1, Math.log(t / tmin) / Math.log(tmax / tmin || 2)); return `hsl(${120 - 120 * a},60%,45%)`; };
+    const W = 180, H = 24, gap = 6, x0 = 20;
+    const byRound = []; for (let r = 1; r <= rounds; r++) byRound[r] = R.filter((x) => x.opts.length === r).sort((a, b) => a.t - b.t);
+    const maxN = Math.max(...byRound.slice(1).map((x) => x.length));
+    const svgW = x0 + (rounds + 1) * (W + 40), svgH = 40 + (maxN) * (H + gap) + 10;
+    const svg = el("svg", { width: svgW, height: svgH, viewBox: `0 0 ${svgW} ${svgH}` });
+    box.append(el("div", { style: "overflow:auto" }, svg));
+    const pos = new Map();
+    pos.set("", { x: x0, y: 40 });
+    const root0 = el("g", { class: "bn kept" }, el("rect", { x: x0, y: 40, width: W - 40, height: H, rx: 5, fill: "#333" }), el("text", { x: x0 + 8, y: 56 }, "start " + D.beam.start.map((s) => s[0]).join("×")));
+    svg.append(el("text", { x: x0, y: 22 }, "round 0"));
+    const edges = el("g", {}), nodes = el("g", {}); svg.append(edges, nodes); nodes.append(root0);
+    const roundEls = [[root0]];
+    for (let r = 1; r <= rounds; r++) {
+      const x = x0 + r * (W + 40);
+      svg.append(el("text", { x, y: 22 }, `round ${r} · ${byRound[r].length} timed`));
+      roundEls[r] = [];
+      byRound[r].forEach((c, i) => {
+        const y = 40 + i * (H + gap), k = key(c.opts), kept = parents.has(k) || k === winner;
+        pos.set(k, { x, y });
+        const p = pos.get(key(c.opts.slice(0, -1))) || { x: x0, y: 40 };
+        const e = el("path", { class: "be" + (kept ? " kept" : ""), d: `M${p.x + (p === pos.get("") ? W - 40 : W)},${p.y + H / 2} C${p.x + W + 20},${p.y + H / 2} ${x - 20},${y + H / 2} ${x},${y + H / 2}` });
+        edges.append(e);
+        const g = el("g", { class: "bn" + (kept ? " kept" : "") },
+          el("rect", { x, y, width: W, height: H, rx: 5, fill: col(c.t) }),
+          el("text", { x: x + 6, y: y + 16 }, `${(c.t * 1e6).toFixed(2)}µs ${short(c.opts[c.opts.length - 1])}${k === winner ? " ★" : ""}`));
+        g.addEventListener("mouseenter", () => (tip.textContent = `${(c.t * 1e6).toFixed(2)} µs · ${c.uops} uops${k === winner ? " · WINNER" : kept ? " · kept in beam" : ""}\nopts: ${c.opts.map(short).join(" → ")}`));
+        nodes.append(g); roundEls[r].push(g, e);
+      });
+    }
+    const steps = [{ caption: "<b>round 0</b>: the unoptimized kernel " + D.beam.start.map((s) => s[0] + ":" + s[1]).join(" ") }];
+    for (let r = 1; r <= rounds; r++) {
+      const best = byRound[r][0];
+      steps.push({ caption: `<b>round ${r}</b>: ${byRound[r].length} distinct candidates timed; best ${(best.t * 1e6).toFixed(2)} µs (${short(best.opts[best.opts.length - 1])}). Yellow = kept` + (r === rounds ? `. No round-${r + 1} candidate improved by ≥ BEAM_MIN_PROGRESS, so the search exits with ★` : "") });
+    }
+    steps.push({ caption: `<b>winner</b>: ${D.beam.final_opts.map(short).join(" → ")} · searched in ${D.beam.secs.toFixed(1)} s (compile + timing)` });
+    G.stepper(G.$(".stepwrap", root), steps, (i) => {
+      for (let r = 1; r <= rounds; r++) roundEls[r].forEach((e) => e.classList.toggle("hidden", r > i));
+    }, { autoplayMs: 1600 }).go(steps.length - 1);  // start with the whole tree visible; ⟲ to replay it round by round
+  })();
+})();
+</script>
+</body>
+</html>

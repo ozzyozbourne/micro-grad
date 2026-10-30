@@ -1,0 +1,1398 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>1. The 10,000-foot view — tinygrad internals</title>
+<link rel="stylesheet" href="../assets/vendor/hljs-dark.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/vendor/highlight.min.js"></script>
+<script src="../assets/vendor/dagre.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/chapters.js"></script>
+<script src="../assets/guide.js"></script>
+<style>
+.ch01-hero { width: 100%; height: auto; display: block; margin: 10px 0 4px; }
+.ch01-hero text { font-family: var(--mono); }
+.ch01-panel { background: var(--bg3); border-radius: 8px; padding: 10px 14px; font-size: 14px; margin-top: 10px; }
+.ch01-panel h4 { margin: 2px 0 6px; color: var(--yellow); }
+.ch01-io { display: grid; grid-template-columns: 110px 1fr; gap: 4px 12px; font-size: 14px; }
+.ch01-io > b { color: var(--gold); font-family: var(--mono); font-size: 12.5px; padding-top: 2px; }
+.ch01-io > b.in { color: var(--teal); } .ch01-io > b.out { color: var(--green); } .ch01-io > b.how { color: var(--blue); }
+.ch01-textview { max-height: 520px; overflow: auto; font-size: 12px; margin: 0; }
+.ch01-hidden { display: none !important; }
+.ch01-lin { font-family: var(--mono); font-size: 12px; border-collapse: collapse; width: 100%; }
+.ch01-lin td { padding: 2px 8px; border: 1px solid var(--line); }
+.ch01-lin tr:hover td { background: rgba(244,211,69,.08); }
+.ch01-lin tr.hl td { background: rgba(88,196,221,.18); }
+.ch01-badge { display: inline-block; font-family: var(--mono); font-size: 11.5px; padding: 1px 7px; border-radius: 10px; border: 1px solid var(--line); margin: 0 4px 4px 0; color: var(--dim); }
+.ch01-badge.new { border-color: var(--yellow); color: var(--yellow); }
+.ch01-heat { border-collapse: collapse; font-family: var(--mono); font-size: 11.5px; }
+.ch01-heat th { font-size: 10.5px; writing-mode: vertical-rl; transform: rotate(180deg); padding: 6px 2px; background: none; color: var(--dim); border: none; cursor: pointer; }
+.ch01-heat th:hover { color: var(--yellow); }
+.ch01-heat td { width: 22px; height: 18px; border: 1px solid #1d2026; padding: 0; text-align: center; cursor: pointer; }
+.ch01-heat td.lab { width: auto; text-align: right; padding: 0 8px; border: none; cursor: default; }
+.ch01-heat td.on { background: var(--c); opacity: .85; }
+.ch01-heat td.on:hover { outline: 2px solid var(--yellow); }
+.ch01-passes { list-style: none; padding: 0; margin: 0; columns: 2; column-gap: 22px; font-size: 13px; }
+.ch01-passes li { padding: 3px 8px; border-radius: 5px; font-family: var(--mono); break-inside: avoid; color: var(--dim); cursor: pointer; }
+.ch01-passes li .ph { font-size: 10.5px; color: var(--purple); margin-right: 6px; }
+.ch01-passes li.done { color: var(--fg); }
+.ch01-passes li.cur { background: rgba(244,211,69,.15); color: var(--yellow); }
+.ch01-bars { font-family: var(--mono); font-size: 12.5px; }
+.ch01-bar { display: grid; grid-template-columns: 230px 1fr 60px; gap: 8px; align-items: center; padding: 2px 4px; border-radius: 4px; cursor: pointer; }
+.ch01-bar:hover { background: var(--bg3); }
+.ch01-bar.sel { background: rgba(88,196,221,.15); }
+.ch01-bar .fill { height: 12px; border-radius: 3px; background: var(--blue); transition: width .5s; }
+.ch01-bar .n { text-align: right; color: var(--dim); }
+.ch01-files { max-height: 380px; overflow: auto; }
+.ch01-files .ch01-bar { grid-template-columns: 250px 1fr 50px; cursor: default; }
+.ch01-files .fill { background: var(--teal); }
+.ch01-files .desc { grid-column: 1 / 4; color: var(--dim); font-family: var(--sans); font-size: 12.5px; padding: 0 0 4px 12px; }
+.ch01-debug pre { max-height: 430px; }
+.ch01-debug .newline { background: rgba(244,211,69,.13); display: block; }
+.ch01-road { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+.ch01-road a { display: block; background: var(--bg2); border: 1px solid var(--line); border-radius: 8px; padding: 9px 12px; color: var(--fg); font-size: 13.5px; }
+.ch01-road a:hover { border-color: var(--blue); text-decoration: none; }
+.ch01-road a .n { color: var(--blue); font-family: var(--mono); margin-right: 6px; }
+.ch01-road a small { display: block; color: var(--dim); font-size: 12px; margin-top: 3px; }
+.ch01-road a .stage { font-size: 10.5px; color: var(--gold); font-family: var(--mono); }
+.ch01-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; } @media (max-width: 1000px) { .ch01-cols { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="sidebar" id="sidebar"></nav>
+<main>
+  <h1><span class="chnum">CHAPTER 01</span>The 10,000-foot view</h1>
+  <p class="lede">One page, the whole machine. We take two real programs — <code>(a*b+1).sum()</code> and a small
+  <code>(x @ w).relu()</code> — and follow them from the line of Python you type all the way to the machine code that runs,
+  printing the <em>actual</em> artifact at every stage. By the end you will know the name of every stage, which function owns it,
+  what goes in, what comes out, and which later chapter zooms into it.</p>
+
+  <div class="callout note">Everything on this page was produced by tinygrad commit <code>6a404871</code> (v0.14.0, October 2026) running on
+  <code>DEV=CPU</code> (clang). If you remember older tinygrad: <code>LazyBuffer</code>, <code>ShapeTracker</code>, <code>ScheduleItem</code>,
+  the <code>Kernel</code>/<code>Linearizer</code> classes and <code>DEFINE_GLOBAL</code> are gone. Today a tensor holds a <code>UOp</code>, a
+  schedule is a <code>LINEAR</code> UOp of <code>CALL</code>s, and kernel arguments are <code>PARAM</code>s.</div>
+
+  <!-- ============================================================ -->
+  <h2 id="one-sentence"><span class="sec">1.1</span>The one-sentence version</h2>
+  <p><b>tinygrad is a lazy compiler.</b> Calling <code>a * b</code> does not multiply anything: it appends a node to a graph. Only when you
+  ask for a value (<code>.tolist()</code>, <code>.item()</code>, <code>.numpy()</code>, <code>.realize()</code>) does tinygrad look at the whole
+  graph, decide which parts become separate GPU/CPU <em>kernels</em>, generate source code for each kernel, compile it, and run it.</p>
+
+  <div class="callout analogy"><span class="title">Analogy: a restaurant that cooks only when you pay</span>
+  Each Tensor operation is a line on an order ticket (<i>"multiply these, add one, sum"</i>). Nothing is cooked while you write.
+  When you say <i>"I'd like to eat now"</i> (<code>.item()</code>), the head chef reads the <em>whole</em> ticket, notices that three lines can be
+  done in one pan (<b>fusion</b>), assigns pans and burners (<b>scheduling</b>), writes a precise recipe card for each pan (<b>codegen</b>),
+  and only then do the cooks start (<b>run</b>). Because the chef sees the whole ticket first, they can do things a cook following lines
+  one by one never could.</div>
+
+  <svg class="ch01-hero" viewBox="0 0 1000 210" id="hero"></svg>
+
+  <p>The five big boxes above are the five layers you will meet over and over. Their boundaries are real functions:</p>
+  <table>
+    <tr><th>layer</th><th>entry point</th><th>input → output</th><th>chapters</th></tr>
+    <tr><td>Tensor API</td><td><a class="src" data-path="tinygrad/tensor.py" data-line="103">Tensor._apply_uop</a> + the mixins</td><td>Python calls → lazy UOp graph</td><td>2, 3, 7, 8, 9</td></tr>
+    <tr><td>Scheduling</td><td><a class="src" data-path="tinygrad/tensor.py" data-line="166">Tensor.linear_with_vars</a></td><td>tensor graph → <code>LINEAR</code> of <code>CALL</code>s (one per kernel / copy)</td><td>10, 11, 12</td></tr>
+    <tr><td>Codegen</td><td><a class="src" data-path="tinygrad/codegen/__init__.py" data-line="469">do_to_program</a></td><td>kernel AST (<code>SINK</code>) → <code>PROGRAM(SINK, LINEAR, SOURCE)</code></td><td>13, 14, 15, 16</td></tr>
+    <tr><td>Compile</td><td><a class="src" data-path="tinygrad/device.py" data-line="333">Compiler.compile_cached</a></td><td>source string → binary bytes (<code>BINARY</code>)</td><td>16, 17</td></tr>
+    <tr><td>Run</td><td><a class="src" data-path="tinygrad/engine/realize.py" data-line="284">run_linear</a></td><td><code>LINEAR</code> → buffers filled with numbers</td><td>17, 18, 19</td></tr>
+  </table>
+
+  <!-- ============================================================ -->
+  <h2 id="uop-thesis"><span class="sec">1.2</span>Everything is a UOp</h2>
+  <p>The single most important fact about modern tinygrad: <b>there is exactly one data structure for programs, from the first Tensor op
+  down to the compiled binary.</b> It is <a class="src" data-path="tinygrad/uop/ops.py" data-line="228">class UOp</a>, and it has three fields:</p>
+  <div class="codecap"><b>tinygrad/uop/ops.py</b> — the whole UOp dataclass header (dtype is a <em>derived</em> property, see Chapter 3)</div>
+  <pre><code class="language-python">@dataclass(eq=False, slots=True)
+class UOp(RandMixin, metaclass=UOpMetaClass):
+  op:Ops                       # what kind of node: ADD, RESHAPE, BUFFER, RANGE, CALL, PROGRAM, ...
+  src:tuple[UOp, ...] = tuple()  # the inputs: other UOps
+  arg:Any = None               # op-specific payload: a constant, a device name, a KernelInfo, C source, bytes ...
+  @recursive_property
+  def dtype(self) -> DType: return dtype_from_uop(self.op, self.src, self.arg)</code></pre>
+  <p>A <code>UOp</code> is <b>immutable</b> and <b>hash-consed</b>: <a class="src" data-path="tinygrad/uop/ops.py" data-line="190">UOpMetaClass.__call__</a>
+  looks up <code>(op, src, arg)</code> in a weak-value cache, so building the same node twice returns the <em>same Python object</em>.
+  That makes graph equality an <code>is</code> check, makes common sub-expressions automatically shared, and makes every compiler pass a
+  pure function "UOp in, UOp out". Every pass is a <code>graph_rewrite</code> with a <code>PatternMatcher</code> (Chapter 5).</p>
+
+  <p>What changes from stage to stage is <em>which</em> <code>Ops</code> appear. The <a class="src" data-path="tinygrad/uop/__init__.py" data-line="13">Ops enum</a>
+  is literally organised by altitude:</p>
+  <div class="codecap"><b>tinygrad/uop/__init__.py</b> — excerpt of <code>class Ops</code> (comments are the source's own)</div>
+  <pre><code class="language-python">class Ops(FastEnum):
+  # ** 1 -- defines/special **
+  SPECIAL = auto()
+  # BUFFER references bound storage; ALLOC declares unbound global storage
+  BUFFER = auto(); ALLOC = auto()
+  # ** 2 -- non op uops **
+  NOOP = auto(); REWRITE_ERROR = auto()
+  # CALL is a kernel invocation; value-producing calls write to ALLOC arguments
+  PARAM = auto(); CALL = auto()
+  # LINEAR is a list of UOps, SOURCE has a str arg that's human readable, BINARY has bytes arg that's compiled
+  PROGRAM = auto(); LINEAR = auto(); SOURCE = auto(); BINARY = auto()
+  # AFTER passes src[0] through and promises in the toposort that any consumers of the AFTER run after src[1:]
+  SINK = auto(); AFTER = auto()
+  ...
+  # ** 3 -- load/store **
+  INDEX = auto(); SHRINK = auto()
+  LOAD = auto(); STORE = auto()
+  # ** 4 -- math **
+  WMMA = auto()
+  CAST = auto(); BITCAST = auto(); EXP2 = auto(); LOG2 = auto(); SIN = auto(); SQRT = auto(); RECIP = auto(); NEG = auto(); TRUNC = auto()
+  ADD = auto(); MUL = auto(); ...; CMPLT = auto(); CMPNE = auto(); CMPEQ = auto(); ...
+  WHERE = auto(); MULACC = auto()
+  # ** 5 -- control flow / consts / custom **
+  BARRIER = auto(); RANGE = auto(); IF = auto(); END = auto(); ENDIF = auto()
+  CONST = auto()
+  ...
+  # ** 6 -- ops that don't exist in programs **
+  CONTIGUOUS_BACKWARD = auto(); DETACH = auto()
+  STAGE = auto(); COPY = auto(); MSELECT = auto(); MSTACK = auto(); CUSTOM_FUNCTION = auto()
+  # the core 5 movement ops! these only exist in the tensor graph
+  RESHAPE = auto(); PERMUTE = auto(); EXPAND = auto(); PAD = auto()
+  ...
+  REDUCE = auto(); ALLREDUCE = auto()</code></pre>
+
+  <div class="callout aha"><span class="title">The thesis in one line</span>
+  A Tensor program, a schedule, a kernel, a list of instructions and a compiled program are all just <em>graphs of UOps</em> that use
+  different subsets of <code>Ops</code>. Compiling = rewriting the graph until only "low" ops remain. One IR, one rewrite engine, one
+  set of tools (printing, <code>VIZ</code>, hashing, caching) for every stage.</div>
+
+  <p>Don't take that on faith. The heat-map below was computed from the <em>real</em> graphs captured while running our two programs
+  (<code>data/ch01_pipeline.json</code>, produced by <code>examples/01_pipeline_trace.py --dump</code>). Each row is an <code>Op</code>; each column
+  a pipeline stage; a cell is lit when that op occurs in that stage's graph.</p>
+
+  <div class="demo" id="demo-heat">
+    <div class="demo-title">Which ops live at which altitude? (real data)</div>
+    <div class="demo-desc">Toggle the program. Click a lit cell to jump to that stage in the pipeline map (next section) with those nodes
+    highlighted. Watch movement ops (teal) die at <b>rangeify</b>, <code>RANGE</code>/<code>INDEX</code> appear, <code>CALL</code>/<code>LINEAR</code> appear at
+    scheduling, <code>REDUCE</code> vanish and <code>LOAD</code> appear during lowering. (<code>SHRINK</code> comes back later with a different
+    meaning: a slice of a buffer — the memory planner's arena views, and the <code>float4</code> loads.)</div>
+    <div class="controls" id="heat-prog"></div>
+    <div id="heat" style="overflow-x:auto"></div>
+  </div>
+
+  <div class="quiz" data-answer="2">
+    <div class="q">You build <code>x = a + b</code> twice in a row (same <code>a</code>, same <code>b</code>). What is <code>(a+b).uop is (a+b).uop</code>?</div>
+    <button class="opt">False — each call allocates a new node</button>
+    <button class="opt">False — but they compare equal with <code>==</code></button>
+    <button class="opt">True — UOps are hash-consed, identical (op, src, arg) is the same object</button>
+    <div class="explain"><code>UOpMetaClass.__call__</code> returns the cached object for an identical key <code>(op, src, arg, type(arg))</code>.
+    The two <em>Tensor</em> objects differ, but they wrap the very same UOp. <code>examples/02_lazy_tensor.py</code> prints
+    <code>(a*b+1).uop is (a.uop*b.uop+1) -> True</code>.</div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="pipeline"><span class="sec">1.3</span>The pipeline map (the centerpiece)</h2>
+  <p>Here is the whole pipeline with the real input and output of every stage for both programs. The stages are exactly the functions
+  tinygrad calls inside <code>realize()</code>. The example below captured them by "spying" on the real functions (wrapping them, recording
+  argument and return value, and passing the result through unchanged) — nothing is re-implemented.</p>
+
+  <div class="demo" id="demo-pipeline">
+    <div class="demo-title">Pipeline map: click a stage</div>
+    <div class="demo-desc">The graph <b>morphs</b> between stages: a node keeps its position when the stage passes it through unchanged
+    (hash-consing means it is literally the same UOp), and nodes <b>created by the selected stage are highlighted</b>. Hover any node for its
+    full <code>UOp(...)</code>. Use "printed UOp" to see tinygrad's own repr of the same object. ← / → keys step through stages.</div>
+    <div class="controls"><span style="color:var(--dim);font-size:13px">program:</span> <span id="pl-prog"></span>
+      <span style="flex:1"></span><span id="pl-view"></span></div>
+    <div id="pl-strip"></div>
+    <div id="pl-badges"></div>
+    <div id="pl-graph"></div>
+    <pre class="output ch01-textview ch01-hidden" id="pl-text"><code></code></pre>
+    <div id="pl-other" class="ch01-hidden"></div>
+    <div class="ch01-panel" id="pl-panel"></div>
+  </div>
+
+  <p>The rest of this chapter walks the same stages slowly, with the code that implements each and the printed output of the example.
+  First, the example itself:</p>
+
+  <div class="codecap"><b>examples/01_pipeline_trace.py</b> — run with <code>DEV=CPU python3 examples/01_pipeline_trace.py</code> (excerpt: the spying + the program)</div>
+  <pre><code class="language-python">captured: dict[str, list] = {}
+def spy(module, name):
+  """replace module.name with a wrapper that records (args, result) and then returns the real result"""
+  real = getattr(module, name)
+  def wrapper(*args, **kwargs):
+    ret = real(*args, **kwargs)
+    captured.setdefault(name, []).append((args, ret))
+    return ret
+  setattr(module, name, wrapper)
+
+spy(sched, "transform_to_call"); spy(sched, "prepare_rangeify"); spy(sched, "get_kernel_graph")
+spy(sched, "create_schedule");   spy(rangeify_mod, "run_rangeify")
+
+a = Tensor([1., 2., 3., 4.])
+b = Tensor([5., 6., 7., 8.])
+c = (a * b + 1).sum()          # nothing has been computed yet!
+print(c); print(c.uop)                           # STAGE 1
+linear, var_vals = c.linear_with_vars()          # STAGE 2+3: schedule
+ast = next(si.src[0] for si in linear.src if si.src[0].op is Ops.SINK)   # STAGE 4
+prg = to_program(ast, Device["CPU"].renderer)    # STAGE 5: codegen + compile
+run_linear(linear, var_vals)                     # STAGE 6
+print("c.item() =", c.item())</code></pre>
+
+  <!-- ============================================================ -->
+  <h2 id="stage-graph"><span class="sec">1.4</span>Stage 1 — the lazy tensor graph</h2>
+  <p><b>Input:</b> Python calls. <b>Output:</b> a UOp DAG that <em>describes</em> the computation. <b>Who:</b> every Tensor method ends in
+  <a class="src" data-path="tinygrad/tensor.py" data-line="103">Tensor._apply_uop</a>, which calls a UOp-building function on the input UOps
+  and wraps the result in a new <code>Tensor</code>. No kernel runs.</p>
+  <pre class="output"><code>============ STAGE 1: the lazy tensor graph (c.uop) ======================
+&lt;Tensor &lt;UOp CPU () f32&gt; on CPU with grad None&gt;
+UOp(Ops.REDUCE, arg=(Ops.ADD, 1), src=(
+  UOp(Ops.ADD, arg=None, src=(
+    UOp(Ops.MUL, arg=None, src=(
+      UOp(Ops.COPY, arg='CPU', src=(
+        UOp(Ops.BUFFER, arg=ParamArg(0, dtypes.f32, device='PYTHON', buffer=UOp.new_buffer('PYTHON', 4, dtypes.f32, 0).buffer), src=(
+          x4:=UOp(Ops.CONST, arg=4, src=()),)),)),
+      UOp(Ops.COPY, arg='CPU', src=(
+        UOp(Ops.BUFFER, arg=ParamArg(1, dtypes.f32, device='PYTHON', buffer=UOp.new_buffer('PYTHON', 4, dtypes.f32, 1).buffer), src=(
+          x4,)),)),)),
+    UOp(Ops.CONST, arg=ConstFloat(1.0), src=()),)),))</code></pre>
+  <p>Read it bottom-up. Each Python list became a <code>BUFFER</code> on the <code>PYTHON</code> device (the data is already there, in host memory)
+  followed by a <code>COPY</code> to <code>CPU</code>. <code>a*b</code> is a <code>MUL</code>, <code>+1</code> is an <code>ADD</code> with a <code>CONST 1.0</code>,
+  and <code>.sum()</code> is a <code>REDUCE</code> whose arg <code>(Ops.ADD, 1)</code> means "reduce the leading 1 axis with ADD".
+  The <code>CONST 4</code> under both buffers is the buffer's <em>size</em> — sizes and shapes are UOps too, which is how symbolic shapes work
+  (Chapter 6). Notice it appears once (<code>x4:=</code>) and is reused: hash-consing at work.</p>
+  <div class="callout note">Chapter 2 is entirely about this stage: what the <code>Tensor</code> object holds, how the mixins build UOps, how creation
+  functions differ, and what forces realization.</div>
+
+  <!-- ============================================================ -->
+  <h2 id="stage-schedule"><span class="sec">1.5</span>Stage 2 — scheduling: from a tensor graph to a list of kernels</h2>
+  <p><b>Input:</b> the tensor graphs of the tensors you realize. <b>Output:</b> a <code>LINEAR</code> UOp whose sources are <code>CALL</code>s, in
+  execution order. <b>Who:</b> <a class="src" data-path="tinygrad/tensor.py" data-line="166">Tensor.linear_with_vars</a> → 
+  <a class="src" data-path="tinygrad/schedule/__init__.py" data-line="268">create_linear_with_vars</a>. This is the biggest conceptual stage, so
+  let us take it in five sub-steps.</p>
+
+  <h3>2a. Bufferize the outputs (still in <code>linear_with_vars</code>)</h3>
+  <div class="codecap"><b>tinygrad/tensor.py</b> — <code>linear_with_vars</code> (abridged)</div>
+  <pre><code class="language-python">@rewrite_group(lambda *tensors,ret: f"Schedule {len(tensors)} -> {len(ret[0].src)}")
+def linear_with_vars(self, *lst:Tensor) -> tuple[UOp, dict[str, int]]:
+  """Creates the LINEAR UOp needed to realize these Tensor(s), with Variables."""
+  sink = UOp.sink(*[t.uop for t in (self,)+lst])
+  # weakness ends where storage begins
+  if any(u.dtype in dtypes.weaks and u.device is not None for u in sink.src):
+    raise RuntimeError("cannot realize a weak dtype; cast to a concrete dtype first")
+  ...
+  for x in sink.toposort():
+    u = x.replace(src=tuple(tensor_map.get(s, s) for s in x.src))
+    ...
+    elif x in bases and u.needs_storage():
+      ...
+      else:  # allocate fresh storage and store the compute into it
+        buf = UOp.new_buffer(src.device, prod(src.max_shard_shape), src.dtype).reshape(src.max_shard_shape).shrink_to(src.shard_shape)
+        u = buf.after(buf.store(src))
+    if u is not x: tensor_map[x] = u
+  ...
+  _apply_map_to_tensors(becomes_map | tensor_map, name="bufferize")   # every live Tensor now points at its future buffer
+  return create_linear_with_vars(sink)</code></pre>
+  <p>Every output that needs storage gets a fresh <code>BUFFER</code>, and the computation is wrapped as
+  <code>AFTER(buffer, STORE(buffer, compute))</code>: "this buffer, <em>after</em> the compute has been stored into it". Then — before anything
+  has run — <code>_apply_map_to_tensors</code> re-points every live <code>Tensor</code> at that buffer. This is the input of the next step:</p>
+  <pre class="output"><code>-- input to transform_to_call: outputs got storage (BUFFER + STORE + AFTER):
+UOp(Ops.SINK, arg=None, src=(
+  UOp(Ops.AFTER, arg=None, src=(
+    x1:=UOp(Ops.RESHAPE, arg=None, src=(
+      UOp(Ops.BUFFER, arg=ParamArg(2, dtypes.f32, device='CPU', buffer=UOp.new_buffer('CPU', 1, dtypes.f32, 2).buffer), src=(
+        UOp(Ops.CONST, arg=1, src=()),)),
+      UOp(Ops.STACK, arg=None, src=()),)),
+    UOp(Ops.STORE, arg=None, src=(
+      x1,
+      UOp(Ops.REDUCE, arg=(Ops.ADD, 1), src=(
+        UOp(Ops.ADD, arg=None, src=(
+          UOp(Ops.MUL, arg=None, src=(
+            UOp(Ops.COPY, arg='CPU', src=(
+              UOp(Ops.BUFFER, arg=ParamArg(0, dtypes.f32, device='PYTHON', buffer=UOp.new_buffer('PYTHON', 4, dtypes.f32, 0).buffer), src=(
+                x11:=UOp(Ops.CONST, arg=4, src=()),)),)),
+            UOp(Ops.COPY, arg='CPU', src=(
+              UOp(Ops.BUFFER, arg=ParamArg(1, dtypes.f32, device='PYTHON', buffer=UOp.new_buffer('PYTHON', 4, dtypes.f32, 1).buffer), src=(
+                x11,)),)),)),
+          UOp(Ops.CONST, arg=ConstFloat(1.0), src=()),)),)),)),)),))</code></pre>
+
+  <h3>2b. Callify: buffers become parameters</h3>
+  <p><a class="src" data-path="tinygrad/schedule/__init__.py" data-line="257">transform_to_call</a> collects the stores, replaces every concrete
+  <code>BUFFER</code> by a positional <code>PARAM</code> (slot 0, 1, 2 …) and wraps everything into one <code>CALL</code> whose extra sources are the actual buffers.</p>
+  <pre class="output"><code>-- output: one CALL; its body is a SINK where every BUFFER became a PARAM slot:
+CALL body ops: CONST:3, PARAM:3, COPY:2, STACK:1, RESHAPE:1, MUL:1, ADD:1, REDUCE:1, STORE:1, AFTER:1, SINK:1
+CALL args    : ['BUFFER(CPU, slot=2)', 'BUFFER(PYTHON, slot=0)', 'BUFFER(PYTHON, slot=1)']</code></pre>
+  <div class="callout aha"><span class="title">Why turn buffers into PARAMs?</span> So that the CALL <em>body</em> no longer mentions <em>which</em>
+  memory it runs on. Two runs of the same program on different data produce the identical body UOp — identical hash — and hit the
+  <a class="src" data-path="tinygrad/schedule/__init__.py" data-line="119">schedule_cache</a>. Section 1.9 shows the cache hit happen.</div>
+
+  <h3>2c. Prepare + rangeify: shapes become loops</h3>
+  <p><a class="src" data-path="tinygrad/schedule/__init__.py" data-line="121">lower_sink_to_linear</a> is the pattern that fires on that CALL
+  and runs <code>create_schedule(get_kernel_graph(prepare_rangeify(function)))</code>.
+  <a class="src" data-path="tinygrad/schedule/prepare.py" data-line="255">prepare_rangeify</a> resolves multi-device ops, inlines calls and
+  turns each <code>COPY</code> into an anonymous <code>ALLOC</code> + <code>STORE</code> + <code>AFTER</code>.
+  Then <a class="src" data-path="tinygrad/schedule/indexing.py" data-line="182">run_rangeify</a> performs the key transformation of the whole
+  scheduler: every value is now addressed by <em>index expressions</em> built from <code>RANGE</code> UOps (loop variables), and all
+  movement ops (<code>RESHAPE</code>, <code>PERMUTE</code>, <code>EXPAND</code>, <code>PAD</code>, <code>SHRINK</code>) disappear into those indices.</p>
+  <pre class="output"><code>-- after prepare_rangeify: COPY became ALLOC + STORE + AFTER
+ops: CONST:3, PARAM:3, STORE:3, AFTER:3, ALLOC:2, STACK:1, RESHAPE:1, MUL:1, ADD:1, REDUCE:1, SINK:1
+
+-- after run_rangeify: movement ops are gone, every access is an INDEX by RANGEs
+ops: INDEX:7, CONST:4, PARAM:3, RANGE:3, STORE:3, AFTER:3, ALLOC:2, END:2, MUL:1, ADD:1, REDUCE:1, SINK:1</code></pre>
+  <p>Read the op counts: <code>RESHAPE</code>/<code>STACK</code> are gone; there are now 3 <code>RANGE</code>s (one loop for each copy, one for the reduction),
+  7 <code>INDEX</code>es and 2 <code>END</code>s (closing the copy loops). Chapter 10 is dedicated to how ranges are created and propagated.</p>
+
+  <h3>2d. Kernel split</h3>
+  <p><a class="src" data-path="tinygrad/schedule/rangeify.py" data-line="339">get_kernel_graph</a> cleans up (symbolic simplification, removing
+  unnecessary buffers), turns staged values into stores, and finally <a class="src" data-path="tinygrad/schedule/rangeify.py" data-line="321">split_store</a>
+  cuts the graph at every <code>STORE</code>/<code>END</code> with no open ranges: each piece becomes <code>SINK(…).call(*buffers)</code> — one CALL per kernel.</p>
+  <pre class="output"><code>-- after get_kernel_graph: the graph is cut into CALLs, one per kernel
+3 CALLs: ['PARAM:2, INDEX:2, CONST:1, RANGE:1, STORE:1, END:1, SINK:1', 'PARAM:2, INDEX:2, CONST:1, RANGE:1, STORE:1, END:1, SINK:1', 'CONST:4, PARAM:3, INDEX:3, RANGE:1, MUL:1, ADD:1, REDUCE:1, STORE:1, SINK:1']</code></pre>
+  <p>Three kernels: two copy loops (<code>STORE(INDEX(dst, r), INDEX(src, r))</code>) and the compute kernel that <em>fused</em>
+  <code>MUL</code>, <code>ADD</code> and <code>REDUCE</code> into one. Fusion is not a separate pass you can point at; it is the <em>absence</em> of a cut.
+  Chapter 11 explains when tinygrad cuts and when it fuses.</p>
+
+  <h3>2e. Order, lower copies, plan memory</h3>
+  <p><a class="src" data-path="tinygrad/schedule/__init__.py" data-line="31">create_schedule</a> builds the kernel dependency graph from the
+  <code>AFTER</code> edges (read-after-write and write-after-read) and toposorts it into a <code>LINEAR</code>. Back in
+  <code>create_linear_with_vars</code>, PARAMs are resolved to real buffers, copy kernels are lowered to bulk <code>STORE</code> calls
+  (<a class="src" data-path="tinygrad/schedule/__init__.py" data-line="170">pm_copy_from_store</a>), and
+  <a class="src" data-path="tinygrad/schedule/memory.py" data-line="19">memory_plan_rewrite</a> packs temporary buffers into shared arenas:</p>
+  <pre class="output"><code>============ STAGE 3: the schedule (LINEAR of CALLs, after memory planning) 
+  0: CALL  body=STORE -&gt; copy (STORE call)  args=['BITCAST', 'BUFFER[PYTHON]']
+  1: CALL  body=STORE -&gt; copy (STORE call)  args=['BITCAST', 'BUFFER[PYTHON]']
+  2: CALL  body=SINK  -&gt; kernel             args=['BUFFER[CPU]', 'BITCAST', 'BITCAST']</code></pre>
+  <p>Look at the args: the two intermediate CPU copies of <code>a</code> and <code>b</code> are not separate allocations; they are
+  <code>BITCAST(SHRINK(BUFFER(i8, 512)))</code> views at byte offsets 0 and 256 of a single 512-byte arena (open the "Schedule" stage in the
+  map above and hover them). Only the output buffer (<code>BUFFER[CPU]</code>, held by <code>c</code>) is a standalone allocation. Chapter 12 covers this.</p>
+
+  <div class="quiz" data-answer="1">
+    <div class="q">After <code>linear, _ = c.linear_with_vars()</code> but <em>before</em> running <code>linear</code>, what does <code>c.uop</code> look like?</div>
+    <button class="opt">Still the <code>REDUCE(ADD(MUL(...)))</code> graph — nothing changes until the kernels run</button>
+    <button class="opt">A <code>RESHAPE</code> of a <code>BUFFER</code> — the tensor already points at its (not yet filled!) output buffer</button>
+    <button class="opt">A <code>CALL</code> UOp</button>
+    <div class="explain"><code>_apply_map_to_tensors(becomes_map | tensor_map, "bufferize")</code> runs inside <code>linear_with_vars</code>. That is
+    why <code>examples/01_matmul_relu.py</code> must call <code>run_linear(linear)</code> after <code>y.schedule_linear()</code>: otherwise
+    <code>y.tolist()</code> reads uninitialized memory (we hit exactly that bug while writing the example and it printed zeros).</div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="stage-ast"><span class="sec">1.6</span>Stage 3 — one kernel's AST</h2>
+  <p><b>Input of codegen:</b> the body of a compute <code>CALL</code>: a <code>SINK</code> with a
+  <a class="src" data-path="tinygrad/uop/ops.py" data-line="1295">KernelInfo</a> arg. This is what tinygrad calls the <em>kernel AST</em>.</p>
+  <pre class="output"><code>============ STAGE 4: the kernel AST (body of the compute CALL) ==========
+UOp(Ops.SINK, arg=KernelInfo(name='test', applied_opts=(), opts_to_apply=None, estimates=None, beam=0, optimized=False), src=(
+  UOp(Ops.STORE, arg=None, src=(
+    UOp(Ops.INDEX, arg=None, src=(
+      UOp(Ops.PARAM, arg=ParamArg(0, dtypes.f32, device='CPU'), src=(
+        UOp(Ops.CONST, arg=1, src=()),)),
+      UOp(Ops.CONST, arg=0, src=()),)),
+    UOp(Ops.REDUCE, arg=(Ops.ADD, 0), src=(
+      UOp(Ops.ADD, arg=None, src=(
+        UOp(Ops.MUL, arg=None, src=(
+          UOp(Ops.INDEX, arg=None, src=(
+            UOp(Ops.PARAM, arg=ParamArg(1, dtypes.f32, device='CPU'), src=(
+              x10:=UOp(Ops.CONST, arg=4, src=()),)),
+            x11:=UOp(Ops.RANGE, arg=(AxisType.WEAK, 0), src=(
+              x10,)),)),
+          UOp(Ops.INDEX, arg=None, src=(
+            UOp(Ops.PARAM, arg=ParamArg(2, dtypes.f32, device='CPU'), src=(
+              x10,)),
+            x11,)),)),
+        UOp(Ops.CONST, arg=ConstFloat(1.0), src=()),)),
+      x11,)),)),))</code></pre>
+  <p>Even without knowing the details you can read it: "store into <code>PARAM 0</code> at index 0 the <code>REDUCE(ADD)</code> over
+  <code>RANGE 0</code> (size 4) of <code>PARAM1[r] * PARAM2[r] + 1.0</code>". There are no shapes, no movement ops, no Tensors —
+  just buffers, loop variables and arithmetic. Chapter 13 teaches you to read any kernel AST.</p>
+
+  <!-- ============================================================ -->
+  <h2 id="stage-codegen"><span class="sec">1.7</span>Stage 4 — codegen: AST → optimized, lowered, linearized, rendered</h2>
+  <p><b>Who:</b> <a class="src" data-path="tinygrad/codegen/__init__.py" data-line="509">to_program</a> (cached) →
+  <a class="src" data-path="tinygrad/codegen/__init__.py" data-line="469">do_to_program</a>. It first calls
+  <a class="src" data-path="tinygrad/codegen/__init__.py" data-line="253">full_rewrite_to_sink</a> — about 30 named <code>graph_rewrite</code> passes
+  that optimize (choose loop splits/upcasts: <a class="src" data-path="tinygrad/codegen/opt/postrange.py" data-line="239">apply_opts</a>) and lower
+  the AST — and wraps the result in a <code>PROGRAM</code>. Then the <code>PROGRAM</code> itself is grown by a small pattern matcher, one source at a time:</p>
+  <div class="codecap"><b>tinygrad/codegen/__init__.py</b> — <code>pm_to_program</code>: each rule appends one stage's output to the PROGRAM's src</div>
+  <pre><code class="language-python">pm_to_program = PatternMatcher([
+  (UPat(Ops.PROGRAM, src=(UPat(Ops.SINK, name="sink"),), name="prg"), do_linearize),       # SINK            -> + LINEAR
+  (UPat(Ops.PROGRAM, src=(UPat(Ops.SINK, name="sink"), UPat(Ops.LINEAR, name="lin")), name="prg"), do_estimates),
+  (UPat(Ops.PROGRAM, src=(UPat(), UPat(Ops.LINEAR, src=UPat(Ops.INS), name="lin")), name="prg"), do_assemble),  # ISA backends
+  (UPat(Ops.PROGRAM, src=(UPat(), UPat(Ops.LINEAR, name="lin")), name="prg"), do_render),   # LINEAR          -> + SOURCE
+  (UPat(Ops.PROGRAM, src=(UPat(), UPat(Ops.LINEAR), UPat(Ops.SOURCE, name="source")), name="prg"), do_compile),  # -> + BINARY
+])</code></pre>
+  <div class="callout aha"><span class="title">Even "the compiled program" is a UOp</span>
+  <code>PROGRAM(SINK, LINEAR, SOURCE, BINARY)</code>: the lowered graph, the ordered instruction list, the C source string (in a
+  <code>SOURCE</code>'s arg) and the machine-code bytes (in a <code>BINARY</code>'s arg). The pipeline never leaves the IR.</div>
+  <pre class="output"><code>============ STAGE 5: codegen  (to_program = full_rewrite_to_sink -&gt; linearize -&gt; render -&gt; compile) 
+PROGRAM srcs: ['SINK', 'LINEAR', 'SOURCE', 'BINARY']
+kernel name : r_4 | applied opts: (Opt(op=OptOps.SPLIT, axis=0, arg=(0, AxisType.UPCAST)),)
+-- LINEAR: 38 UOps in program order
+   0 CONST    dtypes.weakint src=[] arg=1
+   1 PARAM    dtypes.f32     src=[0] arg=0
+   2 CONST    dtypes.weakint src=[] arg=4
+   3 PARAM    dtypes.f32     src=[2] arg=1
+   4 PARAM    dtypes.f32     src=[2] arg=2
+   5 CONST    dtypes.weakint src=[] arg=0
+   6 CAST     dtypes.i32     src=[5] arg=dtypes.i32
+   7 CAST     dtypes.i32     src=[2] arg=dtypes.i32
+   8 SHRINK   dtypes.f32     src=[3, 6, 7] arg=None
+   9 LOAD     dtypes.f32     src=[8] arg=None
+  10 SHRINK   dtypes.f32     src=[4, 6, 7] arg=None
+  11 LOAD     dtypes.f32     src=[10] arg=None
+  12 INDEX    dtypes.f32     src=[1, 6] arg=None
+  13 INDEX    dtypes.f32     src=[9, 6] arg=None
+  14 CAST     dtypes.i32     src=[0] arg=dtypes.i32
+  15 INDEX    dtypes.f32     src=[9, 14] arg=None
+  16 CONST    dtypes.weakint src=[] arg=2
+  17 CAST     dtypes.i32     src=[16] arg=dtypes.i32
+  18 INDEX    dtypes.f32     src=[9, 17] arg=None
+  19 CONST    dtypes.weakint src=[] arg=3
+  20 CAST     dtypes.i32     src=[19] arg=dtypes.i32
+  21 INDEX    dtypes.f32     src=[9, 20] arg=None
+  22 INDEX    dtypes.f32     src=[11, 6] arg=None
+  23 INDEX    dtypes.f32     src=[11, 14] arg=None
+  24 INDEX    dtypes.f32     src=[11, 17] arg=None
+  25 INDEX    dtypes.f32     src=[11, 20] arg=None
+  26 CONST    dtypes.weakfloat src=[] arg=4.0
+  27 CAST     dtypes.f32     src=[26] arg=dtypes.f32
+  28 MUL      dtypes.f32     src=[13, 22] arg=None
+  29 MUL      dtypes.f32     src=[15, 23] arg=None
+  30 ADD      dtypes.f32     src=[29, 28] arg=None
+  31 MUL      dtypes.f32     src=[18, 24] arg=None
+  32 ADD      dtypes.f32     src=[31, 30] arg=None
+  33 MUL      dtypes.f32     src=[21, 25] arg=None
+  34 ADD      dtypes.f32     src=[33, 32] arg=None
+  35 ADD      dtypes.f32     src=[34, 27] arg=None
+  36 STORE    dtypes.void    src=[12, 35] arg=None
+  37 SINK     dtypes.void    src=[36] arg=KernelInfo(name='r_4', applied_opts=(Opt(op=OptOps.SPLIT, axis=0, arg=(0, AxisType.UPCAST)),), opts_to_apply=None, estimates=None, beam=0, optimized=True)
+-- SOURCE (rendered C):
+typedef float float4 __attribute__((aligned(4),ext_vector_type(4)));
+struct r_4_args { float* arg0; float* arg1; float* arg2; };
+void r_4(const struct r_4_args* args) {
+  float* data0_1 = args-&gt;arg0;
+  float* data1_4 = args-&gt;arg1;
+  float* data2_4 = args-&gt;arg2;
+  float4 val0 = (*((float4*)((data1_4+0))));
+  float4 val1 = (*((float4*)((data2_4+0))));
+  *(data0_1+0) = ((val0[3]*val1[3])+(val0[2]*val1[2])+(val0[1]*val1[1])+(val0[0]*val1[0])+4.0f);
+}
+
+-- BINARY: 864 bytes of compiled machine code (clang, via Compiler.compile_cached)</code></pre>
+  <p>Things to notice, each one a later chapter:</p>
+  <ul>
+    <li>The optimizer applied <code>Opt(op=OptOps.SPLIT, axis=0, arg=(0, AxisType.UPCAST))</code>: the 4-long reduce loop was fully
+    <em>upcast</em> (unrolled into vector lanes), so the C has no loop at all and loads a <code>float4</code> (Chapter 14).</li>
+    <li>The kernel was renamed <code>test</code> → <code>r_4</code>: <code>r</code> = has a reduce (<code>E</code> = elementwise), then the loop sizes.</li>
+    <li>Symbolic simplification hoisted the four <code>+1.0</code>s out of the sum into a single <code>+4.0f</code> (Chapter 6).</li>
+    <li>The <code>LINEAR</code> is a flat, topologically ordered list where loads come early and stores late
+    (<a class="src" data-path="tinygrad/codegen/late/linearizer.py" data-line="8">linearize</a>, Chapter 16). The renderer
+    (<a class="src" data-path="tinygrad/renderer/cstyle.py" data-line="294">ClangRenderer</a>) walks this list and prints one line per value.</li>
+  </ul>
+
+  <div class="demo" id="demo-passes">
+    <div class="demo-title">Inside full_rewrite_to_sink: the passes, in order</div>
+    <div class="demo-desc">Every entry is a real <code>graph_rewrite(..., name="…")</code> call in
+    <a class="src" data-path="tinygrad/codegen/__init__.py" data-line="253">full_rewrite_to_sink</a> (names copied from the source; the
+    <code>VIZ</code> trace in §1.10 lists the same names). Step through to see what each family of passes is for. Click a pass to jump.</div>
+    <div id="passes-step"></div>
+    <ul class="ch01-passes" id="passes-list"></ul>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="stage-compile-run"><span class="sec">1.8</span>Stages 5 &amp; 6 — compile and run</h2>
+  <p><b>Compile.</b> <code>do_compile</code> hands the <code>SOURCE</code> string to the renderer's compiler. For <code>DEV=CPU</code> that is
+  <code>ClangCompiler</code>, which pipes the C into <code>clang -c -x c -O2 ... -o -</code> and returns the object bytes. All compilers share the
+  disk cache in the base class:</p>
+  <div class="codecap"><b>tinygrad/device.py</b> — <code>Compiler.compile_cached</code></div>
+  <pre><code class="language-python">class Compiler:
+  def __init__(self, cachekey:str|None=None): self.cachekey = cachekey if CCACHE else None
+  def compile(self, src:str) -> bytes: return src.encode()   # NOTE: empty compiler is the default
+  def compile_cached(self, src:str) -> bytes:
+    if self.cachekey is None or (lib := diskcache_get(self.cachekey, src)) is None:
+      assert not getenv("ASSERT_COMPILE"), f"tried to compile with ASSERT_COMPILE set\n{src}"
+      lib = self.compile(src)
+      if self.cachekey is not None: diskcache_put(self.cachekey, src, lib)
+    return lib</code></pre>
+  <p><b>Run.</b> <a class="src" data-path="tinygrad/engine/realize.py" data-line="284">run_linear</a> first makes sure every CALL's body is a
+  compiled <code>PROGRAM</code> (<a class="src" data-path="tinygrad/engine/realize.py" data-line="238">lower_and_compile</a>, in parallel worker
+  processes when there are several kernels), links them, then walks the <code>LINEAR</code> and dispatches each CALL by the op of its body — with,
+  of course, a <code>PatternMatcher</code>:</p>
+  <div class="codecap"><b>tinygrad/engine/realize.py</b> — execution is pattern matching too</div>
+  <pre><code class="language-python">pm_exec = PatternMatcher([
+  (UPat(Ops.CALL, src=(UPat(Ops.STORE, name="ast"),), name="call", allow_any_len=True), exec_copy),      # copies
+  (UPat(Ops.CALL, src=(UPat(Ops.PROGRAM, name="ast"),), name="call", allow_any_len=True),                # kernels
+   lambda ctx, call, ast: exec_hcq(ctx, call, ast) if isinstance(call.arg.aux, HCQInfo) else exec_kernel(ctx, call, ast)),
+  (UPat(Ops.CALL, src=(UPat.custom_function("validate", name="ast"),), name="call", allow_any_len=True), exec_validate),
+])
+
+def run_linear(linear:UOp, var_vals:dict[str, int]|None=None, input_uops:Sequence[UOp]=(), update_stats=True, jit=False, wait=False):
+  ...
+  if not jit: linear = link_linear(compile_linear(linear, validate=VALIDATE_WITH_CPU, input_uops=inputs, cache=True), input_uops=inputs)
+  ctx = ExecContext(var_vals or {}, tuple(inputs), update_stats, jit, wait or DEBUG>=2)
+  for call in linear.src: track_stats(ctx, call.without_after, perf_counter_us(), pm_exec.rewrite(call.without_after, ctx))</code></pre>
+  <p><code>exec_kernel</code> fetches a loaded function from <code>runtime_cache</code> (<code>Device[device].runtime(...)</code> — for CPU, the object
+  file is loaded into executable memory), computes launch dimensions and calls it with the buffer pointers. The result:</p>
+  <pre class="output"><code>============ STAGE 6: run  (run_linear) ==================================
+c is now backed by a realized buffer: UOp(Ops.RESHAPE, arg=None, src=(
+  UOp(Ops.BUFFER, arg=ParamArg(2, dtypes.f32, device='CPU', buffer=UOp.new_buffer('CPU', 1, dtypes.f32, 2).buffer), src=(
+    UOp(Ops.CONST, arg=1, src=()),)),
+  UOp(Ops.STACK, arg=None, src=()),))
+c.item() = 74.0   (expected 74 )</code></pre>
+
+  <!-- ============================================================ -->
+  <h2 id="hammer"><span class="sec">1.9</span>Hammer it again: matmul + relu</h2>
+  <p>Same pipeline, different program. The point of this second example: <b>matmul is not a primitive.</b> It is decomposed by the Tensor
+  API into movement ops, a <code>MUL</code> and a <code>REDUCE</code>; <code>relu</code> into a comparison and a <code>WHERE</code>. The scheduler
+  fuses all of it into <em>one</em> kernel with three loops. Select "matmul + relu" in the pipeline map above to see every stage for it.</p>
+  <div class="codecap"><b>examples/01_matmul_relu.py</b> — run with <code>DEV=CPU python3 examples/01_matmul_relu.py</code></div>
+  <pre><code class="language-python">x = Tensor([[1., -2, 3, -4],
+            [5., -6, 7, -8]])               # shape (2, 4)
+w = Tensor([[1., 0, -1],
+            [0., 1,  0],
+            [1., 1,  1],
+            [-1, 0,  1]])                   # shape (4, 3)
+y = (x @ w).relu()                          # shape (2, 3), still nothing computed
+print("ops in the lazy tensor graph:", op_histogram(y.uop))
+linear = y.schedule_linear()                # Tensor -> LINEAR of CALLs
+ast = next(si.src[0] for si in linear.src if si.src[0].op is Ops.SINK)
+prg = to_program(ast, Device["CPU"].renderer)
+print(prg.src[2].arg)                       # the C source
+run_linear(linear)                          # schedule_linear() already re-pointed y at its output buffer: run it!
+print("result:", y.tolist())</code></pre>
+  <pre class="output"><code>y.shape = (2, 3)  y.dtype = dtypes.f32  y.device = CPU
+ops in the lazy tensor graph: {'CONST': 8, 'BUFFER': 2, 'STACK': 6, 'RESHAPE': 4, 'COPY': 2, 'PERMUTE': 2, 'MUL': 1, 'REDUCE': 1, 'CMPLT': 1, 'WHERE': 1}
+the top of the graph (relu is a WHERE of a comparison):
+  WHERE( CMPLT, REDUCE, CONST )
+
+schedule: 3 CALLs -&gt; ['STORE', 'STORE', 'SINK']
+ops in the kernel AST: {'CONST': 7, 'PARAM': 3, 'RANGE': 3, 'MUL': 4, 'ADD': 3, 'INDEX': 3, 'REDUCE': 1, 'MAX': 1, 'STORE': 1, 'END': 1, 'SINK': 1}
+RANGEs in the kernel AST: [((AxisType.WEAK, 0), 4), ((AxisType.WEAK, 1), 2), ((AxisType.WEAK, 2), 3)]
+
+generated C for r_2_3_4 with opts (Opt(op=OptOps.SPLIT, axis=2, arg=(0, AxisType.UPCAST)),)
+typedef float float4 __attribute__((aligned(4),ext_vector_type(4)));
+struct r_2_3_4_args { float* arg0; float* arg1; float* arg2; };
+void r_2_3_4(const struct r_2_3_4_args* args) {
+  float* data0_6 = args-&gt;arg0;
+  float* data1_8 = args-&gt;arg1;
+  float* data2_12 = args-&gt;arg2;
+  for (int Lidx1 = 0; Lidx1 &lt; 2; Lidx1++) {
+    float4 val0 = (*((float4*)((data1_8+(Lidx1&lt;&lt;2)))));
+    for (int Lidx2 = 0; Lidx2 &lt; 3; Lidx2++) {
+      float val1 = (*(data2_12+(Lidx2+3)));
+      float val2 = (*(data2_12+(Lidx2+6)));
+      float val3 = (*(data2_12+(Lidx2+9)));
+      float val4 = (*(data2_12+Lidx2));
+      float alu0 = ((val0[0]*val4)+(val0[1]*val1)+(val0[2]*val2)+(val0[3]*val3));
+      float alu1 = ((0.0f&lt;alu0)?alu0:0.0f);
+      *(data0_6+((Lidx1*3)+Lidx2)) = alu1;
+    }
+  }
+}
+
+result: [[8.0, 1.0, 0.0], [20.0, 1.0, 0.0]]</code></pre>
+  <p>Compare with what tinygrad does when you turn the optimizer off (<code>NOOPT=1</code>): the reduction becomes a real loop with an
+  accumulator register <code>buf0</code>, which is exactly what the <code>REDUCE</code> in the AST <em>means</em>:</p>
+  <div class="codecap">run with <code>DEV=CPU NOOPT=1 python3 examples/01_matmul_relu.py</code> (generated C only)</div>
+  <pre class="output"><code>
+generated C for r_2_3_4 with opts ()
+
+struct r_2_3_4_args { float* arg0; float* arg1; float* arg2; };
+void r_2_3_4(const struct r_2_3_4_args* args) {
+  float* data0_6 = args-&gt;arg0;
+  float* data1_8 = args-&gt;arg1;
+  float* data2_12 = args-&gt;arg2;
+  float buf0[1];
+  for (int Lidx1 = 0; Lidx1 &lt; 2; Lidx1++) {
+    for (int Lidx2 = 0; Lidx2 &lt; 3; Lidx2++) {
+      *(buf0+0) = 0.0f;
+      for (int Lidx0 = 0; Lidx0 &lt; 4; Lidx0++) {
+        float val0 = (*(data1_8+((Lidx1&lt;&lt;2)+Lidx0)));
+        float val1 = (*(data2_12+((Lidx0*3)+Lidx2)));
+        *(buf0+0) = ((*(buf0+0))+(val0*val1));
+      }
+      float val2 = (*(buf0+0));
+      float alu3 = ((0.0f&lt;val2)?val2:0.0f);
+      *(data0_6+((Lidx1*3)+Lidx2)) = alu3;
+    }
+  }</code></pre>
+  <div class="tabs">
+    <div class="tabpane" data-title="What changed between the two programs">
+      <table>
+        <tr><th></th><th><code>(a*b+1).sum()</code></th><th><code>(x@w).relu()</code></th></tr>
+        <tr><td>tensor graph</td><td>9 UOps: COPY, MUL, ADD, REDUCE</td><td>28 UOps: + RESHAPE ×4, PERMUTE ×2, STACK ×6, CMPLT, WHERE</td></tr>
+        <tr><td>kernels</td><td>2 copies + <code>r_4</code></td><td>2 copies + <code>r_2_3_4</code></td></tr>
+        <tr><td>RANGEs in AST</td><td>1 (reduce, 4)</td><td>3: output rows (2), output cols (3), reduce (4)</td></tr>
+        <tr><td>opts</td><td>SPLIT axis 0 → UPCAST</td><td>SPLIT axis 2 → UPCAST (the reduce)</td></tr>
+        <tr><td>relu</td><td>—</td><td><code>WHERE(CMPLT)</code> in the tensor graph, <code>MAX</code> in the AST, <code>(0.0f&lt;alu0)?alu0:0.0f</code> in C</td></tr>
+      </table>
+    </div>
+    <div class="tabpane" data-title="DEBUG=2 output of the same example">
+      <pre class="output"><code>y.shape = (2, 3)  y.dtype = dtypes.f32  y.device = CPU
+ops in the lazy tensor graph: {'CONST': 8, 'BUFFER': 2, 'STACK': 6, 'RESHAPE': 4, 'COPY': 2, 'PERMUTE': 2, 'MUL': 1, 'REDUCE': 1, 'CMPLT': 1, 'WHERE': 1}
+the top of the graph (relu is a WHERE of a comparison):
+  WHERE( CMPLT, REDUCE, CONST )
+scheduled     3 kernels in    52.32 ms | CACHE MISS f52229f6 |     136 uops in cache | /home/user/workspace/tinygrad-guide/examples/01_matmul_relu.py:37
+
+schedule: 3 CALLs -&gt; ['STORE', 'STORE', 'SINK']
+ops in the kernel AST: {'CONST': 7, 'PARAM': 3, 'RANGE': 3, 'MUL': 4, 'ADD': 3, 'INDEX': 3, 'REDUCE': 1, 'MAX': 1, 'STORE': 1, 'END': 1, 'SINK': 1}
+RANGEs in the kernel AST: [((AxisType.WEAK, 0), 4), ((AxisType.WEAK, 1), 2), ((AxisType.WEAK, 2), 3)]
+
+generated C for r_2_3_4 with opts (Opt(op=OptOps.SPLIT, axis=2, arg=(0, AxisType.UPCAST)),)
+typedef float float4 __attribute__((aligned(4),ext_vector_type(4)));
+struct r_2_3_4_args { float* arg0; float* arg1; float* arg2; };
+void r_2_3_4(const struct r_2_3_4_args* args) {
+  float* data0_6 = args-&gt;arg0;
+  float* data1_8 = args-&gt;arg1;
+  float* data2_12 = args-&gt;arg2;
+  for (int Lidx1 = 0; Lidx1 &lt; 2; Lidx1++) {
+    float4 val0 = (*((float4*)((data1_8+(Lidx1&lt;&lt;2)))));
+    for (int Lidx2 = 0; Lidx2 &lt; 3; Lidx2++) {
+      float val1 = (*(data2_12+(Lidx2+3)));
+      float val2 = (*(data2_12+(Lidx2+6)));
+      float val3 = (*(data2_12+(Lidx2+9)));
+      float val4 = (*(data2_12+Lidx2));
+      float alu0 = ((val0[0]*val4)+(val0[1]*val1)+(val0[2]*val2)+(val0[3]*val3));
+      float alu1 = ((0.0f&lt;alu0)?alu0:0.0f);
+      *(data0_6+((Lidx1*3)+Lidx2)) = alu1;
+    }
+  }
+}
+
+*** PYTHON     1 copy       32 B,     CPU &lt;- PYTHON             arg  2 mem   0.00 GB tm   1490.28us/     1.49ms (      0 GFLOPS    0|0      GB/s)
+*** PYTHON     2 copy       48 B,     CPU &lt;- PYTHON             arg  2 mem   0.00 GB tm    776.83us/     2.27ms (      0 GFLOPS    0|0      GB/s)
+*** CPU        3 r_2_3_4                                        arg  3 mem   0.00 GB tm      9.51us/     2.28ms (      0 GFLOPS    0|0      GB/s)
+result: [[8.0, 1.0, 0.0], [20.0, 1.0, 0.0]]</code></pre>
+      <p>The <code>scheduled 3 kernels</code> line comes from <code>lower_sink_to_linear</code> (DEBUG≥1); the <code>*** CPU 3 r_2_3_4 …</code> lines
+      from <code>track_stats</code> in <code>realize.py</code> (DEBUG≥2): device, global kernel number, name, number of buffer args, memory in use, time.</p>
+    </div>
+  </div>
+
+  <div class="quiz" data-answer="3">
+    <div class="q">A kernel is named <code>E_6_4</code>. What can you tell without reading its code?</div>
+    <button class="opt">It is the 6th kernel of the 4th schedule</button>
+    <button class="opt">It contains a reduction over 6×4 elements</button>
+    <button class="opt">It runs on 6 threads with 4 registers</button>
+    <button class="opt">It is purely elementwise (no reduce) and has loops/dims of size 6 and 4</button>
+    <div class="explain"><code>E_</code> = elementwise, <code>r_</code> = contains a reduce, and the numbers are the sizes of the kernel's axes after
+    optimization. <code>r_4</code> and <code>r_2_3_4</code> above are both reduces; <code>E_2</code> / <code>E_4</code> appear in Chapter 3's
+    emulation example, which has no reduce.</div>
+  </div>
+
+  <div class="quiz" data-answer="0">
+    <div class="q">How many kernels does <code>(x @ w).relu()</code> compile into (excluding copies), and why?</div>
+    <button class="opt">One: the elementwise MUL, the REDUCE and the relu all index the same loops, so nothing forces a buffer in between</button>
+    <button class="opt">Three: one for the reshape, one for the matmul, one for relu</button>
+    <button class="opt">Two: matmul and relu are always separate kernels</button>
+    <div class="explain">The schedule shows <code>['STORE', 'STORE', 'SINK']</code>: two copy calls and one compute kernel, <code>r_2_3_4</code>.
+    Movement ops are free (they become index arithmetic) and the relu is applied to the reduce result inside the same loop nest.</div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="watch"><span class="sec">1.10</span>Watch it yourself: DEBUG, VIZ and caches</h2>
+  <p>You never need to spy on functions in daily use; tinygrad has two built-in microscopes. <code>DEBUG=n</code> prints more as <code>n</code> grows;
+  <code>VIZ</code> records <em>every</em> <code>graph_rewrite</code> for a web UI or the command line.</p>
+
+  <div class="demo ch01-debug" id="demo-debug">
+    <div class="demo-title">DEBUG level explorer (real output)</div>
+    <div class="demo-desc">Captured by <code>examples/01_debug_levels.py</code>, which re-runs the same matmul+relu program at <code>DEBUG=0…5</code>.
+    Lines that are new compared to the previous level are highlighted.</div>
+    <div class="controls"><label>DEBUG = <b id="dbg-val" style="color:var(--yellow)">2</b></label>
+      <input type="range" id="dbg-slider" min="0" max="5" value="2" style="width:220px"><span id="dbg-what" style="font-size:13px;color:var(--dim)"></span></div>
+    <pre class="output"><code id="dbg-out"></code></pre>
+  </div>
+
+  <p>At <code>DEBUG=5</code> notice the block of <code>%0 = param …</code> lines: that is <code>render_uir(ast)</code> printed at the top of
+  <code>full_rewrite_to_sink</code> — the kernel AST in a readable SSA form. <code>%17 = max 0.0, %16</code> is the relu.</p>
+
+  <h3>VIZ on the command line</h3>
+  <p>Run any program with <code>VIZ=-1</code> (record, don't launch the web UI), then query the trace with <code>python -m tinygrad.viz.cli</code>.
+  Here are the scheduler and codegen entries for <code>examples/01_matmul_relu.py</code> — every line is one named <code>graph_rewrite</code>
+  (filtered with <code>grep TINY</code>; the user-level Tensor calls are logged under <code>USER</code>):</p>
+  <div class="codecap">run with <code>DEV=CPU VIZ=-1 python3 examples/01_matmul_relu.py; NO_COLOR=1 python3 -m tinygrad.viz.cli | grep TINY</code> </div>
+  <pre class="output" style="max-height:420px"><code>*** TINY    Schedule 1 -&gt; 3 n1                             tm     89.78ms/   158.86ms (loc tensor.py:544 _wrapper)
+*** TINY    View Tensor Graph                              tm    143.00us/   159.09ms
+*** TINY    drop after                                     tm   1428.00us/   159.73ms
+*** TINY    bufferize                                      tm     92.00us/   161.82ms (loc tensor.py:544 _wrapper)
+*** TINY    substitute bufferize                           tm     18.00us/   161.89ms
+*** TINY    View Graph                                     tm     70.00us/   161.93ms
+*** TINY    early transform tensor graph                   tm     18.50ms/   170.34ms
+*** TINY    contiguous_view_offset                         tm   2997.00us/   171.24ms
+*** TINY    contiguous_view_offset                         tm    174.00us/   187.75ms
+*** TINY    replace bufs                                   tm   1070.00us/   188.87ms
+*** TINY    View Call                                      tm     24.00us/   190.10ms
+*** TINY    schedule to linear                             tm     49.63ms/   190.15ms
+*** TINY    prepare_rangeify                               tm   9030.00us/   192.02ms
+*** TINY    multi_pm                                       tm    926.00us/   192.08ms
+*** TINY    inline calls                                   tm   2576.00us/   193.03ms
+*** TINY    earliest rewrites                              tm   5384.00us/   195.66ms
+*** TINY    get_kernel_graph                               tm     38.05ms/   201.08ms
+*** TINY    run_rangeify                                   tm     12.97ms/   201.09ms
+*** TINY    get realize                                    tm    727.00us/   201.10ms
+*** TINY    consumer map in rangeify                       tm    101.00us/   201.84ms
+*** TINY    minimum_valid                                  tm   4008.00us/   202.20ms
+*** TINY    minimum_valid                                  tm    197.00us/   206.30ms
+*** TINY    reshape                                        tm   2896.00us/   207.17ms
+*** TINY    reshape                                        tm    562.00us/   210.54ms
+*** TINY    reshape                                        tm    371.00us/   211.53ms
+*** TINY    apply rangeify                                 tm   1832.00us/   212.03ms
+*** TINY    add device to deviceless                       tm    102.00us/   213.96ms
+*** TINY    symbolic+reduce_collapse+debuf                 tm     14.22ms/   215.22ms
+*** TINY    reduce_collapse                                tm   5009.00us/   220.56ms
+*** TINY    limit buffers                                  tm   1256.00us/   229.52ms
+*** TINY    View Rangeify                                  tm     95.00us/   230.79ms
+*** TINY    stage to store                                 tm    473.00us/   230.93ms
+*** TINY    remove indexing from call args                 tm     90.00us/   231.42ms
+*** TINY    split kernels                                  tm   5117.00us/   231.52ms
+*** TINY    kernel split                                   tm   2464.00us/   231.97ms
+*** TINY    graph_rewrite                                  tm    344.00us/   234.81ms
+*** TINY    kernel split                                   tm    127.00us/   235.30ms
+*** TINY    graph_rewrite                                  tm     58.00us/   235.85ms
+*** TINY    kernel split                                   tm    170.00us/   236.03ms
+*** TINY    graph_rewrite                                  tm     39.00us/   236.49ms
+*** TINY    remove views from the kernel graph             tm     35.00us/   236.67ms
+*** TINY    View Kernel Graph                              tm     27.00us/   236.71ms
+*** TINY    toposort sched_sink                            tm     87.00us/   239.45ms (loc tensor.py:544 _wrapper)
+*** TINY    linearize schedule                             tm     41.00us/   239.58ms (loc tensor.py:544 _wrapper)
+*** TINY    resolve linear call                            tm   1802.00us/   239.79ms
+*** TINY    params to buffers                              tm    722.00us/   240.71ms
+*** TINY    lower copy kernels to STORE calls              tm   6096.00us/   241.61ms
+*** TINY    simplify ranges in copy                        tm   1419.00us/   242.69ms
+*** TINY    simplify ranges in copy                        tm    174.00us/   246.85ms
+*** TINY    memory plan                                    tm    100.00us/   248.50ms
+*** TINY    do_to_program for r_2_3_4                      tm     91.18ms/   249.50ms (loc __init__.py:510 to_program)
+*** TINY    View Base AST                                  tm     75.00us/   249.53ms
+*** TINY    lower calls                                    tm     55.00us/   249.61ms
+*** TINY    multi_pm                                       tm     87.00us/   250.83ms
+*** TINY    early movement ops                             tm     84.00us/   250.93ms
+*** TINY    load collapse                                  tm   1040.00us/   251.02ms
+*** TINY    reduce_collapse                                tm    386.00us/   251.64ms
+*** TINY    split ranges                                   tm    445.00us/   252.08ms
+*** TINY    initial symbolic                               tm   1399.00us/   252.72ms
+*** TINY    simplify ranges                                tm   4952.00us/   254.15ms
+*** TINY    check_merge_(1,)_(2,)                          tm   4004.00us/   255.03ms
+*** TINY    graph_rewrite                                  tm     82.00us/   259.12ms
+*** TINY    graph_rewrite                                  tm     86.00us/   259.56ms
+*** TINY    graph_rewrite                                  tm     71.00us/   259.70ms
+*** TINY    graph_rewrite                                  tm     67.00us/   259.81ms
+*** TINY    graph_rewrite                                  tm     67.00us/   259.90ms
+*** TINY    shift (0,) 4 upcast                            tm    268.00us/   260.59ms
+*** TINY    postopt symbolic                               tm    660.00us/   261.81ms
+*** TINY    expander                                       tm   1449.00us/   262.53ms
+*** TINY    remove reduces                                 tm   2746.00us/   264.05ms
+*** TINY    add local buffers                              tm    107.00us/   266.83ms
+*** TINY    group gpudims                                  tm   1064.00us/   266.94ms
+*** TINY    *** expand broadcast / add loads               tm   4044.00us/   268.27ms
+*** TINY    devectorize2                                   tm   7734.00us/   272.59ms
+*** TINY    reshape                                        tm     13.00us/   280.03ms
+*** TINY    early symbolic                                 tm     14.10ms/   280.38ms
+*** TINY    memory coalescing                              tm    270.00us/   294.79ms
+*** TINY    add images                                     tm   1459.00us/   295.17ms
+*** TINY    extra symbolic                                 tm   1286.00us/   296.90ms
+*** TINY    lower all index dtypes                         tm   3470.00us/   298.22ms
+*** TINY    final symbolic                                 tm   2011.00us/   301.73ms
+*** TINY    cast float alu operands                        tm    122.00us/   303.76ms
+*** TINY    early decompositions                           tm    440.00us/   304.00ms
+*** TINY    late decompositions                            tm   2606.00us/   304.99ms
+*** TINY    decomp dtypes                                  tm   1482.00us/   307.66ms
+*** TINY    move gates from index                          tm   1542.00us/   309.16ms
+*** TINY    final rewrite                                  tm   5111.00us/   311.63ms
+*** TINY    cast consts                                    tm    838.00us/   316.77ms
+*** TINY    add implicit barriers                          tm   1264.00us/   317.65ms
+*** TINY    range to special                               tm    354.00us/   318.94ms
+*** TINY    add control flow                               tm    468.00us/   319.47ms
+*** TINY    number variables                               tm    494.00us/   320.04ms
+*** TINY    View Output AST                                tm    124.00us/   320.55ms
+*** TINY    linearize/render                               tm     16.03ms/   324.47ms
+*** TINY    View Program                                   tm    145.00us/   340.53ms
+*** TINY    precompile kernels                             tm    139.00us/   341.30ms
+*** TINY    HCQ Compile 3 Kernels n1                       tm   3928.00us/   341.57ms (loc realize.py:288 run_linear)
+*** TINY    replace buffers                                tm    620.00us/   341.60ms
+*** TINY    prep calls                                     tm   3060.00us/   342.26ms
+*** TINY    sched_batches                                  tm     79.00us/   345.33ms
+*** TINY    lower call                                     tm     48.00us/   345.42ms
+*** TINY    HCQ Link 3 Kernels n1                          tm    397.00us/   345.56ms (loc realize.py:288 run_linear)
+*** TINY    link                                           tm    359.00us/   345.59ms</code></pre>
+
+  <h3>Caches: the second run is cheaper</h3>
+  <p>Four caches sit on the pipeline, all keyed by content hashes of UOps (<code>UOp.key</code>):
+  <a class="src" data-path="tinygrad/schedule/__init__.py" data-line="119">schedule_cache</a> (CALL body → LINEAR),
+  <a class="src" data-path="tinygrad/codegen/__init__.py" data-line="508">to_program_cache</a> (AST → PROGRAM),
+  the on-disk compile cache in <code>compile_cached</code> (source → binary) and
+  <a class="src" data-path="tinygrad/engine/realize.py" data-line="105">runtime_cache</a> (program → loaded function).</p>
+  <div class="codecap"><b>examples/01_caches.py</b> — run with <code>DEV=CPU DEBUG=2 python3 examples/01_caches.py</code></div>
+  <pre><code class="language-python">def program(data: list[float]):
+  a = Tensor(data)                        # different VALUES in the input buffer ...
+  return (a * a + 1).sum()                # ... but the same graph STRUCTURE (buffers become PARAM slots)
+
+def program_with_const(k: float):
+  a = Tensor([1., 2., 3., 4.])
+  return (a * a + k).sum()                # a different CONST is a different graph -> new kernel</code></pre>
+  <pre class="output"><code>--- run 1: program([1,2,3,4])
+scheduled     2 kernels in    55.02 ms | CACHE MISS e07aaa86 |      50 uops in cache | /home/user/workspace/tinygrad-guide/examples/01_caches.py:27
+compiling r_4                                     : 100%|█| 1/1 [00:00&lt;00:00, 16.77it/s]
+*** PYTHON     1 copy       16 B,     CPU &lt;- PYTHON             arg  2 mem   0.00 GB tm   2476.39us/     2.48ms (      0 GFLOPS    0|0      GB/s)
+*** CPU        2 r_4                                            arg  2 mem   0.00 GB tm     11.85us/     2.49ms (      0 GFLOPS    0|0      GB/s)
+result=34.0  | schedule_cache=1 to_program_cache=1 runtime_cache=1
+--- run 2: program([5,6,7,8])
+scheduled     2 kernels in     1.66 ms |  cache hit e07aaa86 |      83 uops in cache | /home/user/workspace/tinygrad-guide/examples/01_caches.py:27
+*** PYTHON     3 copy       16 B,     CPU &lt;- PYTHON             arg  2 mem   0.00 GB tm    681.69us/     3.17ms (      0 GFLOPS    0|0      GB/s)
+*** CPU        4 r_4                                            arg  2 mem   0.00 GB tm      7.97us/     3.18ms (      0 GFLOPS    0|0      GB/s)
+result=178.0  | schedule_cache=1 to_program_cache=1 runtime_cache=1
+--- run 3: program_with_const(2.0)
+scheduled     2 kernels in     4.66 ms | CACHE MISS 9d7a863a |      92 uops in cache | /home/user/workspace/tinygrad-guide/examples/01_caches.py:27
+compiling r_4                                     : 100%|█| 1/1 [00:00&lt;00:00, 110.75it/s]
+*** PYTHON     5 copy       16 B,     CPU &lt;- PYTHON             arg  2 mem   0.00 GB tm    665.10us/     3.84ms (      0 GFLOPS    0|0      GB/s)
+*** CPU        6 r_4                                            arg  2 mem   0.00 GB tm      5.29us/     3.85ms (      0 GFLOPS    0|0      GB/s)
+result=38.0  | schedule_cache=2 to_program_cache=2 runtime_cache=2</code></pre>
+  <p>Run 2 is a <code>cache hit</code> (1.5 ms instead of 50 ms of scheduling, and no "compiling" line); run 3 changed a constant baked into the
+  graph, so it is a new schedule and a new kernel. Constants are compiled into kernels — this is a deliberate design choice (the constant
+  can be folded, as the <code>+4.0f</code> above showed), and the reason symbolic <code>Variable</code>s exist for values that change every call (Chapter 6, 18).</p>
+
+  <div class="quiz" data-answer="2">
+    <div class="q">Why did <code>program([5,6,7,8])</code> hit the schedule cache although its data differs from <code>program([1,2,3,4])</code>?</div>
+    <button class="opt">tinygrad hashes the data and the hashes happened to collide</button>
+    <button class="opt">The schedule cache ignores everything except the shape</button>
+    <button class="opt"><code>transform_to_call</code> replaced the input BUFFERs by positional PARAMs, so both CALL bodies are the identical UOp</button>
+    <div class="explain">The key is <code>function.key</code>, a sha256 over op/dtype/arg of the body. Buffers are outside the body (CALL args), so only
+    the structure and the constants matter. That is also why <code>program_with_const(2.0)</code> missed.</div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="env"><span class="sec">1.11</span>The environment variables that matter</h2>
+  <p>tinygrad's knobs are <a class="src" data-path="tinygrad/helpers.py" data-line="180">ContextVar</a>s: read from <code>os.environ</code> at import
+  and overridable in code with <code>with Context(NAME=value):</code>. All of these were checked in
+  <a class="src" data-path="tinygrad/helpers.py" data-line="237">helpers.py</a>:</p>
+  <table>
+    <tr><th>variable</th><th>default</th><th>what it does</th></tr>
+    <tr><td><code>DEV</code></td><td>(unset)</td><td>target device / renderer, e.g. <code>DEV=CPU</code>, <code>DEV=PYTHON</code>, <code>DEV=CPU:LLVM</code>. Parsed into <code>Target</code>s (<code>_DEV</code> ContextVar).</td></tr>
+    <tr><td><code>DEBUG</code></td><td>0</td><td>1: schedule summary + compile progress, 2: one line per executed kernel, 3: applied opts, 4: generated source, 5: kernel AST (<code>render_uir</code>), 6–7: more graphs/rewrites</td></tr>
+    <tr><td><code>VIZ</code></td><td>0</td><td>record all rewrites; <code>VIZ=1</code> web UI, <code>VIZ=-1</code> record only (use <code>tinygrad.viz.cli</code>). Implies <code>PROFILE</code>.</td></tr>
+    <tr><td><code>NOOPT</code></td><td>0</td><td>skip the kernel optimizer (no upcast/local/unroll): the AST is lowered as is</td></tr>
+    <tr><td><code>BEAM</code></td><td>0</td><td>BEAM=n: search kernel optimizations by timing n candidates per step instead of the hand-coded heuristic (Chapter 14)</td></tr>
+    <tr><td><code>SPEC</code></td><td>1</td><td>type-verify graphs against the spec at stage boundaries; <code>SPEC=2</code> checks every UOp at creation</td></tr>
+    <tr><td><code>DEFAULT_FLOAT</code> / <code>DEFAULT_INT</code></td><td>float32 / int32</td><td>what Python floats/ints commit to (Chapter 3)</td></tr>
+    <tr><td><code>EMULATED_DTYPES</code></td><td>""</td><td>force software emulation of listed dtypes, e.g. <code>bfloat16</code>, <code>long</code> (Chapter 3)</td></tr>
+    <tr><td><code>SCACHE</code> / <code>CCACHE</code></td><td>1 / 1</td><td>schedule cache (2 = persist to disk) / compiler disk cache</td></tr>
+    <tr><td><code>JIT</code></td><td>1</td><td>TinyJit enabled (Chapter 18)</td></tr>
+    <tr><td><code>TRANSCENDENTAL</code></td><td>1</td><td>≥2 forces software exp2/log2/sin decompositions</td></tr>
+  </table>
+  <details class="deep-dive"><summary>All 53 ContextVars and their current values (examples/01_env_vars.py)</summary>
+    <div class="codecap">run with <code>python3 examples/01_env_vars.py</code> (this sandbox sets <code>NO_COLOR=1</code> in the environment)</div>
+    <pre class="output"><code>ALL2ALL                  = 0
+ALLOW_DEVICE_USAGE       = 1
+ALLOW_TF32               = 0
+ALLREDUCE_CAST           = 1
+ALLREDUCE_NODE_NDEVS     = 0
+BEAM                     = 0
+CACHELEVEL               = 2
+CAPTURE_PROCESS_REPLAY   = 0
+CAPTURING                = 1
+CCACHE                   = 1
+CHECK_OOB                = 0
+DEBUG                    = 0
+DEBUG_RANGEIFY           = 0
+DEFAULT_FLOAT            = 'float32'
+DEFAULT_INT              = 'int32'
+DEV                      = [CPU]
+DISABLE_FAST_IDIV        = 1
+DISALLOW_BROADCAST       = 0
+EMULATED_DTYPES          = ''
+FLOAT16                  = 0
+FUSE_OPTIM               = 0
+HCQ_RUNTIME_DEV          = [CPU:LLVM]
+IGNORE_BEAM_CACHE        = 0
+IMAGE                    = 0
+JIT                      = 1
+LRU                      = 1
+MAX_BUFFER_SIZE          = 0
+MAX_KERNEL_BUFFERS       = 0
+NOOPT                    = 0
+NO_COLOR                 = 1
+NO_MEMORY_PLANNER        = 0
+NULL_ALLOW_COPYOUT       = 0
+OPENPILOT_HACKS          = 0
+PARALLEL                 = 4
+PROCESS_REPLAY_LOC       = ''
+PROFILE                  = 0
+REWRITE_STACK_LIMIT      = 250000
+RING                     = 1
+SCACHE                   = 1
+SPEC                     = 1
+SPLIT_REDUCEOP           = 1
+TC                       = 1
+TC_MIN_GLOBALS           = 0
+TC_OPT                   = 0
+TC_SELECT                = -1
+TRACK_MATCH_STATS        = 0
+TRAINING                 = 0
+TRANSCENDENTAL           = 1
+TUPLE_ORDER              = 1
+USE_ATOMICS              = 0
+VALIDATE_WITH_CPU        = 0
+VIZ                      = 0
+WINO                     = 0
+
+53 ContextVars
+inside `with Context(DEBUG=4)`: DEBUG.value = 4
+outside again: DEBUG.value = 0</code></pre>
+  </details>
+
+  <!-- ============================================================ -->
+  <h2 id="repo"><span class="sec">1.12</span>A tour of the repository</h2>
+  <p>About 27k lines of hand-written Python (plus 235k lines of machine-generated ctypes bindings in <code>runtime/autogen/</code>, which nobody
+  reads). The compiler proper — Tensor to generated code — is a few thousand lines.</p>
+  <div class="codecap"><b>examples/01_repo_tour.py</b> — run with <code>python3 examples/01_repo_tour.py</code> (counts non-blank, non-comment lines)</div>
+  <pre class="output"><code>tinygrad package at /home/user/workspace/tinygrad/tinygrad
+hand-written code: 27169 lines in 124 files  (+ 235541 lines of autogenerated bindings in runtime/autogen)
+
+directory                           lines
+tinygrad                             1773
+tinygrad/codegen                      546
+tinygrad/codegen/decomp               478
+tinygrad/codegen/late                 295
+tinygrad/codegen/opt                  526
+tinygrad/engine                       429
+tinygrad/llm                         1298
+tinygrad/llm/kernels                  786
+tinygrad/mixin                       3824
+tinygrad/nn                          1740
+tinygrad/renderer                    2116
+tinygrad/renderer/amd                1597
+tinygrad/runtime                     3149
+tinygrad/runtime/support             2291
+tinygrad/runtime/support/am           866
+tinygrad/runtime/support/nv           636
+tinygrad/runtime/support/rdma         193
+tinygrad/schedule                    1180
+tinygrad/uop                         2584
+tinygrad/viz                          862
+
+the core compiler files (everything between Tensor and the generated code):
+  tinygrad/tensor.py                         427
+  tinygrad/dtype.py                          273
+  tinygrad/helpers.py                        536
+  tinygrad/device.py                         439
+  tinygrad/uop/ops.py                       1541
+  tinygrad/uop/__init__.py                    54
+  tinygrad/uop/symbolic.py                   330
+  tinygrad/uop/spec.py                       162
+  tinygrad/uop/weak.py                        70
+  tinygrad/schedule/__init__.py              219
+  tinygrad/schedule/prepare.py               172
+  tinygrad/schedule/indexing.py              217
+  tinygrad/schedule/rangeify.py              244
+  tinygrad/schedule/memory.py                 45
+  tinygrad/codegen/__init__.py               360
+  tinygrad/codegen/opt/postrange.py          211
+  tinygrad/codegen/opt/heuristic.py          147
+  tinygrad/codegen/late/linearizer.py         66
+  tinygrad/renderer/cstyle.py                513
+  tinygrad/engine/realize.py                 246
+  tinygrad/runtime/ops_cpu.py                 57
+  (sum)                                     6329</code></pre>
+
+  <div class="demo" id="demo-repo">
+    <div class="demo-title">Repository explorer</div>
+    <div class="demo-desc">Click a directory to list its files (line counts from <code>data/ch01_repo.json</code>). Files on the compile path carry a
+    one-line description of what they own. The colored tag says where in the pipeline it sits.</div>
+    <div class="ch01-cols">
+      <div class="ch01-bars" id="repo-dirs"></div>
+      <div class="ch01-bars ch01-files" id="repo-files"></div>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="why"><span class="sec">1.13</span>Why is it built like this?</h2>
+  <ul>
+    <li><b>Laziness buys whole-program knowledge.</b> An eager framework must decide what to do with <code>a*b</code> before it knows that a
+    <code>+1</code> and a <code>.sum()</code> follow. tinygrad sees the whole graph at <code>realize()</code>, so it can fuse three ops into one
+    kernel, fold <code>+1</code>s into <code>+4.0f</code>, and never allocate the intermediate <code>a*b</code>.</li>
+    <li><b>One IR means one toolbox.</b> Because tensors, schedules, kernels and programs are all UOps, one rewrite engine
+    (<code>PatternMatcher</code> + <code>graph_rewrite</code>), one printer, one visualizer and one hashing scheme serve every stage. New passes are
+    a list of patterns, not a new data structure.</li>
+    <li><b>Hash-consing makes it cheap.</b> Identical sub-graphs are shared, equality is identity, and every stage can be cached by
+    <code>UOp.key</code>.</li>
+    <li><b>The price:</b> errors surface late (a shape bug in your model may appear only when you call <code>.item()</code>), the first run pays
+    scheduling+compile time (hence the caches and <code>TinyJit</code>), and reading the internals requires knowing which <code>Ops</code> are legal at
+    which altitude — which is what <code>spec.py</code> checks and what this guide is for.</li>
+  </ul>
+
+  <!-- ============================================================ -->
+  <h2 id="roadmap"><span class="sec">1.14</span>Reading roadmap</h2>
+  <p>The remaining chapters follow the pipeline. Foundations first (the IR and the rewrite engine every later stage is built from), then
+  the stages left to right.</p>
+  <div class="ch01-road" id="ch01-roadmap"></div>
+
+  <div class="quiz" data-answer="1">
+    <div class="q">Which statement about a <code>PROGRAM</code> UOp produced by <code>to_program</code> is true?</div>
+    <button class="opt">It is a Python class wrapping a C function pointer</button>
+    <button class="opt">It is a UOp whose srcs are the lowered SINK, a LINEAR instruction list, a SOURCE (C string) and a BINARY (bytes)</button>
+    <button class="opt">It only exists for GPU backends</button>
+    <div class="explain">The example printed <code>PROGRAM srcs: ['SINK', 'LINEAR', 'SOURCE', 'BINARY']</code>. Loading the binary into an
+    executable function happens later, at run time, in <code>get_runtime</code>.</div>
+  </div>
+
+  <div class="quiz" data-answer="2">
+    <div class="q">In which stage do <code>RESHAPE</code>/<code>PERMUTE</code>/<code>EXPAND</code> disappear from the graph?</div>
+    <button class="opt">In <code>Tensor._apply_uop</code>, immediately</button>
+    <button class="opt">In the C renderer</button>
+    <button class="opt">In rangeify (<code>run_rangeify</code>), where they become index arithmetic on RANGEs</button>
+    <button class="opt">They never disappear; the CPU executes them</button>
+    <div class="explain">The op counts printed after <code>run_rangeify</code> contain no movement ops, and the heat-map shows the teal rows end at
+    the rangeify column. "Movement ops are free" is literally true: they cost nothing at run time because they only change index math.</div>
+  </div>
+
+  <div class="summary-box"><h3>Chapter summary</h3><ul>
+    <li>tinygrad is a <b>lazy compiler</b>: Tensor ops build a UOp graph; <code>realize()</code> (or anything that needs data) compiles and runs it.</li>
+    <li><b>Everything is a UOp</b> <code>(op, src, arg)</code>, immutable and hash-consed. Stages differ only in which <code>Ops</code> appear.</li>
+    <li><b>Schedule</b> (<code>Tensor.linear_with_vars</code>): bufferize outputs → <code>transform_to_call</code> (buffers→PARAMs) → <code>prepare_rangeify</code> →
+    <code>run_rangeify</code> (movement ops → RANGE indexing) → <code>get_kernel_graph</code> (cut into CALLs) → <code>create_schedule</code> → copies lowered, memory planned.</li>
+    <li><b>Codegen</b> (<code>do_to_program</code>): <code>full_rewrite_to_sink</code> (optimize + ~30 lowering passes) → <code>linearize</code> → <code>render</code>,
+    producing <code>PROGRAM(SINK, LINEAR, SOURCE, BINARY)</code>; <code>compile_cached</code> makes the binary.</li>
+    <li><b>Run</b> (<code>run_linear</code>): dispatch each CALL by its body (<code>STORE</code> = copy, <code>PROGRAM</code> = kernel) via <code>pm_exec</code>.</li>
+    <li>Use <code>DEBUG=2/4/5</code>, <code>NOOPT=1</code>, <code>VIZ=-1</code> + <code>tinygrad.viz.cli</code> to watch it; four caches make repeated structures cheap.</li>
+  </ul></div>
+</main>
+</div>
+<script>
+(async function () {
+  const G = Guide, el = G.el;
+  const STAGES = [
+    { key: "tensor_graph", name: "Tensor graph", sub: "Tensor._apply_uop", path: "tinygrad/tensor.py", line: 103, ch: "02-tensor-laziness",
+      in: "Python calls: <code>Tensor([...])</code>, <code>*</code>, <code>+</code>, <code>.sum()</code> / <code>@</code>, <code>.relu()</code>",
+      how: "each method builds a UOp from its inputs' UOps (mixins in <code>tinygrad/mixin/</code>); hash-consing dedups identical nodes",
+      out: "a lazy DAG: BUFFER(PYTHON)→COPY for list data, ALU ops, movement ops, REDUCE. Nothing has run." },
+    { key: "bufferized", name: "Bufferize", sub: "linear_with_vars", path: "tinygrad/tensor.py", line: 166, ch: "12-schedule",
+      in: "SINK of the tensors to realize",
+      how: "each output that needs storage gets a fresh BUFFER; compute is wrapped as <code>AFTER(buf, STORE(buf, compute))</code>; live Tensors are re-pointed at the buffer (<code>_apply_map_to_tensors</code>)",
+      out: "SINK(AFTER(BUFFER, STORE(...)))" },
+    { key: "call", name: "Callify", sub: "transform_to_call", path: "tinygrad/schedule/__init__.py", line: 257, ch: "12-schedule",
+      in: "the bufferized SINK",
+      how: "collect the STOREs, replace each concrete BUFFER by a positional PARAM, wrap in <code>CALL(body, *buffers)</code>",
+      out: "one CALL whose body mentions no concrete memory (cacheable by hash)" },
+    { key: "prepared", name: "Prepare", sub: "prepare_rangeify", path: "tinygrad/schedule/prepare.py", line: 255, ch: "11-kernel-split",
+      in: "the CALL body", how: "multi-device resolution, call inlining, <code>earliest_rewrites</code>; COPY → ALLOC + STORE + AFTER",
+      out: "a graph where every materialization is an explicit STORE into an ALLOC/PARAM" },
+    { key: "rangeified", name: "Rangeify", sub: "run_rangeify", path: "tinygrad/schedule/indexing.py", line: 182, ch: "10-rangeify",
+      in: "graph with movement ops and shapes", how: "assign RANGE loop variables to every realized value, push them through movement ops into INDEX expressions",
+      out: "no movement ops left; INDEX(buf, f(RANGEs)), REDUCE over RANGEs, END closes loops" },
+    { key: "kernel_graph", name: "Kernel split", sub: "get_kernel_graph", path: "tinygrad/schedule/rangeify.py", line: 339, ch: "11-kernel-split",
+      in: "rangeified graph", how: "symbolic cleanup, remove unneeded buffers, stage→store, then <code>split_store</code> cuts at every closed STORE/END",
+      out: "AFTER(buf, CALL(SINK(kernel), *bufs)) — one CALL per kernel, with buffer dependencies" },
+    { key: "linear", name: "Schedule", sub: "create_schedule + memory", path: "tinygrad/schedule/__init__.py", line: 31, ch: "12-schedule",
+      in: "kernel graph", how: "toposort kernels by RAW/WAR deps into LINEAR; resolve PARAMs to buffers; copy kernels → STORE calls; <code>memory_plan_rewrite</code> packs temporaries into an arena",
+      out: "LINEAR(CALL, CALL, ...) in execution order — this is what <code>linear_with_vars</code> returns" },
+    { key: "ast", name: "Kernel AST", sub: "CALL body", path: "tinygrad/uop/ops.py", line: 1295, ch: "13-kernel-ast",
+      in: "the compute CALL", how: "(no transformation: we just look at <code>call.src[0]</code>)",
+      out: "SINK(KernelInfo) of STORE/INDEX/RANGE/REDUCE/END over PARAMs — the input of codegen" },
+    { key: "full_sink", name: "Lower", sub: "full_rewrite_to_sink", path: "tinygrad/codegen/__init__.py", line: 253, ch: "15-lowering",
+      in: "kernel AST", how: "~30 graph_rewrites: optimize (apply_opts), expand upcasts, remove REDUCE (accumulators), devectorize, add LOADs, lower weak dtypes, decompositions",
+      out: "a renderer-ready SINK: LOAD/STORE/INDEX/ALU with concrete dtypes" },
+    { key: "lin_list", name: "Linearize", sub: "linearize()", path: "tinygrad/codegen/late/linearizer.py", line: 8, ch: "16-linearize-render", kind: "list",
+      in: "lowered SINK (a DAG)", how: "priority toposort: PARAMs first, loads early, stores late, loop bodies grouped",
+      out: "LINEAR: a flat instruction list (one UOp per line)" },
+    { key: "source", name: "Render", sub: "ClangRenderer", path: "tinygrad/renderer/cstyle.py", line: 294, ch: "16-linearize-render", kind: "source",
+      in: "LINEAR list", how: "walk the list, emit one C statement per UOp (<code>do_render</code>)",
+      out: "SOURCE: a C function string" },
+    { key: "binary", name: "Compile", sub: "compile_cached", path: "tinygrad/device.py", line: 333, ch: "17-runtime", kind: "binary",
+      in: "C source", how: "<code>clang -c -x c -O2 ...</code> via ClangCompiler, cached on disk keyed by the source",
+      out: "BINARY: object-file bytes" },
+    { key: "run", name: "Run", sub: "run_linear", path: "tinygrad/engine/realize.py", line: 284, ch: "17-runtime", kind: "run",
+      in: "LINEAR of CALLs with compiled PROGRAMs", how: "<code>pm_exec</code>: STORE body → exec_copy, PROGRAM body → exec_kernel (load from runtime_cache, call with buffer pointers)",
+      out: "filled buffers; <code>c.item()</code> reads the result" },
+  ];
+  const PROGS = { sum: "(a*b+1).sum()", matmul: "(x @ w).relu()" };
+  const data = await G.loadJSON("../data/ch01_pipeline.json");
+  let prog = "sum", cur = 0, view = "graph";
+
+  // ---------------- hero picture ----------------
+  (function hero() {
+    const svg = G.$("#hero");
+    const boxes = [["Tensor API", "lazy UOp graph", "#58C4DD"], ["Schedule", "LINEAR of CALLs", "#F0AC5F"], ["Codegen", "PROGRAM(SINK,LINEAR,…)", "#9A72AC"],
+                   ["Compile", "BINARY bytes", "#FC6255"], ["Run", "numbers in buffers", "#83C167"]];
+    const w = 160, gap = 34;
+    boxes.forEach(([t, s, c], i) => {
+      const x = 12 + i * (w + gap);
+      const g = el("g", { style: "opacity:0" });
+      g.append(el("rect", { x, y: 50, width: w, height: 86, rx: 10, fill: c + "22", stroke: c, "stroke-width": 2 }),
+        el("text", { x: x + w / 2, y: 86, "text-anchor": "middle", fill: c, "font-size": 18, "font-weight": 700 }, t),
+        el("text", { x: x + w / 2, y: 112, "text-anchor": "middle", fill: "#9aa3ad", "font-size": 11.5 }, s));
+      if (i < boxes.length - 1) g.append(el("path", { d: `M${x + w + 4},93 L${x + w + gap - 6},93`, stroke: "#5b6470", "stroke-width": 2, "marker-end": "url(#harrow)" }));
+      svg.append(g);
+      setTimeout(() => G.tween(0, 1, 500, (v) => (g.style.opacity = v)), 250 * i);
+    });
+    svg.prepend(el("defs", {}, el("marker", { id: "harrow", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: "auto" }, el("path", { d: "M0,0 L10,5 L0,10 z", fill: "#5b6470" }))));
+    svg.append(el("text", { x: 12, y: 30, fill: "#e6e6e6", "font-size": 13 }, "c = (a*b+1).sum()   →   c.item()"),
+      el("text", { x: 12, y: 175, fill: "#9aa3ad", "font-size": 11.5 }, "everything above is lazy until something asks for data · every box is a set of graph_rewrites over UOps"),
+      el("text", { x: 12, y: 196, fill: "#F4D345", "font-size": 11.5 }, "realize() = Tensor.linear_with_vars() + run_linear()"));
+    // a token travelling through the layers, forever
+    const dot = el("circle", { r: 6, cx: 12, cy: 143, fill: "#F4D345" });
+    svg.append(dot);
+    (async function loop() { while (true) { await G.tween(12, 12 + 4 * (w + gap) + w, 4200, (v) => dot.setAttribute("cx", v)); await G.sleep(700); } })();
+  })();
+
+  // scale a Guide.uopGraph svg to fit the container width, but never below minScale (then the wrapper scrolls)
+  function fitGraph(ctl, minScale = 0.55) {
+    const svg = ctl.svg, vb = svg.getAttribute("viewBox").split(" ").map(Number), wrap = svg.parentElement;
+    const s = Math.max(minScale, Math.min(1, (wrap.clientWidth - 4) / vb[2]));
+    svg.style.maxWidth = "none"; svg.style.width = vb[2] * s + "px"; svg.style.height = vb[3] * s + "px";
+  }
+  // ---------------- pipeline map ----------------
+  const graphStages = STAGES.filter((s) => !s.kind).map((s) => s.key);
+  let ctl = null;
+  const strip = G.pipeline("#pl-strip", STAGES.map((s) => ({ name: s.name, sub: s.sub })), (i) => show(i));
+  const progBox = G.$("#pl-prog"), viewBox = G.$("#pl-view");
+  for (const [k, label] of Object.entries(PROGS)) progBox.append(el("button", { "data-k": k, onclick: () => { prog = k; ctl = null; syncButtons(); strip.select(cur); } }, label));
+  for (const v of ["graph", "printed UOp"]) viewBox.append(el("button", { "data-v": v, onclick: () => { view = v; syncButtons(); strip.select(cur); } }, v));
+  function syncButtons() {
+    G.$$("button", progBox).forEach((b) => b.classList.toggle("active", b.dataset.k === prog));
+    G.$$("button", viewBox).forEach((b) => b.classList.toggle("active", b.dataset.v === view));
+  }
+  function prevGraphKey(i) { for (let j = i - 1; j >= 0; j--) if (!STAGES[j].kind) return STAGES[j].key; return null; }
+  function show(i, hlOp) {
+    cur = i;
+    const s = STAGES[i], d = data[prog];
+    const graphEl = G.$("#pl-graph"), textEl = G.$("#pl-text"), other = G.$("#pl-other"), badges = G.$("#pl-badges");
+    graphEl.classList.add("ch01-hidden"); textEl.classList.add("ch01-hidden"); other.classList.add("ch01-hidden"); badges.innerHTML = "";
+    if (!s.kind) {
+      const g = d[s.key];
+      const pk = prevGraphKey(i), prevIds = new Set(pk ? d[pk].nodes.map((n) => n.id) : []);
+      const fresh = g.nodes.filter((n) => !prevIds.has(n.id)).map((n) => n.id);
+      const hist = {};
+      g.nodes.forEach((n) => (hist[n.op] = (hist[n.op] || 0) + 1));
+      const freshOps = new Set(g.nodes.filter((n) => !prevIds.has(n.id)).map((n) => n.op));
+      badges.append(el("span", { style: "font-size:12px;color:var(--dim);margin-right:6px" }, `${g.nodes.length} UOps:`),
+        ...Object.entries(hist).sort((a, b) => b[1] - a[1]).map(([op, n]) => el("span", { class: "ch01-badge" + (freshOps.has(op) ? " new" : ""), style: `border-color:${G.opColor(op)}55` }, `${op}×${n}`)));
+      if (view === "graph") {
+        graphEl.classList.remove("ch01-hidden");
+        if (!ctl) ctl = G.uopGraph(graphEl, g, { height: 600, compact: true });
+        else ctl.setGraph(g, { animate: true });
+        fitGraph(ctl);
+        ctl.highlight(hlOp ? g.nodes.filter((n) => n.op === hlOp).map((n) => n.id) : (pk ? fresh : []), { dimOthers: !!hlOp });
+      } else {
+        textEl.classList.remove("ch01-hidden");
+        G.$("code", textEl).textContent = (d.text && d.text[s.key]) || "(no printed form captured for this stage)";
+      }
+    } else {
+      other.classList.remove("ch01-hidden");
+      other.innerHTML = "";
+      if (s.kind === "list") {
+        const t = el("table", { class: "ch01-lin" }, el("tr", {}, ...["#", "op", "dtype", "src", "arg"].map((h) => el("th", {}, h))));
+        d.lin_list.forEach((r) => {
+          const tr = el("tr", {}, el("td", {}, r.i), el("td", { style: `color:${G.opColor(r.op)}` }, r.op), el("td", {}, r.dtype.replace("dtypes.", "")), el("td", {}, JSON.stringify(r.src)), el("td", {}, r.arg));
+          tr.addEventListener("mouseenter", () => G.$$("tr", t).forEach((x, k) => x.classList.toggle("hl", k > 0 && (k - 1 === r.i || r.src.includes(k - 1)))));
+          t.append(tr);
+        });
+        other.append(el("div", { style: "font-size:13px;color:var(--dim);margin:4px 0" }, `${d.lin_list.length} UOps in program order for ${d.kernel_name}. Hover a row to highlight its sources.`),
+          el("div", { style: "max-height:520px;overflow:auto" }, t));
+      } else if (s.kind === "source") {
+        const pre = el("pre", {}, el("code", { class: "language-c" }, d.source));
+        other.append(el("div", { style: "font-size:13px;color:var(--dim)" }, `kernel ${d.kernel_name}, opts ${d.opts}`), pre);
+        if (window.hljs) hljs.highlightElement(G.$("code", pre));
+      } else if (s.kind === "binary") {
+        const n = d.binary_len, cells = el("div", { style: "display:flex;flex-wrap:wrap;gap:2px;max-width:100%" });
+        for (let k = 0; k < Math.min(n, 512); k++) cells.append(el("div", { style: `width:9px;height:9px;border-radius:2px;background:hsl(${(k * 37) % 360},45%,${30 + ((k * 13) % 25)}%)` }));
+        other.append(el("p", {}, `clang turned the ${d.source.split("\n").length}-line C source of `, el("code", {}, d.kernel_name), ` into `, el("b", { style: "color:var(--yellow)" }, `${n} bytes`),
+          ` of object code (an ELF relocatable). Each square below is one byte (first 512 shown). These bytes are the arg of the PROGRAM's BINARY src.`), cells);
+      } else if (s.kind === "run") {
+        other.append(el("p", {}, "run_linear executed the LINEAR (copies, then the kernel). The tensor now reads its BUFFER:"),
+          el("pre", { class: "output" }, el("code", {}, `${PROGS[prog]}  =  ${JSON.stringify(d.result)}`)));
+      }
+    }
+    G.$("#pl-panel").innerHTML = `<h4>${i + 1}. ${s.name} <span style="font-weight:400;color:var(--dim);font-size:13px">— ${PROGS[prog]}</span></h4>
+      <div class="ch01-io"><b class="in">input</b><div>${s.in}</div><b class="how">transformation</b><div>${s.how}</div><b class="out">output</b><div>${s.out}</div>
+      <b>code</b><div><a class="src" target="_blank" href="${G.src(s.path, s.line)}">${s.path}:${s.line}</a> · ${s.sub}</div>
+      <b>deep dive</b><div><a href="${s.ch}.html">Chapter ${parseInt(s.ch)}: ${(CHAPTERS.find((c) => c.slug === s.ch) || {}).title}</a></div></div>`;
+  }
+  syncButtons();
+  strip.select(0);
+  document.addEventListener("keydown", (e) => {
+    if (e.target.closest("input,textarea")) return;
+    const r = G.$("#demo-pipeline").getBoundingClientRect();
+    if (r.bottom < 0 || r.top > innerHeight) return;
+    if (e.key === "ArrowRight") strip.select(Math.min(STAGES.length - 1, cur + 1));
+    if (e.key === "ArrowLeft") strip.select(Math.max(0, cur - 1));
+  });
+
+  // ---------------- heat map ----------------
+  let heatProg = "sum";
+  const heatBox = G.$("#heat-prog");
+  for (const [k, label] of Object.entries(PROGS)) heatBox.append(el("button", { "data-k": k, onclick: () => { heatProg = k; drawHeat(); } }, label));
+  function drawHeat() {
+    G.$$("button", heatBox).forEach((b) => b.classList.toggle("active", b.dataset.k === heatProg));
+    const d = data[heatProg], stages = STAGES.filter((s) => !s.kind);
+    const present = {};
+    stages.forEach((s, j) => d[s.key].nodes.forEach((n) => { (present[n.op] = present[n.op] || new Set()).add(j); }));
+    const groupOrder = Object.keys(G.OP_GROUPS);
+    const groupOf = (op) => groupOrder.findIndex((g) => G.OP_GROUPS[g].ops.includes(op));
+    const ops = Object.keys(present).sort((a, b) => (groupOf(a) - groupOf(b)) || (Math.min(...present[a]) - Math.min(...present[b])) || a.localeCompare(b));
+    const t = el("table", { class: "ch01-heat" });
+    t.append(el("tr", {}, el("td", { class: "lab" }), ...stages.map((s) => el("th", { onclick: () => { strip.select(STAGES.indexOf(s)); G.$("#demo-pipeline").scrollIntoView({ behavior: "smooth" }); } }, s.name))));
+    for (const op of ops) {
+      t.append(el("tr", {}, el("td", { class: "lab", style: `color:${G.opColor(op)}` }, op), ...stages.map((s, j) => {
+        const on = present[op].has(j);
+        return el("td", { class: on ? "on" : "", style: `--c:${G.opColor(op)}`, title: on ? `${op} occurs in "${s.name}"` : "",
+          onclick: on ? () => { prog = heatProg; ctl = null; view = "graph"; syncButtons(); strip.select(STAGES.indexOf(s)); show(STAGES.indexOf(s), op); G.$("#demo-pipeline").scrollIntoView({ behavior: "smooth" }); } : null });
+      })));
+    }
+    const box = G.$("#heat"); box.innerHTML = ""; box.append(G.legend(), t);
+  }
+  drawHeat();
+
+  // ---------------- full_rewrite_to_sink passes ----------------
+  const PASSES = [
+    ["prep", "multi_pm", "resolve in-kernel UNSHARDs (multi-device leftovers)"],
+    ["prep", "early movement ops", "pm_mops: fold any movement ops left inside the kernel into INDEX math"],
+    ["optimize", "load collapse", "collapse loads indexed by a tensor (e.g. gathers) when a reduce can be removed"],
+    ["optimize", "split ranges", "split RANGEs whose index uses div/mod so they become independent loops"],
+    ["optimize", "initial symbolic", "sym: algebraic simplification, required before range simplification"],
+    ["optimize", "simplify ranges", "merge adjacent RANGEs that can be one loop"],
+    ["optimize", "apply_opts", "choose OptOps (UPCAST, LOCAL, UNROLL, GROUP, TC…) by heuristic or BEAM; shows up as e.g. \"shift (0,) 4 upcast\""],
+    ["expand", "postopt symbolic", "simplify again, move WHEREs onto loads, collapse reduces of constants"],
+    ["expand", "expander", "UPCAST ranges become vector lanes: RANGE → a CONST tuple, REDUCE gets horizontal axes"],
+    ["expand", "remove reduces", "lower_reduce: REDUCE → an accumulator (REG ALLOC) initialised with the identity, STORE += in the loop, END"],
+    ["expand", "add local buffers", "STAGE → LOCAL/REG buffers (shared memory on GPUs)"],
+    ["expand", "group gpudims", "map GLOBAL/LOCAL ranges onto the device's launch grid dimensions"],
+    ["lower", "*** expand broadcast / add loads", "make implicit broadcasts explicit; insert LOAD for reads from GLOBAL/LOCAL/REG memory"],
+    ["lower", "devectorize2", "split vector ops the backend can't do into STACKs of scalar ops"],
+    ["lower", "early symbolic", "simplify the now-scalar index math"],
+    ["lower", "memory coalescing", "merge adjacent scalar loads/stores into vector loads (float4) where legal"],
+    ["lower", "add images", "image (texture) buffers for backends that have them"],
+    ["lower", "extra symbolic", "symbolic + indexing_simplify + pm_commit_weak (weak consts get widths)"],
+    ["lower", "lower all index dtypes", "pm_lower_weak: every weakint/weakfloat gets a concrete dtype (Chapter 3)"],
+    ["lower", "final symbolic", "one more full symbolic pass"],
+    ["lower", "cast float alu operands", "SIN/LOG2/EXP2/SQRT/RECIP get an explicit float operand"],
+    ["decomp", "early decompositions", "floordiv/mod etc. into ops the renderer supports (code_for_op)"],
+    ["decomp", "late decompositions", "late rewrites + transcendental decompositions (exp2/log2/sin in software if needed)"],
+    ["decomp", "decomp dtypes", "pm_dtype_decomps: emulate unsupported dtypes (bf16/fp8 as uint bits, long as 2×int)"],
+    ["decomp", "move gates from index", "turn invalid-gated INDEXes into gated loads/stores"],
+    ["final", "final rewrite", "renderer's extra_matcher + pm_split_ends + remove Invalid"],
+    ["final", "cast consts", "pm_cast_const: commit every remaining bare CONST so no renderer sees a weak const"],
+    ["final", "add implicit barriers", "BARRIERs for LOCAL memory read-after-write / write-after-read"],
+    ["final", "range to special", "hardware ranges (GPU thread ids) become SPECIAL"],
+    ["final", "add control flow", "pm_add_control_flow: order loops (this was the old linearizer's job)"],
+    ["final", "number variables", "give symbolic Variables PARAM slots after the buffers"],
+  ];
+  const list = G.$("#passes-list");
+  const lis = PASSES.map(([ph, n], i) => { const li = el("li", { onclick: () => stepper.go(i) }, el("span", { class: "ph" }, ph), n); list.append(li); return li; });
+  const stepper = G.stepper("#passes-step", PASSES.map(([ph, n, what], i) => ({ caption: `<b>${i + 1}/${PASSES.length} · ${n}</b> <span style="color:var(--purple)">[${ph}]</span><br>${what}` })), (i) => {
+    lis.forEach((li, j) => { li.classList.toggle("cur", i === j); li.classList.toggle("done", j < i); });
+  }, { autoplayMs: 1400 });
+
+  // ---------------- DEBUG explorer ----------------
+  const dbg = await G.loadJSON("../data/ch01_debug.json");
+  const WHAT = ["result only", "+ schedule summary, compile progress", "+ one line per executed copy/kernel", "+ applied opts per kernel", "+ generated source", "+ kernel AST (render_uir)"];
+  const norm = (s) => s.replace(/\d+\.\d+\s*(us|ms)/g, "").replace(/\d+\.\d+it\/s/, "").replace(/\d+\.\d+\s*GB/g, "");
+  function drawDbg(l) {
+    G.$("#dbg-val").textContent = l; G.$("#dbg-what").textContent = WHAT[l];
+    const prev = l > 0 ? new Set(dbg[l - 1].split("\n").map(norm)) : new Set();
+    const out = G.$("#dbg-out"); out.innerHTML = "";
+    dbg[l].split("\n").forEach((line) => {
+      const key = norm(line);
+      out.append(el("span", { class: l > 0 && !prev.has(key) ? "newline" : "" }, line + "\n"));
+    });
+  }
+  G.$("#dbg-slider").addEventListener("input", (e) => drawDbg(+e.target.value));
+  drawDbg(2);
+
+  // ---------------- repo explorer ----------------
+  const repo = await G.loadJSON("../data/ch01_repo.json");
+  const DESC = {
+    "tinygrad/tensor.py": ["Tensor: holds a UOp; realize(), linear_with_vars(), assign(), data access", "API"],
+    "tinygrad/dtype.py": ["DType, dtypes namespace, promotion lattice, least_upper_dtype", "API"],
+    "tinygrad/helpers.py": ["ContextVar env knobs, Context, caches, misc utilities", "infra"],
+    "tinygrad/device.py": ["Device registry, Buffer, Allocator, Compiler(.compile_cached), Compiled", "runtime"],
+    "tinygrad/function.py": ["@function: wrapping Python functions as CALLable UOp graphs", "API"],
+    "tinygrad/mixin/op.py": ["OpMixin: matmul, conv2d, softmax, indexing… built from primitives", "API"],
+    "tinygrad/mixin/elementwise.py": ["ElementwiseMixin: + - * /, exp, relu, contiguous, broadcasting of dtypes", "API"],
+    "tinygrad/mixin/movement.py": ["MovementMixin: reshape/permute/expand/pad/shrink and friends", "API"],
+    "tinygrad/mixin/reduce.py": ["ReduceMixin: sum/prod/max/any/all → REDUCE", "API"],
+    "tinygrad/mixin/creation.py": ["CreationMixin: empty/full/zeros/ones", "API"],
+    "tinygrad/mixin/rand.py": ["RandMixin: threefry PRNG, rand/randn/dropout/attention", "API"],
+    "tinygrad/mixin/dtype.py": ["DTypeMixin: cast, bitcast, commit_dtype", "API"],
+    "tinygrad/mixin/gradient.py": ["compute_gradient: autograd as graph rewriting", "API"],
+    "tinygrad/uop/__init__.py": ["the Ops enum and GroupOp sets", "IR"],
+    "tinygrad/uop/ops.py": ["UOp, dtype_from_uop, shapes, UPat, PatternMatcher, graph_rewrite", "IR"],
+    "tinygrad/uop/symbolic.py": ["symbolic simplification rules (sym, symbolic, …)", "IR"],
+    "tinygrad/uop/spec.py": ["what UOps are legal at each stage (type_verify)", "IR"],
+    "tinygrad/uop/weak.py": ["weak dtype commit/lowering rules", "IR"],
+    "tinygrad/uop/upat.py": ["the UPat compiler (fast pattern matching)", "IR"],
+    "tinygrad/uop/render.py": ["pretty printing UOps (repr, render_uir)", "IR"],
+    "tinygrad/uop/divandmod.py": ["div/mod folding for index math", "IR"],
+    "tinygrad/uop/validate.py": ["validation helpers", "IR"],
+    "tinygrad/uop/movement.py": ["mop_cleanup patterns", "IR"],
+    "tinygrad/schedule/__init__.py": ["transform_to_call, create_schedule, create_linear_with_vars, schedule cache", "schedule"],
+    "tinygrad/schedule/prepare.py": ["prepare_rangeify, pm_mops, earliest_rewrites", "schedule"],
+    "tinygrad/schedule/indexing.py": ["run_rangeify: movement ops → RANGE index expressions", "schedule"],
+    "tinygrad/schedule/rangeify.py": ["get_kernel_graph: buffer removal, stage→store, split_kernels", "schedule"],
+    "tinygrad/schedule/memory.py": ["memory_plan_rewrite: pack temporaries into arenas", "schedule"],
+    "tinygrad/schedule/multi.py": ["multi-device (sharded) graph rewrites", "schedule"],
+    "tinygrad/schedule/allreduce.py": ["allreduce implementations", "schedule"],
+    "tinygrad/codegen/__init__.py": ["full_rewrite_to_sink, do_to_program, to_program cache", "codegen"],
+    "tinygrad/codegen/opt/postrange.py": ["Scheduler/apply_opts: applying OptOps to an AST", "codegen"],
+    "tinygrad/codegen/opt/heuristic.py": ["hand_coded_optimizations", "codegen"],
+    "tinygrad/codegen/opt/search.py": ["BEAM search", "codegen"],
+    "tinygrad/codegen/simplify.py": ["range splitting/merging", "codegen"],
+    "tinygrad/codegen/gpudims.py": ["mapping ranges to GPU launch dims", "codegen"],
+    "tinygrad/codegen/decomp/dtype.py": ["dtype emulation (bf16/fp8/long)", "codegen"],
+    "tinygrad/codegen/decomp/op.py": ["op decompositions for renderers", "codegen"],
+    "tinygrad/codegen/decomp/transcendental.py": ["software exp2/log2/sin", "codegen"],
+    "tinygrad/codegen/late/linearizer.py": ["linearize: DAG → ordered list; control flow", "codegen"],
+    "tinygrad/codegen/late/coalesce.py": ["memory coalescing, index simplification", "codegen"],
+    "tinygrad/codegen/late/regalloc.py": ["register allocation for ISA backends", "codegen"],
+    "tinygrad/codegen/late/gater.py": ["moving gates from INDEX to LOAD/STORE", "codegen"],
+    "tinygrad/renderer/__init__.py": ["Renderer base class, Estimates", "codegen"],
+    "tinygrad/renderer/cstyle.py": ["C-like renderers: Clang, OpenCL, Metal, CUDA, HIP", "codegen"],
+    "tinygrad/renderer/llvmir.py": ["LLVM IR renderer", "codegen"],
+    "tinygrad/renderer/ptx.py": ["PTX renderer", "codegen"],
+    "tinygrad/renderer/wgsl.py": ["WebGPU WGSL renderer", "codegen"],
+    "tinygrad/renderer/x86.py": ["direct x86 machine code (ISA renderer)", "codegen"],
+    "tinygrad/renderer/nir.py": ["Mesa NIR renderer", "codegen"],
+    "tinygrad/renderer/tc.py": ["tensor core descriptions", "codegen"],
+    "tinygrad/engine/realize.py": ["run_linear, lower_and_compile, exec_kernel/exec_copy, runtime cache", "runtime"],
+    "tinygrad/engine/jit.py": ["TinyJit", "runtime"],
+    "tinygrad/engine/worker.py": ["parallel compile worker pool", "runtime"],
+    "tinygrad/runtime/ops_cpu.py": ["CPU device: clang/LLVM renderers, loads object code", "runtime"],
+    "tinygrad/runtime/ops_python.py": ["PYTHON device: a pure-Python UOp interpreter", "runtime"],
+    "tinygrad/runtime/ops_amd.py": ["AMD GPUs (userspace driver)", "runtime"],
+    "tinygrad/runtime/ops_nv.py": ["NVIDIA GPUs (userspace driver)", "runtime"],
+    "tinygrad/runtime/ops_metal.py": ["Apple Metal", "runtime"],
+    "tinygrad/runtime/ops_cuda.py": ["CUDA driver API", "runtime"],
+    "tinygrad/runtime/ops_cl.py": ["OpenCL", "runtime"],
+    "tinygrad/runtime/ops_disk.py": ["DISK device (memory-mapped files)", "runtime"],
+    "tinygrad/runtime/ops_null.py": ["NULL device (no-op, for testing)", "runtime"],
+    "tinygrad/runtime/support/hcq2.py": ["hardware command queue compile/link of LINEARs", "runtime"],
+    "tinygrad/runtime/support/compiler_cpu.py": ["ClangCompiler: clang -c ... -o -", "runtime"],
+    "tinygrad/viz/serve.py": ["VIZ web server", "tools"],
+    "tinygrad/viz/cli.py": ["VIZ command line (python -m tinygrad.viz.cli)", "tools"],
+    "tinygrad/nn/__init__.py": ["layers: Linear, Conv2d, BatchNorm, …", "nn"],
+    "tinygrad/nn/optim.py": ["optimizers: SGD, Adam, …", "nn"],
+    "tinygrad/nn/state.py": ["state dicts, safetensors, torch loading", "nn"],
+  };
+  const TAGC = { API: "#58C4DD", IR: "#F4D345", schedule: "#F0AC5F", codegen: "#9A72AC", runtime: "#83C167", infra: "#888", tools: "#5CD0B3", nn: "#D147BD" };
+  const dirs = Object.entries(repo.dirs).sort((a, b) => b[1] - a[1]);
+  const maxd = dirs[0][1];
+  const dbox = G.$("#repo-dirs");
+  dbox.append(el("div", { style: "color:var(--dim);font-size:12px;margin-bottom:4px" }, `${repo.total} hand-written lines (+${repo.autogen} autogen)`));
+  const dEls = dirs.map(([d, n]) => {
+    const e = el("div", { class: "ch01-bar", onclick: () => pick(d) }, el("span", {}, d.replace("tinygrad/", "") || d), el("div", {}, el("div", { class: "fill", style: `width:${(100 * n) / maxd}%` })), el("span", { class: "n" }, n));
+    e.dataset.d = d; dbox.append(e); return e;
+  });
+  function pick(d) {
+    dEls.forEach((e) => e.classList.toggle("sel", e.dataset.d === d));
+    const files = repo.files.filter((f) => f.path.slice(0, f.path.lastIndexOf("/")) === d).sort((a, b) => b.lines - a.lines);
+    const maxf = Math.max(...files.map((f) => f.lines), 1);
+    const fbox = G.$("#repo-files"); fbox.innerHTML = "";
+    fbox.append(el("div", { style: "color:var(--dim);font-size:12px;margin-bottom:4px" }, `${d}: ${files.length} files`));
+    for (const f of files) {
+      const desc = DESC[f.path];
+      fbox.append(el("div", { class: "ch01-bar" }, el("span", {}, f.path.split("/").pop(), desc ? el("span", { style: `margin-left:6px;font-size:10px;color:${TAGC[desc[1]]}` }, desc[1]) : null),
+        el("div", {}, el("div", { class: "fill", style: `width:${(100 * f.lines) / maxf}%` })), el("span", { class: "n" }, f.lines), desc ? el("div", { class: "desc" }, desc[0]) : null));
+    }
+  }
+  pick("tinygrad");
+
+  // ---------------- roadmap ----------------
+  const STAGE_OF = { 1: "overview", 2: "tensor graph", 3: "tensor graph", 4: "IR (all stages)", 5: "IR (all stages)", 6: "IR (all stages)", 7: "tensor graph", 8: "tensor graph", 9: "tensor graph",
+    10: "schedule: rangeify", 11: "schedule: kernel split", 12: "schedule: LINEAR", 13: "codegen input", 14: "codegen: optimize", 15: "codegen: lower", 16: "codegen: linearize+render",
+    17: "compile + run", 18: "run (replay)", 19: "all stages, many devices", 20: "everything", 21: "tools", 22: "everything" };
+  const road = G.$("#ch01-roadmap");
+  CHAPTERS.filter((c) => !c.part && c.n > 1).forEach((c) => road.append(el("a", { href: c.slug + ".html" }, el("span", { class: "stage" }, STAGE_OF[c.n] || ""), el("div", {}, el("span", { class: "n" }, String(c.n).padStart(2, "0")), c.title), el("small", {}, c.blurb))));
+})();
+</script>
+</body>
+</html>

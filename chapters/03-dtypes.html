@@ -1,0 +1,958 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3. dtypes &amp; type promotion — tinygrad internals</title>
+<link rel="stylesheet" href="../assets/vendor/hljs-dark.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/vendor/highlight.min.js"></script>
+<script src="../assets/vendor/dagre.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/chapters.js"></script>
+<script src="../assets/guide.js"></script>
+<style>
+.ch03-lat-wrap { display: grid; grid-template-columns: 560px 1fr; gap: 16px; } @media (max-width: 1100px) { .ch03-lat-wrap { grid-template-columns: 1fr; } }
+.ch03-lat { width: 100%; max-width: 560px; height: auto; background: var(--bg); border-radius: 8px; }
+.ch03-lat .nd rect { fill: var(--bg3); stroke: #4a5160; stroke-width: 1.5; transition: all .25s; }
+.ch03-lat .nd text { font-family: var(--mono); font-size: 13px; fill: var(--fg); pointer-events: none; }
+.ch03-lat .nd { cursor: pointer; }
+.ch03-lat .nd:hover rect { stroke: var(--yellow); }
+.ch03-lat .nd.weak rect { stroke-dasharray: 4 3; }
+.ch03-lat .nd.pickA rect { fill: rgba(88,196,221,.35); stroke: var(--blue); stroke-width: 2.5; }
+.ch03-lat .nd.pickB rect { fill: rgba(154,114,172,.4); stroke: var(--purple); stroke-width: 2.5; }
+.ch03-lat .nd.common rect { stroke: var(--green); }
+.ch03-lat .nd.path rect { fill: rgba(244,211,69,.12); }
+.ch03-lat .nd.res rect { fill: rgba(131,193,103,.45); stroke: var(--green); stroke-width: 3; }
+.ch03-lat .nd.dim { opacity: .35; }
+.ch03-lat path.e { stroke: #4a5160; stroke-width: 1.5; fill: none; transition: all .25s; }
+.ch03-lat path.e.path { stroke: var(--yellow); stroke-width: 3; }
+.ch03-lat path.e.dim { opacity: .25; }
+.ch03-info { font-size: 14px; }
+.ch03-info .big { font-family: var(--mono); font-size: 20px; margin: 6px 0 10px; }
+.ch03-info .big b { color: var(--green); }
+.ch03-info table { font-size: 12.5px; }
+.ch03-info td, .ch03-info th { padding: 2px 8px; }
+.ch03-bits { display: flex; gap: 2px; flex-wrap: wrap; margin: 10px 0; font-family: var(--mono); }
+.ch03-bits span { width: 22px; height: 30px; display: flex; align-items: center; justify-content: center; border-radius: 3px; cursor: pointer; font-size: 13px; user-select: none; border: 1px solid transparent; }
+.ch03-bits span:hover { border-color: var(--fg); }
+.ch03-bits span.s { background: rgba(252,98,85,.35); }
+.ch03-bits span.e { background: rgba(88,196,221,.35); }
+.ch03-bits span.m { background: rgba(131,193,103,.28); }
+.ch03-bits span.gap { margin-left: 8px; }
+.ch03-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; font-family: var(--mono); font-size: 13px; }
+.ch03-row input { width: 150px; font-family: var(--mono); background: var(--bg3); color: var(--fg); border: 1px solid var(--line); border-radius: 5px; padding: 4px 6px; }
+.ch03-kv { display: grid; grid-template-columns: 210px 1fr; gap: 3px 12px; font-family: var(--mono); font-size: 13px; margin-top: 8px; }
+.ch03-kv > span:nth-child(odd) { color: var(--dim); }
+.ch03-kv b { color: var(--yellow); font-weight: 600; }
+.ch03-legend { font-size: 12px; color: var(--dim); }
+.ch03-legend i { display: inline-block; width: 11px; height: 11px; border-radius: 2px; margin: 0 4px -1px 10px; }
+.ch03-cmp { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 12px; } @media (max-width: 1000px) { .ch03-cmp { grid-template-columns: 1fr; } }
+.ch03-cmp > div { background: var(--bg3); border-radius: 6px; padding: 8px 10px; font-family: var(--mono); font-size: 12px; }
+.ch03-cmp h5 { margin: 0 0 4px; color: var(--yellow); font-size: 12.5px; }
+.ch03-game { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; }
+.ch03-snip { font-family: var(--mono); font-size: 16px; background: var(--bg3); border-radius: 6px; padding: 12px 14px; }
+.ch03-ans button { font-family: var(--mono); min-width: 74px; }
+.ch03-ans button.right { border-color: var(--green); color: var(--green); } .ch03-ans button.wrong { border-color: var(--red); color: var(--red); }
+.ch03-msg { font-size: 13.5px; color: var(--dim); min-height: 2.4em; margin-top: 6px; }
+.ch03-hist { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.ch03-hist span { font-family: var(--mono); font-size: 11px; padding: 2px 6px; border-radius: 4px; border: 1px solid var(--line); }
+.ch03-hist span.ok { border-color: var(--green); color: var(--green); } .ch03-hist span.no { border-color: var(--red); color: var(--red); }
+.ch03-ladder { border-collapse: collapse; font-family: var(--mono); font-size: 13px; margin-top: 8px; }
+.ch03-ladder td { border: 1px solid var(--line); padding: 3px 10px; }
+.ch03-ladder tr.pick td { background: rgba(131,193,103,.2); color: var(--green); }
+.ch03-ladder tr.no td { color: var(--dim); }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="sidebar" id="sidebar"></nav>
+<main>
+  <h1><span class="chnum">CHAPTER 03</span>dtypes &amp; type promotion</h1>
+  <p class="lede">Every UOp has a dtype, and the dtype decides what C type a value gets, how many bytes a buffer holds, which ALU
+  instruction is emitted, and what happens when an <code>int8</code> meets a <code>float16</code>. This chapter covers the <code>DType</code>
+  object, the promotion lattice that decides <code>a + b</code>'s type, the <em>weak</em> types that let Python literals adapt to their
+  neighbours, the difference between casting and bitcasting, and what codegen does when the hardware can't handle a dtype at all.</p>
+
+  <div class="callout note">All outputs are from tinygrad commit <code>6a404871</code> on <code>DEV=CPU</code> (clang). If you know older tinygrad,
+  several things are gone. <code>PtrDType</code>, <code>ImageDType</code> and <code>DType.vec()</code>/<code>.scalar()</code>/<code>.count</code> no longer
+  exist. Pointer-ness lives in the op (<code>PARAM</code>/<code>INDEX</code>) and address spaces in the <code>AddrSpace</code> enum. Vector width lives
+  in the <em>shape</em> of the UOp. Images are recognised by shape (<code>is_image_shape</code>: 3 dims, last = 4). The dtype is no longer a field of
+  the UOp either; it is computed from <code>(op, src, arg)</code> (3.8).</div>
+
+  <!-- ============================================================ -->
+  <h2 id="why"><span class="sec">3.1</span>Why a compiler cares so much</h2>
+  <p>In NumPy, dtype is a property of an array in memory. In tinygrad, most values never touch memory: they live in registers inside a fused
+  kernel. The dtype is a property of every <em>node</em> in the graph, and it has to be right at every node, because the renderer turns
+  each one into a typed C expression: <code>(signed char)(-24)</code>, <code>(__fp16)(0.5f)</code>, <code>float4</code>.</p>
+  <div class="callout analogy"><span class="title">Analogy: containers in a kitchen</span>
+  A dtype is the container a value is kept in: a shot glass (<code>int8</code>), a mug (<code>int32</code>), a bucket (<code>float64</code>). When you
+  pour two containers together you need one that holds both: that is <b>promotion</b>. A Python literal like <code>1.5</code> arrives as
+  <em>liquid without a container</em> (a <b>weak</b> type). It takes the shape of whatever it is poured into, and only gets its own container
+  (<code>DEFAULT_FLOAT</code>) if it is served alone.</div>
+  <p>The rules in this chapter answer three questions that every <code>graph_rewrite</code> and the renderer depend on:</p>
+  <ol>
+    <li>What dtypes exist, and what do they know about themselves? (3.2, 3.3)</li>
+    <li>When two dtypes meet, which wins? (3.4, 3.5, 3.6, 3.7)</li>
+    <li>How does a node get its dtype, and how is a dtype the hardware lacks handled? (3.8–3.11)</li>
+  </ol>
+
+  <!-- ============================================================ -->
+  <h2 id="dtype"><span class="sec">3.2</span>The DType object</h2>
+  <div class="codecap"><b>tinygrad/dtype.py:44</b> — the whole class (methods abridged)</div>
+  <pre><code class="language-python"># all DTypes should only be created once
+class DTypeMetaClass(type):
+  dcache: dict[tuple, DType] = {}
+  def __call__(cls, *args, **kwargs):
+    if (ret:=DTypeMetaClass.dcache.get(args, None)) is not None: return ret
+    DTypeMetaClass.dcache[args] = ret = super().__call__(*args)
+    return ret
+
+@dataclass(frozen=True, eq=False)
+class DType(metaclass=DTypeMetaClass):
+  priority: int  # this determines when things get upcasted
+  bitsize: int
+  name: str
+  fmt: FmtStr|None
+  @property
+  def itemsize(self) -> int: return (self.bitsize + 7) // 8
+  def __repr__(self): return f"dtypes.{self.name}"
+  def __lt__(self, o:DType): return (self.priority, self.bitsize, self.name, self.fmt) < (o.priority, o.bitsize, o.name, o.fmt)
+  @functools.cached_property
+  def min(self): ...     # 0 / -2**(bits-1) for ints, -max for floats
+  @functools.cached_property
+  def max(self): ...     # 2**bits-1+min for ints, inf (or the largest normal for e4m3 / fnuz fp8s) for floats
+  def const(self, val): ...  # canonicalize a Python value to this dtype: truncate ints, ConstFloat for floats</code></pre>
+  <ul>
+    <li><b>Four fields.</b> <code>priority</code> orders dtypes (it is what <code>min()</code> in <code>least_upper_dtype</code> compares first).
+    <code>bitsize</code> gives <code>itemsize</code> (bool is 1 bit, so 1 byte). <code>name</code> is the short name. <code>fmt</code> is the Python
+    <code>struct</code>/<code>memoryview</code> format char: that is how <code>.data()</code> and <code>_frompy</code> pack and unpack. bf16 and fp8 have
+    <code>fmt=None</code>, which is why <code>_frompy</code> packs them as float32 and casts (Chapter 2).</li>
+    <li><b>Interned.</b> <code>DTypeMetaClass</code> caches every DType by its constructor args, so <code>DType(14, 32, 'f32', 'f') is dtypes.float32</code>.
+    Like UOps, dtypes compare with <code>is</code>, and <code>eq=False</code> keeps the identity-based hash fast.</li>
+    <li><b>Weak dtypes have <code>bitsize=800</code>.</b> That is a deliberate "wider than anything" sentinel. It has no meaning as a storage size, and
+    creating storage for a weak dtype is an error.</li>
+  </ul>
+  <div class="codecap"><b>examples/03_dtypes.py</b> — section 1 · <code>DEV=CPU python3 examples/03_dtypes.py</code></div>
+  <pre class="output"><code>### 1. a DType is a tiny frozen dataclass, created once (DTypeMetaClass caches it)
+fields: ['priority', 'bitsize', 'name', 'fmt']
+name         prio bits itemsize  fmt  min .. max
+bool            0    1        1    ?  False .. True
+weakint         0  800      100 None  (no width: weak)
+u8              2    8        1    B  0 .. 255
+u16             4   16        2    H  0 .. 65535
+u32             6   32        4    I  0 .. 4294967295
+u64             8   64        8    Q  0 .. 18446744073709551615
+i8              1    8        1    b  -128 .. 127
+i16             3   16        2    h  -32768 .. 32767
+i32             5   32        4    i  -2147483648 .. 2147483647
+i64             7   64        8    q  -9223372036854775808 .. 9223372036854775807
+weakfloat       9  800      100 None  (no width: weak)
+fp8e4m3        10    8        1 None  -448.0 .. 448.0
+fp8e5m2        11    8        1 None  -inf .. inf
+fp8e4m3fnuz    10    8        1 None  -240.0 .. 240.0
+fp8e5m2fnuz    11    8        1 None  -57344.0 .. 57344.0
+f16            12   16        2    e  -inf .. inf
+bf16           13   16        2 None  -inf .. inf
+f32            14   32        4    f  -inf .. inf
+f64            15   64        8    d  -inf .. inf
+DType(14, 32, 'f32', 'f') is dtypes.float32 -&gt; True
+aliases: dtypes.float is dtypes.f32 -&gt; True | dtypes.half is dtypes.float16 -&gt; True
+finfo (exponent, mantissa) bits: {'f16': (5, 10), 'bf16': (8, 7), 'f32': (8, 23), 'f64': (11, 52), 'fp8e4m3': (4, 3), 'fp8e5m2': (5, 2)}</code></pre>
+  <p>Notice the priorities. Within a kind they increase with width (i8=1 … i64=7, f16=12 … f64=15), and unsigned types sit between the signed
+  ones (u8=2 between i8=1 and i16=3). <code>bool</code> and <code>weakint</code> are both 0, and <code>weakfloat</code> sits at 9, just below every concrete
+  float. Section 3.4 shows why those numbers matter.</p>
+
+  <!-- ============================================================ -->
+  <h2 id="namespace"><span class="sec">3.3</span>The <code>dtypes</code> namespace</h2>
+  <p><a class="src" data-path="tinygrad/dtype.py" data-line="88">class DTypes</a> is instantiated once as <code>dtypes</code>. It holds every dtype
+  as a <code>Final</code> class attribute, plus aliases (<code>float</code>/<code>f32</code>/<code>float32</code>, <code>half</code>/<code>f16</code>, <code>int</code>/<code>i32</code>,
+  <code>long</code>/<code>i64</code> …), groups (<code>ints</code>, <code>uints</code>, <code>sints</code>, <code>floats</code>, <code>fp8s</code>, <code>weaks</code>,
+  <code>all</code>) and helpers:</p>
+  <table>
+    <tr><th>helper</th><th>what it does</th></tr>
+    <tr><td><code>is_float</code>, <code>is_int</code>, <code>is_unsigned</code>, <code>is_bool</code></td><td>kind tests. <code>is_float(weakfloat)</code> and <code>is_int(weakint)</code> are True: a weak type has a kind, just no width</td></tr>
+    <tr><td><code>from_py(x)</code> <a class="src" data-path="tinygrad/dtype.py" data-line="101">:101</a></td><td>dtype of a Python value. Scalars → weak, lists → concrete (3.5)</td></tr>
+    <tr><td><code>finfo(dt)</code> <a class="src" data-path="tinygrad/dtype.py" data-line="114">:114</a></td><td>(exponent bits, mantissa bits) of a float dtype, used by the bit visualizer below and by <code>can_lossless_cast</code></td></tr>
+    <tr><td><code>default_float</code>, <code>default_int</code></td><td>properties reading the <code>DEFAULT_FLOAT</code>/<code>DEFAULT_INT</code> ContextVars <em>at call time</em> (3.7)</td></tr>
+  </table>
+  <p>Outside the class, <a class="src" data-path="tinygrad/dtype.py" data-line="167">to_dtype</a> accepts a DType or a string
+  (<code>"int8"</code>, <code>"half"</code>: <code>getattr(dtypes, s.lower())</code>). That is why every API taking <code>dtype=</code> also accepts strings.</p>
+
+  <div class="quiz" data-answer="2">
+    <div class="q">Why does <code>Tensor([1., 2.], dtype=dtypes.bfloat16)</code> go through a float32 buffer and a CAST?</div>
+    <button class="opt">bfloat16 is not supported on CPU</button>
+    <button class="opt">bf16 has priority 13, higher than f16</button>
+    <button class="opt"><code>dtypes.bfloat16.fmt</code> is <code>None</code>: Python's <code>struct</code> can't pack it, so <code>_frompy</code> packs float32 and casts</button>
+    <button class="opt">All Tensors are created as float32 first</button>
+    <div class="explain">The table above shows <code>bf16 … fmt None</code>. <code>_frompy</code> says so in a comment: "bfloat16 and fp8 have no struct format,
+    so pack a float32 buffer and cast". The CAST runs on the target device.</div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="lattice"><span class="sec">3.4</span>The promotion lattice and <code>least_upper_dtype</code></h2>
+  <p>When two dtypes meet in a binary op, tinygrad follows JAX's design
+  (<a href="https://jax.readthedocs.io/en/latest/jep/9407-type-promotion.html">JEP 9407</a>). The dtypes form a <b>lattice</b>: a directed graph
+  where an edge <code>a → b</code> means "<code>b</code> can represent every <code>a</code> value well enough". The result of combining two dtypes is
+  their <b>least upper bound</b>: the lowest dtype reachable from both.</p>
+  <div class="codecap"><b>tinygrad/dtype.py:181</b> — the entire promotion system</div>
+  <pre><code class="language-python">promo_lattice = { dtypes.bool: [dtypes.weakint], dtypes.weakint: [dtypes.int8, dtypes.uint8],
+  dtypes.int8: [dtypes.int16], dtypes.int16: [dtypes.int32], dtypes.int32: [dtypes.int64],
+  dtypes.int64: [dtypes.weakfloat], dtypes.uint8: [dtypes.int16, dtypes.uint16], dtypes.uint16: [dtypes.int32, dtypes.uint32],
+  dtypes.uint32: [dtypes.int64, dtypes.uint64], dtypes.uint64: [dtypes.weakfloat],
+  dtypes.weakfloat: [dtypes.fp8e4m3, dtypes.fp8e5m2, dtypes.fp8e4m3fnuz, dtypes.fp8e5m2fnuz],
+  dtypes.fp8e4m3: [dtypes.float16, dtypes.bfloat16], dtypes.fp8e5m2: [dtypes.float16, dtypes.bfloat16],
+  dtypes.fp8e4m3fnuz: [dtypes.float16, dtypes.bfloat16], dtypes.fp8e5m2fnuz: [dtypes.float16, dtypes.bfloat16],
+  dtypes.float16: [dtypes.float32], dtypes.bfloat16: [dtypes.float32], dtypes.float32: [dtypes.float64], }
+
+@functools.cache
+def _get_recursive_parents(dtype:DType) -> set[DType]:
+  return set.union(*[_get_recursive_parents(d) for d in promo_lattice[dtype]], {dtype}) if dtype != dtypes.float64 else {dtypes.float64}
+@functools.cache
+def least_upper_dtype(*ds:DType) -> DType:
+  return min(set.intersection(*[_get_recursive_parents(d) for d in ds]))
+def least_upper_float(dt:DType) -> DType:
+  return dtypes.weakfloat if dt is dtypes.weakint else dt if dtypes.is_float(dt) else least_upper_dtype(dt, dtypes.default_float)</code></pre>
+  <p>The algorithm in three steps:</p>
+  <ol>
+    <li><b>Up-sets.</b> <code>_get_recursive_parents(d)</code> is every dtype reachable from <code>d</code>, including <code>d</code> itself. f64 is the top.</li>
+    <li><b>Intersect.</b> The common upper bounds of all inputs. It is never empty, because f64 is reachable from everything.</li>
+    <li><b>Take the <code>min</code>.</b> This uses <code>DType.__lt__</code>, i.e. <code>(priority, bitsize, name, fmt)</code>. In a true lattice there would
+    be a unique least element. Here the priority breaks ties (f16 vs bf16 both reachable from fp8 → f16 has the lower priority).</li>
+  </ol>
+  <pre class="output"><code>### 2. the promotion lattice and least_upper_dtype
+  bool         -&gt; weakint
+  weakint      -&gt; i8, u8
+  i8           -&gt; i16
+  i16          -&gt; i32
+  i32          -&gt; i64
+  i64          -&gt; weakfloat
+  u8           -&gt; i16, u16
+  u16          -&gt; i32, u32
+  u32          -&gt; i64, u64
+  u64          -&gt; weakfloat
+  weakfloat    -&gt; fp8e4m3, fp8e5m2, fp8e4m3fnuz, fp8e5m2fnuz
+  fp8e4m3      -&gt; f16, bf16
+  fp8e5m2      -&gt; f16, bf16
+  fp8e4m3fnuz  -&gt; f16, bf16
+  fp8e5m2fnuz  -&gt; f16, bf16
+  f16          -&gt; f32
+  bf16         -&gt; f32
+  f32          -&gt; f64
+  least_upper_dtype(i8, u8) = i16
+  least_upper_dtype(i32, u32) = i64
+  least_upper_dtype(i64, u64) = weakfloat
+  least_upper_dtype(f16, bf16) = f32
+  least_upper_dtype(i32, f16) = f16
+  least_upper_dtype(bool, weakint) = weakint
+  least_upper_dtype(u8, weakfloat) = weakfloat
+  least_upper_dtype(fp8e4m3, fp8e5m2) = f16</code></pre>
+
+  <div class="demo" id="demo-lattice">
+    <div class="demo-title">Lattice explorer</div>
+    <div class="demo-desc">Click a dtype for <b>A</b>, then another for <b>B</b> (a third click starts over). The explorer computes both up-sets, highlights the
+    common upper bounds (green outline), picks the <code>min</code> by <code>(priority, bitsize, name)</code> (filled green), and draws in yellow every
+    edge that lies on a path from A or B to the result. The JS port is checked against the full 19×19 table of real
+    <code>least_upper_dtype</code> results in <code>data/ch03_dtypes.json</code>. Dashed boxes are weak dtypes.</div>
+    <div class="ch03-lat-wrap">
+      <svg class="ch03-lat" id="lat" viewBox="0 0 560 620"></svg>
+      <div class="ch03-info" id="lat-info"></div>
+    </div>
+    <div class="controls" id="lat-presets"></div>
+  </div>
+
+  <div class="callout aha"><span class="title">Three surprises the lattice explains</span>
+  <ul>
+    <li><b><code>int64 + uint64</code> → <code>weakfloat</code>.</b> No integer type holds both ranges. The only common upper bounds are the floats, and
+    the lowest of those is <code>weakfloat</code>, which then commits to <code>DEFAULT_FLOAT</code> (f32).</li>
+    <li><b><code>int32 + float16</code> → <code>f16</code>.</b> A float of any width beats an int of any width. The lattice's int chain feeds
+    into the float chain <em>below</em> f16. JAX does the same, deliberately, so that a <code>half</code> model never silently upcasts.</li>
+    <li><b><code>f16 + bf16</code> → <code>f32</code>.</b> Neither contains the other (f16 has more mantissa, bf16 more exponent), so the join is the next
+    float up.</li>
+  </ul></div>
+
+  <div class="quiz" data-answer="1">
+    <div class="q">What is <code>least_upper_dtype(dtypes.uint8, dtypes.int8)</code>, and why?</div>
+    <button class="opt"><code>u8</code>, because unsigned wins</button>
+    <button class="opt"><code>i16</code>: it is the lowest dtype reachable from both (u8 → i16 and i8 → i16)</button>
+    <button class="opt"><code>i8</code>, because it has the lower priority</button>
+    <button class="opt"><code>weakint</code></button>
+    <div class="explain">Up-set(u8) = {u8, i16, u16, i32, u32, i64, u64, weakfloat, …floats}. Up-set(i8) = {i8, i16, i32, i64, weakfloat, …}.
+    The intersection's minimum is i16 (priority 3). The example prints <code>least_upper_dtype(i8, u8) = i16</code>.</div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="weak"><span class="sec">3.5</span>Weak dtypes: literals have a kind but no width</h2>
+  <p>If <code>1</code> were an <code>int32</code>, then <code>int8_tensor + 1</code> would promote to int32, which is surprising and wasteful. If
+  <code>0.5</code> were <code>float32</code>, then <code>half_tensor * 0.5</code> would upcast every half model. So Python scalars get a <b>weak</b> dtype:
+  <code>dtypes.weakint</code> or <code>dtypes.weakfloat</code>. They sit <em>low</em> in the lattice (weakint just above bool, weakfloat just below the
+  smallest float), so almost any concrete dtype absorbs them.</p>
+  <div class="codecap"><b>tinygrad/dtype.py:101</b> — dtypes.from_py</div>
+  <pre><code class="language-python">  def from_py(x) -> DType:
+    # NOTE: isinstance(True, int) is True, so bool must be checked before int
+    if isinstance(x, (bool, InvalidType)): return dtypes.bool
+    if isinstance(x, float): return dtypes.weakfloat
+    if isinstance(x, int): return dtypes.weakint
+    if isinstance(x, (list, tuple)):
+      dt = max(dtypes.from_py(xi) for xi in x) if x else dtypes.weakfloat
+      if dt is not dtypes.weakint: return strong_dtype(dt)
+      ints = [xi for xi in x if isinstance(xi, int)]  # a vconst also holds Invalid
+      return commit_int(min(ints), max(ints))</code></pre>
+  <p>A <b>scalar</b> stays weak. A <b>list</b> becomes storage, so it must commit immediately: floats → <code>strong_dtype</code> (DEFAULT_FLOAT),
+  ints → <code>commit_int</code>, which picks the first dtype on the ladder <code>(default_int, int32, int64, uint64)</code> that holds the list's min and max.
+  That is why <code>Tensor([2**40])</code> is i64 and <code>Tensor([2**63])</code> is u64.</p>
+  <div class="codecap"><b>tinygrad/dtype.py:170</b></div>
+  <pre><code class="language-python">def strong_dtype(dtype:DType) -> DType:
+  return {dtypes.weakint: dtypes.default_int, dtypes.weakfloat: dtypes.default_float}.get(dtype, dtype)
+def commit_int(lo:int|float, hi:int|float, default_int:DType|None=None) -> DType:
+  if lo == hi and not dtypes.long.min <= lo <= dtypes.ulong.max: raise OverflowError(f"{lo} does not fit any int")
+  ladder = (dtypes.default_int if default_int is None else default_int, dtypes.int, dtypes.long, dtypes.ulong)
+  return next((dt for dt in ladder if dt.min <= lo and hi <= dt.max), dtypes.long)
+def weak_dtype(dtype:DType) -> DType:
+  return dtypes.weakfloat if dtypes.is_float(dtype) else dtypes.weakint if dtypes.is_int(dtype) else dtype</code></pre>
+  <p>How does the literal adopt its neighbour's dtype? In <a class="src" data-path="tinygrad/mixin/elementwise.py" data-line="24">ElementwiseMixin._broadcasted</a>,
+  which every binary op goes through:</p>
+  <div class="codecap"><b>tinygrad/mixin/elementwise.py:24</b></div>
+  <pre><code class="language-python">  def _broadcasted(self, y, reverse=False):
+    y = self.ufix(y)
+    x, y = (self, y) if not reverse else (y, self)
+    out_dtype = least_upper_dtype(x.dtype, y.dtype)
+    # keep weak CONST weak, might lift weakint -> weakfloat
+    def promote(t):
+      if t._uop.base.is_invalid: return t  # invalid bool is weak const
+      if t.dtype in dtypes.weaks and t._uop.base.op is Ops.CONST:
+        return t if t.dtype == (dt:=weak_dtype(out_dtype)) else t._wrap_uop(remint(t._uop, dt))
+      return t.cast(out_dtype)
+    return promote(x), promote(y)</code></pre>
+  <p>The key line is the <code>promote</code> special case. A weak CONST is <b>not</b> cast to <code>out_dtype</code>. It stays weak; at most its
+  <em>kind</em> changes (<code>remint</code>: weakint 1 → weakfloat 1.0 when it meets a float). Everything else <em>is</em> cast. The op's dtype is then
+  computed from its srcs (3.8): <code>least_upper_dtype(i8, weakint) = i8</code>. The literal never got a width in the Tensor graph, yet the ADD is i8.</p>
+  <pre class="output"><code>### 3. weak dtypes: Python literals have a kind (int/float) but no width
+  dtypes.from_py(3           ) = dtypes.weakint
+  dtypes.from_py(3.0         ) = dtypes.weakfloat
+  dtypes.from_py(True        ) = dtypes.bool
+  dtypes.from_py([1, 2]      ) = dtypes.i32
+  dtypes.from_py([1, 1099511627776]) = dtypes.i64
+  dtypes.from_py([1.0, 2]    ) = dtypes.f32
+  UOp.const(3).dtype = dtypes.weakint | UOp.const(3.0).dtype = dtypes.weakfloat
+  (Tensor([1, 2], dtype='int8') + 1).dtype   = dtypes.i8   &lt;- the literal adopted int8
+  (Tensor([1, 2], dtype='half') * 0.5).dtype = dtypes.f16
+  (Tensor([1, 2]) + 1.5).dtype               = dtypes.weakfloat   &lt;- int32 meets weakfloat: still weak!
+  ... its .tolist() commits it: [2.5, 3.5]  commit_dtype() = dtypes.f32
+  commit_int ladder: commit_int(0, 100) = dtypes.i32 | commit_int(0, 2**40) = dtypes.i64 | commit_int(0, 2**63) = dtypes.u64
+  strong_dtype(weakfloat) = dtypes.f32 | strong_dtype(weakint) = dtypes.i32
+  Tensor.empty(2, dtype=weakfloat) -&gt; cannot create storage for weak dtype dtypes.weakfloat</code></pre>
+  <div class="callout warn"><span class="title">The <code>int32 + 1.5</code> case</span>
+  <code>least_upper_dtype(i32, weakfloat) = weakfloat</code>: an int tensor meeting a float literal becomes a <em>weak</em> float tensor. The int side is
+  cast to weakfloat. The result has no width until something needs one. <code>.tolist()</code> goes through <code>data()</code>, which does
+  <code>self.cast(self.commit_dtype())</code> = f32. <code>realize()</code> on a device refuses ("cannot realize a weak dtype; cast to a concrete dtype
+  first"). In practice <code>tolist</code>/<code>numpy</code> commit it for you, and a later op against a concrete float decides its width.</div>
+
+  <div class="demo" id="demo-ladder">
+    <div class="demo-title">commit_int ladder</div>
+    <div class="demo-desc">A JS port of <code>commit_int</code> with BigInt: type the min and max of a Python int list (or one value) and pick
+    <code>DEFAULT_INT</code>. The table walks the ladder in order and stops at the first dtype that fits. This is exactly what
+    <code>Tensor([...])</code> and <code>commit_dtype()</code> of a weakint do, using the value range (<code>vmin</code>/<code>vmax</code>) of the UOp.</div>
+    <div class="ch03-row">lo <input id="ld-lo" value="0"> hi <input id="ld-hi" value="1099511627776">
+      DEFAULT_INT <select id="ld-def"><option>int32</option><option>int64</option><option>int16</option><option>int8</option></select>
+      <span id="ld-pre"></span></div>
+    <div id="ld-out"></div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="commit"><span class="sec">3.6</span>Where weakness ends: codegen commits every literal</h2>
+  <p>A weak dtype can't be rendered: there is no C type called <code>weakint</code>. Weakness has two exits:</p>
+  <ul>
+    <li><b>Storage</b> (Tensor level). <code>linear_with_vars</code> refuses to realize a weak value on a device. <code>data()</code>, <code>empty_like</code>,
+    <code>full</code>, reductions (<code>_reduce</code> starts with <code>self.cast(self.commit_dtype())</code>) all commit first.
+    "Weakness ends where storage begins", as the comment in <code>linear_with_vars</code> puts it.</li>
+    <li><b>Codegen</b> (kernel level). Literals <em>inside</em> a kernel stay weak all the way to codegen.
+    <a class="src" data-path="tinygrad/codegen/__init__.py" data-line="253">full_rewrite_to_sink</a> runs three matchers from
+    <a class="src" data-path="tinygrad/uop/weak.py" data-line="36">tinygrad/uop/weak.py</a>:
+      <ul>
+        <li><code>pm_commit_weak</code> (weak.py:36) rides along with the symbolic, decomposition and final passes (codegen/__init__.py:317, 342, 347).
+        A broadcastable op commits its weak srcs to the op's concrete dtype. A STORE of a weak value casts it to the buffer's dtype.</li>
+        <li><code>pm_lower_weak</code> (weak.py:72, "lower all index dtypes", :322) settles weak index arithmetic to int/long.</li>
+        <li><code>pm_cast_const</code> (weak.py:106, "cast consts", :351) is the last step. Any remaining weak CONST gets a concrete type through
+        <code>UOp.cconst</code>.</li>
+      </ul></li>
+  </ul>
+  <div class="codecap"><b>examples/03_weak_commit.py</b> — follow one literal from Tensor graph to C · <code>DEV=CPU python3 examples/03_weak_commit.py</code></div>
+  <pre class="output"><code>
+=== Tensor.empty(4, dtype=int8) + 1000 ===
+tensor dtype: dtypes.i8 | top op: ADD
+  src[0]: ALLOC  dtype=dtypes.i8
+  src[1]: CONST  dtype=dtypes.weakint  arg=1000
+after full_rewrite_to_sink, ALU ops: ADD:i8, ADD:i8, ADD:i8, ADD:i8
+  typed constants: CAST(-24:weakint) -&gt; i8
+  weak node that is NOT a bare CONST under a concrete CAST? False
+C: *(data0_4+0) = (val0+((signed char)(-24)));
+
+=== Tensor.empty(4, dtype=half) * 0.5 ===
+tensor dtype: dtypes.f16 | top op: MUL
+  src[0]: ALLOC  dtype=dtypes.f16
+  src[1]: CONST  dtype=dtypes.weakfloat  arg=ConstFloat(0.5)
+after full_rewrite_to_sink, ALU ops: MUL:f16, MUL:f16, MUL:f16, MUL:f16
+  typed constants: CAST(ConstFloat(0.5):weakfloat) -&gt; f16
+  weak node that is NOT a bare CONST under a concrete CAST? False
+C: *((__fp164*)((data0_4+0))) = (__fp164){(val0[0]*((__fp16)(0.5f))),(val0[1]*((__fp16)(0.5f))),(val0[2]*((__fp16)(0.5f))),(val0[3]*((__fp16)(0.5f)))};
+
+=== Tensor.empty(4, dtype=int32) + 1.5 ===
+tensor dtype: dtypes.weakfloat | top op: ADD
+  src[0]: CAST   dtype=dtypes.weakfloat  &lt;- ALLOC dtypes.i32
+  src[1]: CONST  dtype=dtypes.weakfloat  arg=ConstFloat(1.5)
+weak result: realizing it needs a concrete dtype first -&gt; commit_dtype() = dtypes.f32
+after full_rewrite_to_sink, ALU ops: ADD:f32, ADD:f32, ADD:f32, ADD:f32
+  typed constants: CAST(ConstFloat(1.5):weakfloat) -&gt; f32
+  weak node that is NOT a bare CONST under a concrete CAST? False
+C: *((float4*)((data0_4+0))) = (float4){(((float)(val0[0]))+1.5f),(((float)(val0[1]))+1.5f),(((float)(val0[2]))+1.5f),(((float)(val0[3]))+1.5f)};</code></pre>
+  <ul>
+    <li>In the Tensor graph, <code>1000</code> is a bare <code>CONST</code> of dtype <code>weakint</code> next to an i8 buffer.</li>
+    <li>After codegen it is <code>CAST(-24) → i8</code>: 1000 wrapped to int8 (1000 − 1024 = −24), and the C reads <code>((signed char)(-24))</code>.
+    Hence <code>Tensor([1,2,3], dtype=int8) + 1000</code> gives <code>[-23, -22, -21]</code> in the quiz data below. The literal adopted int8, overflow included.</li>
+    <li>"Typed constants" are <code>CAST(CONST)</code> pairs. A CONST's own dtype is always derived from its Python arg (3.8), so the
+    concrete width lives on the CAST. The renderer prints the pair as one typed literal. No weak node other than such a CONST survives.</li>
+  </ul>
+
+  <div class="quiz" data-answer="0">
+    <div class="q"><code>x = Tensor.empty(4, dtype=dtypes.half)</code>. What dtype does the literal in <code>x * 0.5</code> have in the generated C?</div>
+    <button class="opt"><code>__fp16</code>: it stayed weak and committed to the MUL's dtype (f16)</button>
+    <button class="opt"><code>float</code>: Python floats are float32</button>
+    <button class="opt"><code>double</code>: Python floats are 64-bit</button>
+    <div class="explain">The output shows <code>CAST(ConstFloat(0.5):weakfloat) -> f16</code> and <code>val0[0]*((__fp16)(0.5f))</code>. If 0.5 had been f32,
+    <code>least_upper_dtype(f16, f32)</code> would have made the whole MUL f32.</div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="defaults"><span class="sec">3.7</span><code>DEFAULT_FLOAT</code> and <code>DEFAULT_INT</code></h2>
+  <div class="codecap"><b>tinygrad/helpers.py:256</b></div>
+  <pre><code class="language-python">DEFAULT_FLOAT, DEFAULT_INT = ContextVar("DEFAULT_FLOAT", "float32"), ContextVar("DEFAULT_INT", "int32")</code></pre>
+  <p>They are ContextVars, so they can be set from the environment (<code>DEFAULT_FLOAT=HALF python …</code>) or scoped with <code>Context(...)</code>.
+  <code>dtypes.default_float</code> is a <em>property</em> that reads the var on every access, so changing it affects everything created afterwards.
+  They decide:</p>
+  <ul>
+    <li>what a weak value commits to (<code>strong_dtype</code>, and the first rung of <code>commit_int</code>),</li>
+    <li>the dtype of float lists, <code>Tensor.empty/rand/randn</code>, <code>arange</code> of floats, and the result of int <code>/</code>, <code>sqrt</code>, <code>exp</code>
+    (<code>least_upper_float</code>: an int meets <code>default_float</code>).</li>
+  </ul>
+  <pre class="output"><code>### 4. DEFAULT_FLOAT / DEFAULT_INT decide what weak values commit to
+  with DEFAULT_FLOAT=float16 DEFAULT_INT=int64: dtypes.f16 dtypes.i64 dtypes.f16
+  defaults: dtypes.f32 dtypes.i32 dtypes.f32</code></pre>
+  <p>A module-import-time <code>assert</code> (dtype.py:168) checks that <code>DEFAULT_FLOAT</code> really is a float and <code>DEFAULT_INT</code> an int.
+  <code>sum_acc_dtype</code> has its own knob, <code>SUM_DTYPE</code> (3.10).</p>
+
+  <!-- ============================================================ -->
+  <h2 id="derived"><span class="sec">3.8</span>dtype is derived: <code>dtype_from_uop</code></h2>
+  <p>A UOp has three fields, <code>op, src, arg</code>. <code>dtype</code> is a <code>@recursive_property</code> that calls
+  <a class="src" data-path="tinygrad/uop/ops.py" data-line="115">dtype_from_uop(op, src, arg)</a>. This is a total set of production rules, one
+  case per kind of op:</p>
+  <div class="codecap"><b>tinygrad/uop/ops.py:115</b> — dtype_from_uop (abridged)</div>
+  <pre><code class="language-python">def dtype_from_uop(op:Ops, src:tuple[UOp,...], arg:Any) -> DType:
+  # here are the dtype production rules, total over all Ops
+  match op:
+    case Ops.STORE | Ops.LINEAR | Ops.SINK | Ops.PROGRAM | Ops.SOURCE | ...: return dtypes.void
+    case Ops.INDEX: ...                         # the buffer's dtype (images read float)
+    case Ops.LOAD | Ops.REDUCE | Ops.AFTER | Ops.COPY | Ops.STAGE | ...: return src[0].dtype   # pass through first
+    case Ops.CMPLT | Ops.CMPNE | Ops.CMPEQ: return dtypes.bool
+    case Ops.SIN | Ops.LOG2 | Ops.EXP2 | Ops.SQRT | Ops.RECIP:
+      return dtypes.bool if src[0].base.is_invalid else least_upper_float(src[0].dtype)
+    case Ops.WHERE: return promo_dtype(src[1:])   # cond must be bool
+    case Ops.FDIV: return least_upper_float(promo_dtype(src))
+    case Ops.BUFFER | Ops.ALLOC | Ops.PARAM: return arg.dtype
+    case Ops.CAST | Ops.BITCAST: return arg
+    case Ops.CONST:
+      # derived from the value. order matters: bool is an int subclass, ConstFloat is a float subclass
+      if isinstance(arg, bool): return dtypes.bool
+      if isinstance(arg, int): return dtypes.weakint
+      if isinstance(arg, float): return dtypes.weakfloat
+  if op in GroupOp.Unary: return src[0].dtype
+  if op in GroupOp.Broadcastable: return promo_dtype(src)     # same dtype, or least_upper_dtype of the srcs
+  if op in GroupOp.Movement: return src[0].dtype</code></pre>
+  <p>Consequences you can see in the printouts:</p>
+  <ul>
+    <li><b>A CONST is always weak or bool.</b> <code>UOp.const(2, dtypes.float32)</code> returns <code>CAST(CONST(2.0), f32)</code>: the width is
+    carried by a CAST (ops.py:601). That is the "typed constant" pair from 3.6.</li>
+    <li><b>Promotion lives in one place.</b> <code>ADD</code>'s dtype is <code>promo_dtype(src)</code>. No pass ever has to "update" a dtype after rewriting srcs,
+    and two UOps with the same <code>(op, src, arg)</code> can't disagree on dtype. That is essential for hash-consing.</li>
+    <li><b>Ops like <code>sqrt</code> promote ints.</b> <code>least_upper_float(i8) = least_upper_dtype(i8, f32) = f32</code>.</li>
+  </ul>
+  <pre class="output"><code>### 5. dtype is DERIVED from the UOp (dtype_from_uop), not stored
+  UOp dataclass fields: ['op', 'src', 'arg']
+  CONST(2) + CONST(1.5) -&gt; ADD dtypes.weakfloat
+  y &lt; 1          -&gt; CMPLT   dtype=dtypes.bool
+  y.sqrt()       -&gt; SQRT    dtype=dtypes.f32
+  y / 2          -&gt; MUL     dtype=dtypes.f32
+  y.cast(f16)    -&gt; CAST    dtype=dtypes.f16
+  y.bitcast(u8)  -&gt; BITCAST dtype=dtypes.u8</code></pre>
+  <p><code>CONST(2) + CONST(1.5)</code> is an ADD of dtype <code>weakfloat</code>: two weak literals stay weak. <code>y / 2</code> is a <code>MUL</code>, because
+  division by a constant becomes multiplication by its reciprocal. Chapter 4 lists the op groups (<code>GroupOp.Unary</code>,
+  <code>Broadcastable</code>, …) these rules dispatch on.</p>
+
+  <div class="quiz" data-answer="3">
+    <div class="q">You build <code>u = UOp(Ops.CONST, arg=3)</code>. What is <code>u.dtype</code>, and where is it stored?</div>
+    <button class="opt"><code>dtypes.int32</code>, stored in a <code>dtype</code> field</button>
+    <button class="opt"><code>dtypes.int64</code>, inferred by Python</button>
+    <button class="opt"><code>dtypes.default_int</code>, read from the ContextVar</button>
+    <button class="opt"><code>dtypes.weakint</code>, not stored: <code>dtype_from_uop</code> derives it from the int arg each time it is needed</button>
+    <div class="explain">The UOp dataclass fields are <code>['op', 'src', 'arg']</code> (printed in section 5). The CONST rule maps an int arg to
+    <code>weakint</code>. To get a concrete int you write <code>UOp.const(3, dtypes.int32)</code>, which is a CAST around the CONST.</div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="bitcast"><span class="sec">3.9</span>Casting vs bitcasting</h2>
+  <p><code>cast</code> converts the <b>value</b> (<code>2.7 → 2</code>). <code>bitcast</code> reinterprets the <b>bits</b> (<code>1.0f → 0x3f800000 →
+  1065353216</code>). Both are one UOp. <code>CAST</code> and <code>BITCAST</code> carry the target dtype as their arg, and <code>dtype_from_uop</code> returns it.</p>
+  <div class="codecap"><b>tinygrad/mixin/dtype.py:19, 38</b></div>
+  <pre><code class="language-python">  def cast(self, dtype:DTypeLike) -> Self:
+    return self if self.dtype == (dt:=to_dtype(dtype)) else self._wrap_uop(self._uop.alu(Ops.CAST, arg=dt))
+  def bitcast(self, dtype:DTypeLike) -> Self:
+    """Bitcasts `self` to the given `dtype`. If the itemsize differs, the last axis is rescaled."""
+    dt = to_dtype(dtype)
+    if self.dtype in dtypes.weaks or dt in dtypes.weaks: raise RuntimeError(f"bitcast requires concrete dtypes, got {self.dtype} -> {dt}")
+    ...</code></pre>
+  <p>A bitcast needs real bits, so weak types are rejected. Changing the itemsize rescales the last axis: 4 floats → 16 bytes. For a single
+  scalar, <a class="src" data-path="tinygrad/dtype.py" data-line="296">dtype.bitcast(x, in, out)</a> does the same in pure Python with <code>struct</code>,
+  and <code>dtype.truncate[dt]</code> rounds a Python value to a dtype. The table at the end of this output uses them to show f32/f16/bf16 side by side:</p>
+  <pre class="output"><code>### 6. cast vs bitcast: value conversion vs reinterpreting the bits
+  f                    = [1.0, -2.5, 0.10000000149011612]
+  f.cast(int32)        = [1, -2, 0]   (value converted, truncated toward 0)
+  f.bitcast(int32)     = [1065353216, -1071644672, 1036831949]   (same 32 bits read as int)
+  f.bitcast(uint32) hex= ['0x3f800000', '0xc0200000', '0x3dcccccd']
+  f.cast(half).bitcast(uint16) hex = ['0x3c00', '0xc100', '0x2e66']
+  shape change on bitcast: Tensor.empty(4, dtype=f32).bitcast(u8).shape = (16,)
+         x |   f32 bits | f16 bits        f16 value | bf16 bits             bf16 value
+         1 | 0x3f800000 | 0x3c00              1.0 | 0x3f80                    1.0
+      -2.5 | 0xc0200000 | 0xc100             -2.5 | 0xc020                   -2.5
+       0.1 | 0x3dcccccd | 0x2e66  0.0999755859375 | 0x3dcd          0.10009765625
+   3.14159 | 0x40490fd0 | 0x4248         3.140625 | 0x4049               3.140625
+     65504 | 0x477fe000 | 0x7bff          65504.0 | 0x4780                65536.0
+     1e-08 | 0x322bcc77 | 0x0000              0.0 | 0x322c 1.0011717677116394e-08</code></pre>
+
+  <div class="demo" id="demo-bits">
+    <div class="demo-title">Bit-level float visualizer</div>
+    <div class="demo-desc">Type a number or <b>click any bit</b> to flip it. The <span style="color:var(--red)">sign</span>,
+    <span style="color:var(--blue)">exponent</span> and <span style="color:var(--green)">mantissa</span> are decoded live. The three panels below show
+    the same number rounded to each format (what <code>cast</code> does: f16 round-to-nearest-even, and bf16 using tinygrad's
+    <code>float_to_bf16</code>: <code>u + 0x7FFF + ((u&gt;&gt;16)&amp;1)</code>), next to the bitcast integers. Try 0.1, 65504, 1e-8 and 3.14159, and
+    compare with the table above.</div>
+    <div class="ch03-row">format <select id="bt-fmt"><option value="f32">float32</option><option value="f16">float16</option><option value="bf16">bfloat16</option></select>
+      value <input id="bt-val" value="0.1"> <span id="bt-pre"></span></div>
+    <div class="ch03-bits" id="bt-bits"></div>
+    <div class="ch03-legend"><i style="background:rgba(252,98,85,.5)"></i>sign<i style="background:rgba(88,196,221,.5)"></i>exponent<i style="background:rgba(131,193,103,.45)"></i>mantissa</div>
+    <div class="ch03-kv" id="bt-kv"></div>
+    <div class="ch03-cmp" id="bt-cmp"></div>
+  </div>
+
+  <div class="quiz" data-answer="1">
+    <div class="q"><code>Tensor([1.0]).bitcast(dtypes.int32).item()</code> returns…</div>
+    <button class="opt"><code>1</code></button>
+    <button class="opt"><code>1065353216</code> (0x3f800000: sign 0, exponent 127, mantissa 0)</button>
+    <button class="opt">an error, because bitcast needs the same dtype kind</button>
+    <div class="explain">Same 32 bits, read as an int: see <code>f.bitcast(int32)</code> in the output. <code>cast</code> would give 1.</div>
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="acc"><span class="sec">3.10</span>Accumulators and lossless casts</h2>
+  <div class="codecap"><b>tinygrad/dtype.py:214</b></div>
+  <pre><code class="language-python">def sum_acc_dtype(dt:DType):
+  # default acc dtype for sum
+  if dtypes.is_unsigned(dt): return least_upper_dtype(dt, dtypes.uint)
+  if dtypes.is_int(dt) or dt == dtypes.bool: return least_upper_dtype(dt, dtypes.int)
+  return least_upper_dtype(dt, to_dtype(getenv("SUM_DTYPE", "float32")))</code></pre>
+  <p>Summing a million int8s in int8 would overflow, and summing halfs in half loses precision. So <code>sum</code> accumulates in at least u32 / i32 / f32,
+  and then casts back for floats: <code>Tensor([1., 2], dtype=half).sum()</code> is f16, while int sums keep the wide type (<code>int8.sum()</code> is i32).
+  <a class="src" data-path="tinygrad/dtype.py" data-line="202">can_lossless_cast</a> answers "does dt1 hold every dt0 value?" using
+  <code>min</code>/<code>max</code> and <code>finfo</code>. It is used by rewrite rules that remove redundant casts.</p>
+  <pre class="output"><code>### 7. accumulation dtypes and lossless casts
+  sum_acc_dtype(bool) = i32
+  sum_acc_dtype(i8) = i32
+  sum_acc_dtype(u8) = u32
+  sum_acc_dtype(f16) = f32
+  sum_acc_dtype(f32) = f32
+  can_lossless_cast(i16, f32) = True
+  can_lossless_cast(i32, f32) = False
+  can_lossless_cast(f16, bf16) = False
+  can_lossless_cast(u8, i16) = True</code></pre>
+  <p><code>can_lossless_cast(i32, f32) = False</code>: f32's 24-bit significand can't hold every 31-bit int. <code>i16 → f32</code> is fine (15 ≤ 24).</p>
+
+  <!-- ============================================================ -->
+  <h2 id="emulation"><span class="sec">3.11</span>Emulating dtypes the hardware lacks</h2>
+  <p>Not every backend has every dtype. Some GPUs have no bf16 or fp8 ALU, some lack 64-bit ints, and WebGPU has no f64. tinygrad's answer is a
+  rewrite pass, <a class="src" data-path="tinygrad/codegen/decomp/dtype.py" data-line="199">do_dtype_decomps</a>, run inside
+  <code>full_rewrite_to_sink</code> as the "decomp dtypes" step (codegen/__init__.py:342):</p>
+  <div class="codecap"><b>tinygrad/codegen/decomp/dtype.py:198</b></div>
+  <pre><code class="language-python">def do_dtype_decomps(sink:UOp, ctx:DTypeDecompCtx) -> UOp:
+  def _should_emulate(dt): return dt in EMULATED_DTYPES.tolist(dtypes) or dt not in ctx.renderer.supported_dtypes()
+  for fr in sorted(filter(_should_emulate, ctx.dtypes)):
+    to = dtypes.int if fr == dtypes.long else dtypes.float
+    if DEBUG >= 2: print(f"emulating {fr} as {to}")
+    pm = pm_float_decomp if fr in dtypes.floats else pm_long_decomp
+    sink = graph_rewrite(sink, pm, name=f"decomp {fr} -> {to}", ctx=FloatDecompCtx(fr, to), bottom_up=True)</code></pre>
+  <ul>
+    <li><b>Floats</b> (bf16, fp8, half): storage stays the same size but is typed as an unsigned int of that width. Every load is converted to float32 by
+    bit-twiddling, the math runs in float32, and every store converts back with correct rounding (<code>pm_float_decomp</code>, dtype.py:167).</li>
+    <li><b>long / ulong</b>: each 64-bit value becomes two 32-bit ints. Adds propagate a carry, multiplies are done schoolbook-style, shifts move bits
+    across the halves (<code>pm_long_decomp</code>, dtype.py:143).</li>
+    <li>It triggers when the renderer's <code>supported_dtypes()</code> lacks the dtype, or when you force it with <code>EMULATED_DTYPES=bfloat16,long</code>
+    (helpers.py:255), which is handy for testing a backend's emulation path on your laptop.</li>
+  </ul>
+  <div class="codecap"><b>examples/03_emulation.py</b> — real rendered C, native vs emulated · <code>DEV=CPU python3 examples/03_emulation.py</code></div>
+  <pre class="output"><code>CPU renderer: ClangRenderer
+
+=== bf16 * 2, native (__bf16 in C) ===
+
+struct E_args { __bf16* arg0; __bf16* arg1; };
+void E(const struct E_args* args) {
+  __bf16* data0_1 = args-&gt;arg0;
+  __bf16* data1_1 = args-&gt;arg1;
+  __bf16 val0 = (*(data1_1+0));
+  unsigned int cast0 = __builtin_bit_cast(unsigned int, (float)((__builtin_bit_cast(float, (unsigned int)((((unsigned int)(__builtin_bit_cast(unsigned short, (__bf16)(val0))))&lt;&lt;16u)))*2.0f)));
+  unsigned int alu0 = (((cast0&amp;65535u)!=0u)?(cast0|65536u):cast0);
+  unsigned int alu1 = (((-cast0&amp;2139095040u)!=0u)?(cast0+((cast0&gt;&gt;16u)&amp;1u)+32767u):alu0);
+  *(data0_1+0) = __builtin_bit_cast(__bf16, (unsigned short)(((unsigned short)((alu1&gt;&gt;16u)))));
+}
+
+native compile: FAILED (CalledProcessError): this clang target has no __bf16
+
+=== bf16 * 2, EMULATED_DTYPES=bfloat16 (stored as unsigned short, math in float) ===
+
+struct E_args { unsigned short* arg0; unsigned short* arg1; };
+void E(const struct E_args* args) {
+  unsigned short* data0_1 = args-&gt;arg0;
+  unsigned short* data1_1 = args-&gt;arg1;
+  unsigned short val0 = (*(data1_1+0));
+  unsigned int cast0 = ((unsigned int)((val0&amp;((unsigned short)(32767u)))));
+  unsigned int alu0 = (cast0&lt;&lt;16u);
+  unsigned int alu1 = (cast0&gt;&gt;7u);
+  unsigned int alu2 = ((alu1==255u)?(alu0|2139095040u):alu0);
+  unsigned int alu3 = ((alu1==0u)?0u:alu2);
+  unsigned int cast1 = __builtin_bit_cast(unsigned int, (float)((__builtin_bit_cast(float, (unsigned int)(((((unsigned int)((val0&amp;((unsigned short)(32768u)))))&lt;&lt;16u)|alu3)))*2.0f)));
+  unsigned int alu4 = (cast1&amp;2147483647u);
+  _Bool alu5 = (alu4&lt;8388608u);
+  unsigned int alu6 = (alu5?8388608u:alu4);
+  unsigned int alu7 = (alu6&gt;&gt;16u);
+  unsigned int alu8 = ((alu7+((alu6&gt;&gt;15u)&amp;1u&amp;(((unsigned int)(((alu6&amp;32767u)!=0u)))|(alu7&amp;1u)))+0u)^4294967295u);
+  unsigned int alu9 = ((alu8&lt;4294934655u)?4294934655u:alu8);
+  unsigned int alu10 = (alu5?0u:(alu9^4294967295u));
+  unsigned int alu11 = ((alu4==2139095040u)?32640u:alu10);
+  unsigned int alu12 = ((2139095040u&lt;alu4)?32704u:alu11);
+  *(data0_1+0) = ((unsigned short)((((cast1&gt;&gt;16u)&amp;32768u)|alu12)));
+}
+
+=== int64: x*3 + x, native ===
+
+struct E_args { long* arg0; long* arg1; };
+void E(const struct E_args* args) {
+  long* data0_1 = args-&gt;arg0;
+  long* data1_1 = args-&gt;arg1;
+  long val0 = (*(data1_1+0));
+  *(data0_1+0) = (val0&lt;&lt;2l);
+}
+
+=== int64: x*3 + x, EMULATED_DTYPES=long (each long is two 32-bit ints) ===
+
+struct E_args { int* arg0; int* arg1; };
+void E(const struct E_args* args) {
+  int* data0_2 = args-&gt;arg0;
+  int* data1_2 = args-&gt;arg1;
+  int val0 = (*(data1_2+0));
+  int val1 = (*(data1_2+1));
+  unsigned int cast0 = __builtin_bit_cast(unsigned int, (int)(val0));
+  *(data0_2+0) = __builtin_bit_cast(int, (unsigned int)((cast0&lt;&lt;2u)));
+  *(data0_2+1) = __builtin_bit_cast(int, (unsigned int)(((__builtin_bit_cast(unsigned int, (int)(val1))&lt;&lt;2u)|((cast0&gt;&gt;1u)&gt;&gt;29u))));
+}
+
+emulated bf16 result: [3.0, -4.5, 6.0] dtypes.bf16</code></pre>
+  <p>Read the four kernels top to bottom:</p>
+  <ol>
+    <li><b>Native bf16</b> uses the C type <code>__bf16</code> and still converts through float for the multiply. The clang target used for this guide
+    rejects <code>__bf16</code>, so this kernel <em>can't compile here</em>. That is exactly the situation emulation exists for.</li>
+    <li><b>Emulated bf16</b> stores <code>unsigned short</code>. The load is <code>val0 &lt;&lt; 16</code> with special cases for subnormals and inf/NaN, and the
+    store is a round-to-nearest-even with NaN handling. That is 20 lines of integer ops for one multiply, but it runs, and the last line shows the
+    correct result <code>[3.0, -4.5, 6.0]</code>.</li>
+    <li><b>Native int64</b> <code>x*3 + x</code> was simplified by symbolic rewrites to <code>x &lt;&lt; 2</code> (Chapter 6).</li>
+    <li><b>Emulated int64</b>: the same shift on a pair of <code>int</code>s. The low half shifts, and its top 2 bits carry into the high half
+    (<code>(cast0&gt;&gt;1u)&gt;&gt;29u</code>).</li>
+  </ol>
+
+  <!-- ============================================================ -->
+  <h2 id="game"><span class="sec">3.12</span>Game: what dtype will this expression get?</h2>
+  <p>Everything above, applied. Each row was produced by running the expression on this commit (<code>examples/03_promotion_quiz.py</code>), and the
+  printed dtype is <code>t.dtype</code> <em>before</em> realization, so weak results show as weak. Play first; the full table follows.</p>
+  <div class="demo" id="demo-game">
+    <div class="demo-title">dtype quiz game</div>
+    <div class="demo-desc">Pick the dtype. After you answer, the real value (from <code>.tolist()</code>/<code>.item()</code>) and a hint about which rule applied
+    are shown. 35 questions, shuffled.</div>
+    <div class="ch03-game"><div class="ch03-snip" id="gm-snip"></div><div class="ch02-score" id="gm-score" style="font-family:var(--mono);font-size:13px;color:var(--dim)"></div></div>
+    <div class="controls ch03-ans" id="gm-ans"></div>
+    <div class="ch03-msg" id="gm-msg"></div>
+    <div class="controls"><button class="primary" id="gm-next">next ▶</button><button id="gm-restart">⟲ restart</button></div>
+    <div class="ch03-hist" id="gm-hist"></div>
+  </div>
+  <div class="codecap"><b>examples/03_promotion_quiz.py</b> — <code>--dump</code> writes <code>data/ch03_quiz.json</code></div>
+  <pre class="output"><code>Tensor([1, 2, 3])                          -&gt; i32        [1, 2, 3]
+Tensor([1., 2, 3])                         -&gt; f32        [1.0, 2.0, 3.0]
+Tensor([True, False])                      -&gt; bool       [True, False]
+Tensor([2**40])                            -&gt; i64        [1099511627776]
+Tensor([2**63])                            -&gt; u64        [9223372036854775808]
+Tensor(3)                                  -&gt; weakint    3
+Tensor(3.0)                                -&gt; weakfloat  3.0
+Tensor([1, 2, 3]) + 1                      -&gt; i32        [2, 3, 4]
+Tensor([1, 2, 3]) + 1.5                    -&gt; weakfloat  [2.5, 3.5, 4.5]
+Tensor([1, 2, 3]) / 2                      -&gt; f32        [0.5, 1.0, 1.5]
+Tensor([1, 2, 3]) // 2                     -&gt; i32        [0, 1, 1]
+Tensor([1, 2, 3], dtype=int8) + 1          -&gt; i8         [2, 3, 4]
+Tensor([1, 2, 3], dtype=int8) + 1000       -&gt; i8         [-23, -22, -21]
+Tensor([1, 2, 3], dtype=uint8) * 2.5       -&gt; weakfloat  [2.5, 5.0, 7.5]
+Tensor([1.], dtype=half) + 1.0             -&gt; f16        [2.0]
+Tensor([1.], dtype=half) + Tensor([1.])    -&gt; f32        [2.0]
+int8 tensor + uint8 tensor                 -&gt; i16        [2]
+uint32 tensor + int32 tensor               -&gt; i64        [2]
+int64 tensor + uint64 tensor               -&gt; weakfloat  [2.0]
+int64 tensor + half tensor                 -&gt; f16        [2.0]
+Tensor([True]) + Tensor([True])            -&gt; bool       [True]
+Tensor([True]) + 1                         -&gt; weakint    [2]
+Tensor([1, 2]) &lt; 2                         -&gt; bool       [True, False]
+Tensor([1, 4]).sqrt()                      -&gt; f32        [1.0, 2.0]
+Tensor([1, 2], dtype=uint8).sum()          -&gt; u32        3
+Tensor([1, 2], dtype=int8).sum()           -&gt; i32        3
+Tensor([1., 2], dtype=half).sum()          -&gt; f16        3.0
+Tensor([True, False]).sum()                -&gt; i32        1
+Tensor.arange(5)                           -&gt; i32        [0, 1, 2, 3, 4]
+Tensor.full((2,), 7)                       -&gt; i32        [7, 7]
+Tensor(3) * 0.5                            -&gt; weakfloat  1.5
+Tensor([1, 2]).mean()                      -&gt; f32        1.5
+Tensor([1, 2]) ** 2                        -&gt; i32        [1, 4]
+Tensor([1, 2]) ** 0.5                      -&gt; weakfloat  [1.0, 1.4142135381698608]
+Tensor([1., 2]).bitcast(dtypes.int32)      -&gt; i32        [1065353216, 1073741824]</code></pre>
+
+  <div class="quiz" data-answer="2">
+    <div class="q">Why is <code>Tensor([1, 2, 3], dtype=uint8) * 2.5</code> <code>weakfloat</code>, while <code>Tensor([1.], dtype=half) + 1.0</code> is <code>f16</code>?</div>
+    <button class="opt">uint8 can't be multiplied</button>
+    <button class="opt">Multiplication always produces weak types</button>
+    <button class="opt">u8 meets weakfloat: no concrete float is involved, so the join is weakfloat. f16 meets weakfloat: f16 is above weakfloat in the lattice, so f16 wins</button>
+    <button class="opt">2.5 is not representable in f16</button>
+    <div class="explain">In the lattice, weakfloat sits below every concrete float and above every int. Only a concrete float can give it a width
+    before commit time; otherwise it commits to DEFAULT_FLOAT when read.</div>
+  </div>
+
+  <div class="summary-box"><h3>Chapter summary</h3><ul>
+    <li><code>DType(priority, bitsize, name, fmt)</code> is frozen and interned. There are no pointer, image or vector dtypes any more: those are ops, shapes and <code>AddrSpace</code>.</li>
+    <li>Promotion: <code>least_upper_dtype</code> = <code>min</code> of the intersection of up-sets in <code>promo_lattice</code>, ordered by
+    <code>(priority, bitsize, name)</code>. Floats beat ints, i64+u64 has no int join, f16+bf16 → f32.</li>
+    <li>Python scalars are <b>weak</b> (<code>weakint</code>/<code>weakfloat</code>, bitsize 800). <code>_broadcasted</code> keeps a weak CONST weak, so it adopts its
+    neighbour's dtype. Lists commit immediately (<code>strong_dtype</code>, <code>commit_int</code>).</li>
+    <li>Weakness ends at storage (<code>commit_dtype</code>, realize refuses weak) and in codegen (<code>pm_commit_weak</code>, <code>pm_lower_weak</code>,
+    <code>pm_cast_const</code>), where every literal becomes a typed <code>CAST(CONST)</code>.</li>
+    <li><code>DEFAULT_FLOAT</code>/<code>DEFAULT_INT</code> are ContextVars read at call time.</li>
+    <li>dtype is derived: <code>dtype_from_uop(op, src, arg)</code>. A CONST is weak or bool, CAST/BITCAST take their arg, ALU ops use <code>promo_dtype</code>.</li>
+    <li><code>cast</code> converts values, <code>bitcast</code> reinterprets bits (and rescales the last axis). <code>sum</code> accumulates in ≥ 32 bits.</li>
+    <li>Unsupported dtypes are emulated by <code>pm_float_decomp</code> (bits in uintN, math in f32) and <code>pm_long_decomp</code> (pairs of int32), forced with
+    <code>EMULATED_DTYPES</code>.</li>
+  </ul></div>
+  <p>Next: <a href="04-uop.html">Chapter 4 — UOp: the one IR</a> opens the object whose dtype we just derived.</p>
+</main>
+</div>
+<script>
+(async function () {
+  const G = Guide, el = G.el;
+  const D = await G.loadJSON("../data/ch03_dtypes.json");
+  const INFO = Object.fromEntries(D.dtypes.map((d) => [d.name, d]));
+  const LAT = D.lattice;
+
+  // ---------------- lattice explorer ----------------
+  const ROWS = [["f64"], ["f32"], ["f16", "bf16"], ["fp8e4m3", "fp8e5m2", "fp8e4m3fnuz", "fp8e5m2fnuz"], ["weakfloat"], ["i64", "u64"], ["i32", "u32"],
+    ["i16", "u16"], ["i8", "u8"], ["weakint"], ["bool"]];
+  const W = 560, RH = 56, BW = { def: 84, fp8: 112 };
+  const POS = {};
+  ROWS.forEach((row, r) => {
+    const bw = row.length > 2 ? BW.fp8 : BW.def, gap = row.length > 2 ? 18 : 60;
+    const tot = row.length * bw + (row.length - 1) * gap;
+    row.forEach((n, i) => { POS[n] = { x: (W - tot) / 2 + i * (bw + gap), y: 14 + r * RH, w: bw, h: 32 }; });
+  });
+  const ups = {};
+  function up(d) { if (ups[d]) return ups[d]; const s = new Set([d]); if (d !== "f64") for (const p of LAT[d]) for (const x of up(p)) s.add(x); return (ups[d] = s); }
+  const lt = (a, b) => { const A = INFO[a], B = INFO[b]; return A.priority !== B.priority ? A.priority < B.priority : A.bitsize !== B.bitsize ? A.bitsize < B.bitsize : A.name < B.name; };
+  function lub(a, b) { const c = [...up(a)].filter((x) => up(b).has(x)); return { common: c, res: c.reduce((m, x) => (lt(x, m) ? x : m)) }; }
+  // self-check against the real table
+  let agree = 0, total = 0;
+  for (const k in D.lub) { const [a, b] = k.split("|"); total++; if (lub(a, b).res === D.lub[k]) agree++; }
+
+  const svg = G.$("#lat"), edgeEls = [], nodeEls = {};
+  for (const [a, ps] of Object.entries(LAT)) for (const b of ps) {
+    const A = POS[a], B = POS[b];
+    const p = el("path", { class: "e", d: `M${A.x + A.w / 2},${A.y} C${A.x + A.w / 2},${A.y - 16} ${B.x + B.w / 2},${B.y + B.h + 16} ${B.x + B.w / 2},${B.y + B.h}` });
+    p.dataset.a = a; p.dataset.b = b; svg.append(p); edgeEls.push(p);
+  }
+  for (const n in POS) {
+    const P = POS[n], g = el("g", { class: "nd" + (n.startsWith("weak") ? " weak" : ""), onclick: () => click(n) },
+      el("rect", { x: P.x, y: P.y, width: P.w, height: P.h, rx: 6 }), el("text", { x: P.x + P.w / 2, y: P.y + 21, "text-anchor": "middle" }, n));
+    svg.append(g); nodeEls[n] = g;
+  }
+  svg.append(el("text", { x: 8, y: 610, fill: "#9aa3ad", "font-size": 11 }, "edges point up: a → b means b ∈ promo_lattice[a]"));
+  let A = null, B = null;
+  function click(n) { if (!A || (A && B)) { A = n; B = null; } else B = n; drawLat(); }
+  function drawLat() {
+    Object.entries(nodeEls).forEach(([n, g]) => g.setAttribute("class", "nd" + (n.startsWith("weak") ? " weak" : "")));
+    edgeEls.forEach((e) => e.setAttribute("class", "e"));
+    const info = G.$("#lat-info"); info.innerHTML = "";
+    const chk = el("div", { style: "font-size:12px;color:var(--dim)" }, `JS port agrees with real least_upper_dtype on ${agree}/${total} pairs`);
+    if (!A) { info.append(el("div", {}, "Click a dtype to start."), chk); return; }
+    const b = B || A, { common, res } = lub(A, b);
+    const cs = new Set(common);
+    // nodes on a path from A or b to res: in up(A)∪up(b) and res ∈ up(n)
+    const onPath = new Set([...up(A), ...up(b)].filter((n) => up(n).has(res)));
+    for (const n in nodeEls) {
+      const c = ["nd"]; if (n.startsWith("weak")) c.push("weak");
+      if (onPath.has(n)) c.push("path"); else if (!cs.has(n)) c.push("dim");
+      if (cs.has(n)) c.push("common");
+      if (n === res) c.push("res"); if (n === A) c.push("pickA"); if (B && n === B) c.push("pickB");
+      nodeEls[n].setAttribute("class", c.join(" "));
+    }
+    edgeEls.forEach((e) => { const on = onPath.has(e.dataset.a) && onPath.has(e.dataset.b); e.setAttribute("class", "e" + (on ? " path" : cs.has(e.dataset.a) ? "" : " dim")); });
+    const real = D.lub[`${A}|${b}`];
+    info.append(el("div", { class: "big" }, `least_upper_dtype(`, el("span", { style: "color:var(--blue)" }, A), ", ", el("span", { style: "color:var(--purple)" }, B ? b : "?"), ") = ", el("b", {}, B ? res : "…")));
+    if (!B) { info.append(el("div", {}, `Up-set of ${A}: {${[...up(A)].join(", ")}}. Now click B.`), chk); return; }
+    const t = el("table", {}, el("tr", {}, el("th", {}, "common upper bound"), el("th", {}, "priority"), el("th", {}, "bitsize")));
+    common.slice().sort((x, y) => (lt(x, y) ? -1 : 1)).forEach((n) => t.append(el("tr", { style: n === res ? "color:var(--green);font-weight:700" : "" }, el("td", {}, n + (n === res ? "  ← min" : "")), el("td", {}, INFO[n].priority), el("td", {}, INFO[n].bitsize))));
+    info.append(el("div", { style: "margin-bottom:6px" }, `${common.length} common upper bounds; min by (priority, bitsize, name):`), t,
+      el("div", { style: "margin-top:6px" }, "real table says: ", el("code", {}, real), real === res ? " ✔" : " ✘ mismatch"), chk);
+  }
+  [["i8", "u8"], ["i32", "u32"], ["i64", "u64"], ["f16", "bf16"], ["i32", "f16"], ["u8", "weakfloat"], ["bool", "weakint"], ["fp8e4m3", "fp8e5m2"]]
+    .forEach(([a, b]) => G.$("#lat-presets").append(el("button", { onclick: () => { A = a; B = b; drawLat(); } }, `${a} + ${b}`)));
+  A = "i64"; B = "u64"; drawLat();
+
+  // ---------------- commit_int ladder ----------------
+  const RANGE = { int8: [-128n, 127n], int16: [-32768n, 32767n], int32: [-(2n ** 31n), 2n ** 31n - 1n], int64: [-(2n ** 63n), 2n ** 63n - 1n], uint64: [0n, 2n ** 64n - 1n] };
+  function drawLadder() {
+    const out = G.$("#ld-out"); out.innerHTML = "";
+    let lo, hi;
+    try { lo = BigInt(G.$("#ld-lo").value.trim()); hi = BigInt(G.$("#ld-hi").value.trim()); } catch (e) { out.textContent = "enter integers"; return; }
+    if (lo > hi) [lo, hi] = [hi, lo];
+    if (lo === hi && !(RANGE.int64[0] <= lo && lo <= RANGE.uint64[1])) { out.append(el("div", { style: "color:var(--red);font-family:var(--mono)" }, `OverflowError: ${lo} does not fit any int`)); return; }
+    const ladder = [G.$("#ld-def").value, "int32", "int64", "uint64"];
+    let pick = null;
+    const t = el("table", { class: "ch03-ladder" }, el("tr", {}, el("th", {}, "rung"), el("th", {}, "dtype"), el("th", {}, "min ≤ lo and hi ≤ max ?")));
+    ladder.forEach((d, i) => {
+      const [mn, mx] = RANGE[d], ok = mn <= lo && hi <= mx;
+      const chosen = ok && pick === null; if (chosen) pick = d;
+      t.append(el("tr", { class: chosen ? "pick" : pick !== null ? "no" : "" }, el("td", {}, i === 0 ? "default_int" : i), el("td", {}, d), el("td", {}, pick !== null && !chosen ? "(not reached)" : ok ? "yes ✔" : `no (${mn} .. ${mx})`)));
+    });
+    if (pick === null) pick = "int64";
+    out.append(t, el("div", { style: "font-family:var(--mono);font-size:13px;margin-top:6px" }, "commit_int → ", el("b", { style: "color:var(--green)" }, pick), pick === "int64" && !(RANGE.int64[0] <= lo && hi <= RANGE.int64[1]) ? "  (fallback: nothing fits a range this wide)" : ""));
+  }
+  ["ld-lo", "ld-hi"].forEach((id) => (G.$("#" + id).oninput = drawLadder)); G.$("#ld-def").onchange = drawLadder;
+  [["[1, 2, 3]", "1", "3"], ["[1, 2**40]", "1", "1099511627776"], ["[2**63]", "9223372036854775808", "9223372036854775808"], ["[-1, 2**63]", "-1", "9223372036854775808"], ["[2**64]", "18446744073709551616", "18446744073709551616"]]
+    .forEach(([l, a, b]) => G.$("#ld-pre").append(el("button", { onclick: () => { G.$("#ld-lo").value = a; G.$("#ld-hi").value = b; drawLadder(); } }, l)));
+  drawLadder();
+
+  // ---------------- bit visualizer ----------------
+  const FMT = { f32: { e: 8, m: 23 }, f16: { e: 5, m: 10 }, bf16: { e: 8, m: 7 } };
+  const dv = new DataView(new ArrayBuffer(8));
+  const f32bits = (v) => { dv.setFloat32(0, v); return dv.getUint32(0); };
+  const bitsf32 = (u) => { dv.setUint32(0, u >>> 0); return dv.getFloat32(0); };
+  const rne = (x) => { const f = Math.floor(x), d = x - f; return d > 0.5 ? f + 1 : d < 0.5 ? f : f % 2 ? f + 1 : f; };
+  function f16bits(v) {  // double -> half, round to nearest even (like struct.pack('e'))
+    if (Number.isNaN(v)) return 0x7e00;
+    const s = v < 0 || Object.is(v, -0) ? 0x8000 : 0; let a = Math.abs(v);
+    if (a === Infinity) return s | 0x7c00;
+    if (a < 2 ** -14) return s | rne(a / 2 ** -24);              // subnormal (may round up into the first normal: still correct)
+    let e = Math.floor(Math.log2(a)); if (2 ** e > a) e--; if (2 ** (e + 1) <= a) e++;
+    let m = rne((a / 2 ** e - 1) * 1024); if (m === 1024) { m = 0; e++; }
+    if (e > 15) return s | 0x7c00;
+    return s | ((e + 15) << 10) | m;
+  }
+  function bf16bits(v) {  // tinygrad float_to_bf16 on the float32 bits
+    let u = f32bits(Math.fround(v));
+    if (!Number.isFinite(v)) return u >>> 16;
+    u = (u + 0x7fff + ((u >>> 16) & 1)) >>> 0; return (u >>> 16) & 0xffff;
+  }
+  function decode(fmt, bits) {
+    if (fmt === "f32") return bitsf32(bits);
+    if (fmt === "bf16") return bitsf32(bits << 16);
+    const s = bits & 0x8000 ? -1 : 1, e = (bits >> 10) & 31, m = bits & 1023;
+    if (e === 31) return m ? NaN : s * Infinity;
+    return e === 0 ? s * m * 2 ** -24 : s * (1 + m / 1024) * 2 ** (e - 15);
+  }
+  const encode = (fmt, v) => (fmt === "f32" ? f32bits(Math.fround(v)) : fmt === "f16" ? f16bits(v) : bf16bits(v));
+  const hex = (b, n) => "0x" + (b >>> 0).toString(16).padStart(n / 4, "0");
+  const signed = (b, n) => (b >= 2 ** (n - 1) ? b - 2 ** n : b);
+  let bfmt = "f32", bbits = encode("f32", 0.1);
+  function drawBits() {
+    const { e, m } = FMT[bfmt], n = 1 + e + m, box = G.$("#bt-bits"); box.innerHTML = "";
+    for (let i = n - 1; i >= 0; i--) {
+      const kind = i === n - 1 ? "s" : i >= m ? "e" : "m";
+      box.append(el("span", { class: kind + ((i === n - 2 || i === m - 1) ? " gap" : ""), title: `bit ${i}`, onclick: () => { bbits = (bbits ^ (2 ** i)) >>> 0; G.$("#bt-val").value = String(decode(bfmt, bbits)); drawBits(); } }, (bbits >>> i) & 1));
+    }
+    const sign = (bbits >>> (n - 1)) & 1, ex = (bbits >>> m) & ((1 << e) - 1), man = bbits & ((2 ** m) - 1), bias = 2 ** (e - 1) - 1, val = decode(bfmt, bbits);
+    const kindTxt = ex === 0 ? (man ? "subnormal: 0.mantissa × 2^(1−bias)" : "zero") : ex === 2 ** e - 1 ? (man ? "NaN" : "infinity") : "normal: 1.mantissa × 2^(exp−bias)";
+    const kv = G.$("#bt-kv"); kv.innerHTML = "";
+    const row = (k, v) => kv.append(el("span", {}, k), el("span", {}, v));
+    row("sign", sign ? "1 (negative)" : "0 (positive)");
+    row("exponent", `${ex} (bias ${bias} → 2^${ex === 0 ? 1 - bias : ex - bias})`);
+    row("mantissa", `${man} / 2^${m} = ${(man / 2 ** m).toPrecision(8)}`);
+    row("class", kindTxt);
+    kv.append(el("span", {}, "value"), el("b", {}, String(val)));
+    row(`bitcast → uint${n}`, `${bbits} (${hex(bbits, n)})`);
+    row(`bitcast → int${n}`, String(signed(bbits, n)));
+    row("cast → int32", Number.isFinite(val) ? String(Math.trunc(val)) : "(undefined for inf/NaN)");
+    // cast to all three formats from this value
+    const cmp = G.$("#bt-cmp"); cmp.innerHTML = "";
+    for (const f of ["f32", "f16", "bf16"]) {
+      const nb = 1 + FMT[f].e + FMT[f].m, b = encode(f, val), back = decode(f, b);
+      cmp.append(el("div", {}, el("h5", {}, `cast to ${f}`), el("div", {}, `bits  ${hex(b, nb)}`), el("div", {}, `value ${back}`),
+        el("div", { style: `color:${back === val || (Number.isNaN(back) && Number.isNaN(val)) ? "var(--green)" : "var(--red)"}` }, back === val ? "exact" : `error ${(back - val).toPrecision(3)}`)));
+    }
+  }
+  function fromInput() { const v = Number(G.$("#bt-val").value); if (!Number.isNaN(v) || G.$("#bt-val").value.trim().toLowerCase() === "nan") { bbits = encode(bfmt, v); drawBits(); } }
+  G.$("#bt-val").oninput = fromInput;
+  G.$("#bt-fmt").onchange = () => { bfmt = G.$("#bt-fmt").value; fromInput(); };
+  ["1", "-2.5", "0.1", "3.14159", "65504", "1e-8", "Infinity"].forEach((x) => G.$("#bt-pre").append(el("button", { onclick: () => { G.$("#bt-val").value = x; fromInput(); } }, x)));
+  window.ch03bits = { encode, decode, hex };  // exposed for checking against the Python table
+  drawBits();
+
+  // ---------------- dtype game ----------------
+  const Q = await G.loadJSON("../data/ch03_quiz.json");
+  const CHOICES = ["bool", "i8", "i16", "i32", "i64", "u32", "u64", "f16", "f32", "weakint", "weakfloat"];
+  function hint(q) {
+    const c = q.code, d = q.dtype;
+    if (d === "weakfloat") return "A weak float survived: no concrete float took part, so the join stayed weakfloat. It commits to DEFAULT_FLOAT (f32) on read.";
+    if (d === "weakint") return "Weak int: no concrete int took part (bool or a Python scalar). It commits via commit_int on read.";
+    if (/sum\(\)/.test(c)) return "sum accumulates in sum_acc_dtype (≥ i32/u32/f32). Float sums cast back to the input dtype; int sums keep the wide type.";
+    if (/^Tensor\(\[/.test(c) && !/[+\-*\/<]/.test(c.replace(/\[.*\]/, ""))) return "A list commits immediately: floats → DEFAULT_FLOAT, ints → commit_int ladder (i32, i64, u64).";
+    if (d === "bool") return "Comparisons are bool by dtype_from_uop; bool + bool stays bool.";
+    return "least_upper_dtype of the operands; a Python literal stays weak and adopts the tensor's dtype.";
+  }
+  let order = [], qi = 0, score = 0, done = false;
+  function shuffle() { order = Q.map((_, i) => i); for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; } }
+  function showQ() {
+    done = false;
+    const q = Q[order[qi]];
+    G.$("#gm-snip").textContent = q.code + "   →  dtype?";
+    G.$("#gm-score").textContent = `question ${qi + 1}/${Q.length} · score ${score}`;
+    G.$("#gm-msg").textContent = "";
+    const box = G.$("#gm-ans"); box.innerHTML = "";
+    CHOICES.forEach((c) => box.append(el("button", { onclick: (ev) => answer(c, ev.target) }, c)));
+    G.$("#gm-next").disabled = true;
+  }
+  function answer(c, btn) {
+    if (done) return; done = true;
+    const q = Q[order[qi]], ok = c === q.dtype;
+    if (ok) score++;
+    G.$$("#gm-ans button").forEach((b) => { if (b.textContent === q.dtype) b.classList.add("right"); });
+    if (!ok) btn.classList.add("wrong");
+    G.$("#gm-msg").innerHTML = (ok ? "✔ " : `✘ it is <b>${q.dtype}</b>. `) + `value: <code>${q.value}</code>. ` + hint(q);
+    G.$("#gm-hist").append(el("span", { class: ok ? "ok" : "no", title: q.code }, `${q.code.slice(0, 28)} → ${q.dtype}`));
+    G.$("#gm-score").textContent = `question ${qi + 1}/${Q.length} · score ${score}`;
+    G.$("#gm-next").disabled = qi >= Q.length - 1;
+    if (qi >= Q.length - 1) G.$("#gm-msg").innerHTML += ` <b>Done: ${score}/${Q.length}.</b>`;
+  }
+  G.$("#gm-next").onclick = () => { if (qi < Q.length - 1) { qi++; showQ(); } };
+  G.$("#gm-restart").onclick = () => { qi = 0; score = 0; G.$("#gm-hist").innerHTML = ""; shuffle(); showQ(); };
+  shuffle(); showQ();
+})();
+</script>
+</body>
+</html>

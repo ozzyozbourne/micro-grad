@@ -1,0 +1,1465 @@
+{
+ "square": {
+  "title": "L = (x * x).sum()",
+  "graph": {
+   "nodes": [
+    {
+     "id": "n0",
+     "op": "BUFFER",
+     "label": "BUFFER x",
+     "arg": "",
+     "shape": "(3,)",
+     "value": [
+      1.0,
+      2.0,
+      3.0
+     ]
+    },
+    {
+     "id": "n1",
+     "op": "MUL",
+     "label": "MUL",
+     "arg": "",
+     "shape": "(3,)",
+     "value": [
+      1.0,
+      4.0,
+      9.0
+     ]
+    },
+    {
+     "id": "n2",
+     "op": "REDUCE",
+     "label": "REDUCE",
+     "arg": "ADD, 1 axes",
+     "shape": "()",
+     "value": 14.0
+    }
+   ],
+   "edges": [
+    [
+     "n0",
+     "n1",
+     0
+    ],
+    [
+     "n0",
+     "n1",
+     1
+    ],
+    [
+     "n1",
+     "n2",
+     0
+    ]
+   ]
+  },
+  "steps": [
+   {
+    "node": "n2",
+    "kind": "seed",
+    "grad": 1.0,
+    "text": "seed: dL/dL = 1 (Tensor.gradient uses const_like(1.0) when no gradient is passed)"
+   },
+   {
+    "node": "n2",
+    "kind": "rule",
+    "op": "REDUCE",
+    "grad": 1.0,
+    "contrib": [
+     {
+      "src": "n1",
+      "index": 0,
+      "value": [
+       1.0,
+       1.0,
+       1.0
+      ],
+      "accumulated": false,
+      "broadcast_summed": false,
+      "total": [
+       1.0,
+       1.0,
+       1.0
+      ]
+     }
+    ]
+   },
+   {
+    "node": "n1",
+    "kind": "rule",
+    "op": "MUL",
+    "grad": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "contrib": [
+     {
+      "src": "n0",
+      "index": 0,
+      "value": [
+       1.0,
+       2.0,
+       3.0
+      ],
+      "accumulated": false,
+      "broadcast_summed": false,
+      "total": [
+       1.0,
+       2.0,
+       3.0
+      ]
+     },
+     {
+      "src": "n0",
+      "index": 1,
+      "value": [
+       1.0,
+       2.0,
+       3.0
+      ],
+      "accumulated": true,
+      "broadcast_summed": false,
+      "total": [
+       2.0,
+       4.0,
+       6.0
+      ]
+     }
+    ]
+   }
+  ],
+  "result": {
+   "x": [
+    2.0,
+    4.0,
+    6.0
+   ]
+  },
+  "targets": {
+   "x": "n0"
+  }
+ },
+ "neuron": {
+  "title": "L = (x * w + b).relu().sum()",
+  "graph": {
+   "nodes": [
+    {
+     "id": "n0",
+     "op": "CONST",
+     "label": "CONST",
+     "arg": "0.0",
+     "shape": "()",
+     "value": 0.0
+    },
+    {
+     "id": "n1",
+     "op": "BUFFER",
+     "label": "BUFFER x",
+     "arg": "",
+     "shape": "(3,)",
+     "value": [
+      1.0,
+      -2.0,
+      3.0
+     ]
+    },
+    {
+     "id": "n2",
+     "op": "BUFFER",
+     "label": "BUFFER w",
+     "arg": "",
+     "shape": "(3,)",
+     "value": [
+      0.5,
+      0.5,
+      -1.0
+     ]
+    },
+    {
+     "id": "n3",
+     "op": "MUL",
+     "label": "MUL",
+     "arg": "",
+     "shape": "(3,)",
+     "value": [
+      0.5,
+      -1.0,
+      -3.0
+     ]
+    },
+    {
+     "id": "n4",
+     "op": "BUFFER",
+     "label": "BUFFER b",
+     "arg": "",
+     "shape": "(1,)",
+     "value": [
+      0.25
+     ]
+    },
+    {
+     "id": "n5",
+     "op": "ADD",
+     "label": "ADD",
+     "arg": "",
+     "shape": "(3,)",
+     "value": [
+      0.75,
+      -0.75,
+      -2.75
+     ]
+    },
+    {
+     "id": "n6",
+     "op": "CMPLT",
+     "label": "CMPLT",
+     "arg": "",
+     "shape": "(3,)",
+     "value": [
+      true,
+      false,
+      false
+     ]
+    },
+    {
+     "id": "n7",
+     "op": "WHERE",
+     "label": "WHERE",
+     "arg": "",
+     "shape": "(3,)",
+     "value": [
+      0.75,
+      0.0,
+      0.0
+     ]
+    },
+    {
+     "id": "n8",
+     "op": "REDUCE",
+     "label": "REDUCE",
+     "arg": "ADD, 1 axes",
+     "shape": "()",
+     "value": 0.75
+    }
+   ],
+   "edges": [
+    [
+     "n1",
+     "n3",
+     0
+    ],
+    [
+     "n2",
+     "n3",
+     1
+    ],
+    [
+     "n3",
+     "n5",
+     0
+    ],
+    [
+     "n4",
+     "n5",
+     1
+    ],
+    [
+     "n0",
+     "n6",
+     0
+    ],
+    [
+     "n5",
+     "n6",
+     1
+    ],
+    [
+     "n6",
+     "n7",
+     0
+    ],
+    [
+     "n5",
+     "n7",
+     1
+    ],
+    [
+     "n0",
+     "n7",
+     2
+    ],
+    [
+     "n7",
+     "n8",
+     0
+    ]
+   ]
+  },
+  "steps": [
+   {
+    "node": "n8",
+    "kind": "seed",
+    "grad": 1.0,
+    "text": "seed: dL/dL = 1 (Tensor.gradient uses const_like(1.0) when no gradient is passed)"
+   },
+   {
+    "node": "n8",
+    "kind": "rule",
+    "op": "REDUCE",
+    "grad": 1.0,
+    "contrib": [
+     {
+      "src": "n7",
+      "index": 0,
+      "value": [
+       1.0,
+       1.0,
+       1.0
+      ],
+      "accumulated": false,
+      "broadcast_summed": false,
+      "total": [
+       1.0,
+       1.0,
+       1.0
+      ]
+     }
+    ]
+   },
+   {
+    "node": "n7",
+    "kind": "rule",
+    "op": "WHERE",
+    "grad": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "contrib": [
+     {
+      "src": "n5",
+      "index": 1,
+      "value": [
+       1.0,
+       0.0,
+       0.0
+      ],
+      "accumulated": false,
+      "broadcast_summed": false,
+      "total": [
+       1.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "src": "n0",
+      "index": 2,
+      "value": 2.0,
+      "accumulated": false,
+      "broadcast_summed": true,
+      "total": 2.0
+     }
+    ]
+   },
+   {
+    "node": "n6",
+    "kind": "skip",
+    "op": "CMPLT"
+   },
+   {
+    "node": "n5",
+    "kind": "rule",
+    "op": "ADD",
+    "grad": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "contrib": [
+     {
+      "src": "n3",
+      "index": 0,
+      "value": [
+       1.0,
+       0.0,
+       0.0
+      ],
+      "accumulated": false,
+      "broadcast_summed": false,
+      "total": [
+       1.0,
+       0.0,
+       0.0
+      ]
+     },
+     {
+      "src": "n4",
+      "index": 1,
+      "value": [
+       1.0
+      ],
+      "accumulated": false,
+      "broadcast_summed": true,
+      "total": [
+       1.0
+      ]
+     }
+    ]
+   },
+   {
+    "node": "n3",
+    "kind": "rule",
+    "op": "MUL",
+    "grad": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "contrib": [
+     {
+      "src": "n1",
+      "index": 0,
+      "value": [
+       0.5,
+       0.0,
+       -0.0
+      ],
+      "accumulated": false,
+      "broadcast_summed": false,
+      "total": [
+       0.5,
+       0.0,
+       -0.0
+      ]
+     },
+     {
+      "src": "n2",
+      "index": 1,
+      "value": [
+       1.0,
+       -0.0,
+       0.0
+      ],
+      "accumulated": false,
+      "broadcast_summed": false,
+      "total": [
+       1.0,
+       -0.0,
+       0.0
+      ]
+     }
+    ]
+   }
+  ],
+  "result": {
+   "x": [
+    0.5,
+    0.0,
+    -0.0
+   ],
+   "w": [
+    1.0,
+    -0.0,
+    0.0
+   ],
+   "b": [
+    1.0
+   ]
+  },
+  "targets": {
+   "x": "n1",
+   "w": "n2",
+   "b": "n4"
+  }
+ },
+ "matmul": {
+  "title": "L = (a @ c).sum()",
+  "graph": {
+   "nodes": [
+    {
+     "id": "n0",
+     "op": "BUFFER",
+     "label": "BUFFER a",
+     "arg": "",
+     "shape": "(4,)",
+     "value": [
+      1.0,
+      2.0,
+      3.0,
+      4.0
+     ]
+    },
+    {
+     "id": "n1",
+     "op": "RESHAPE",
+     "label": "RESHAPE",
+     "arg": "(2, 2)",
+     "shape": "(2, 2)",
+     "value": [
+      [
+       1.0,
+       2.0
+      ],
+      [
+       3.0,
+       4.0
+      ]
+     ]
+    },
+    {
+     "id": "n2",
+     "op": "RESHAPE",
+     "label": "RESHAPE",
+     "arg": "(2, 1, 2)",
+     "shape": "(2, 1, 2)",
+     "value": [
+      [
+       [
+        1.0,
+        2.0
+       ]
+      ],
+      [
+       [
+        3.0,
+        4.0
+       ]
+      ]
+     ]
+    },
+    {
+     "id": "n3",
+     "op": "BUFFER",
+     "label": "BUFFER c",
+     "arg": "",
+     "shape": "(4,)",
+     "value": [
+      1.0,
+      -1.0,
+      0.0,
+      2.0
+     ]
+    },
+    {
+     "id": "n4",
+     "op": "RESHAPE",
+     "label": "RESHAPE",
+     "arg": "(2, 2)",
+     "shape": "(2, 2)",
+     "value": [
+      [
+       1.0,
+       -1.0
+      ],
+      [
+       0.0,
+       2.0
+      ]
+     ]
+    },
+    {
+     "id": "n5",
+     "op": "RESHAPE",
+     "label": "RESHAPE",
+     "arg": "(1, 2, 2)",
+     "shape": "(1, 2, 2)",
+     "value": [
+      [
+       [
+        1.0,
+        -1.0
+       ],
+       [
+        0.0,
+        2.0
+       ]
+      ]
+     ]
+    },
+    {
+     "id": "n6",
+     "op": "PERMUTE",
+     "label": "PERMUTE",
+     "arg": "(0, 2, 1)",
+     "shape": "(1, 2, 2)",
+     "value": [
+      [
+       [
+        1.0,
+        0.0
+       ],
+       [
+        -1.0,
+        2.0
+       ]
+      ]
+     ]
+    },
+    {
+     "id": "n7",
+     "op": "MUL",
+     "label": "MUL",
+     "arg": "",
+     "shape": "(2, 2, 2)",
+     "value": [
+      [
+       [
+        1.0,
+        0.0
+       ],
+       [
+        -1.0,
+        4.0
+       ]
+      ],
+      [
+       [
+        3.0,
+        0.0
+       ],
+       [
+        -3.0,
+        8.0
+       ]
+      ]
+     ]
+    },
+    {
+     "id": "n8",
+     "op": "PERMUTE",
+     "label": "PERMUTE",
+     "arg": "(2, 0, 1)",
+     "shape": "(2, 2, 2)",
+     "value": [
+      [
+       [
+        1.0,
+        -1.0
+       ],
+       [
+        3.0,
+        -3.0
+       ]
+      ],
+      [
+       [
+        0.0,
+        4.0
+       ],
+       [
+        0.0,
+        8.0
+       ]
+      ]
+     ]
+    },
+    {
+     "id": "n9",
+     "op": "REDUCE",
+     "label": "REDUCE",
+     "arg": "ADD, 1 axes",
+     "shape": "(2, 2)",
+     "value": [
+      [
+       1.0,
+       3.0
+      ],
+      [
+       3.0,
+       5.0
+      ]
+     ]
+    },
+    {
+     "id": "n10",
+     "op": "REDUCE",
+     "label": "REDUCE",
+     "arg": "ADD, 2 axes",
+     "shape": "()",
+     "value": 12.0
+    }
+   ],
+   "edges": [
+    [
+     "n0",
+     "n1",
+     0
+    ],
+    [
+     "n1",
+     "n2",
+     0
+    ],
+    [
+     "n3",
+     "n4",
+     0
+    ],
+    [
+     "n4",
+     "n5",
+     0
+    ],
+    [
+     "n5",
+     "n6",
+     0
+    ],
+    [
+     "n2",
+     "n7",
+     0
+    ],
+    [
+     "n6",
+     "n7",
+     1
+    ],
+    [
+     "n7",
+     "n8",
+     0
+    ],
+    [
+     "n8",
+     "n9",
+     0
+    ],
+    [
+     "n9",
+     "n10",
+     0
+    ]
+   ]
+  },
+  "steps": [
+   {
+    "node": "n10",
+    "kind": "seed",
+    "grad": 1.0,
+    "text": "seed: dL/dL = 1 (Tensor.gradient uses const_like(1.0) when no gradient is passed)"
+   },
+   {
+    "node": "n10",
+    "kind": "rule",
+    "op": "REDUCE",
+    "grad": 1.0,
+    "contrib": [
+     {
+      "src": "n9",
+      "index": 0,
+      "value": [
+       [
+        1.0,
+        1.0
+       ],
+       [
+        1.0,
+        1.0
+       ]
+      ],
+      "accumulated": false,
+      "broadcast_summed": false,
+      "total": [
+       [
+        1.0,
+        1.0
+       ],
+       [
+        1.0,
+        1.0
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "node": "n9",
+    "kind": "rule",
+    "op": "REDUCE",
+    "grad": [
+     [
+      1.0,
+      1.0
+     ],
+     [
+      1.0,
+      1.0
+     ]
+    ],
+    "contrib": [
+     {
+      "src": "n8",
+      "index": 0,
+      "value": [
+       [
+        [
+         1.0,
+         1.0
+        ],
+        [
+         1.0,
+         1.0
+        ]
+       ],
+       [
+        [
+         1.0,
+         1.0
+        ],
+        [
+         1.0,
+         1.0
+        ]
+       ]
+      ],
+      "accumulated": false,
+      "broadcast_summed": false,
+      "total": [
+       [
+        [
+         1.0,
+         1.0
+        ],
+        [
+         1.0,
+         1.0
+        ]
+       ],
+       [
+        [
+         1.0,
+         1.0
+        ],
+        [
+         1.0,
+         1.0
+        ]
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "node": "n8",
+    "kind": "rule",
+    "op": "PERMUTE",
+    "grad": [
+     [
+      [
+       1.0,
+       1.0
+      ],
+      [
+       1.0,
+       1.0
+      ]
+     ],
+     [
+      [
+       1.0,
+       1.0
+      ],
+      [
+       1.0,
+       1.0
+      ]
+     ]
+    ],
+    "contrib": [
+     {
+      "src": "n7",
+      "index": 0,
+      "value": [
+       [
+        [
+         1.0,
+         1.0
+        ],
+        [
+         1.0,
+         1.0
+        ]
+       ],
+       [
+        [
+         1.0,
+         1.0
+        ],
+        [
+         1.0,
+         1.0
+        ]
+       ]
+      ],
+      "accumulated": false,
+      "broadcast_summed": false,
+      "total": [
+       [
+        [
+         1.0,
+         1.0
+        ],
+        [
+         1.0,
+         1.0
+        ]
+       ],
+       [
+        [
+         1.0,
+         1.0
+        ],
+        [
+         1.0,
+         1.0
+        ]
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "node": "n7",
+    "kind": "rule",
+    "op": "MUL",
+    "grad": [
+     [
+      [
+       1.0,
+       1.0
+      ],
+      [
+       1.0,
+       1.0
+      ]
+     ],
+     [
+      [
+       1.0,
+       1.0
+      ],
+      [
+       1.0,
+       1.0
+      ]
+     ]
+    ],
+    "contrib": [
+     {
+      "src": "n2",
+      "index": 0,
+      "value": [
+       [
+        [
+         0.0,
+         2.0
+        ]
+       ],
+       [
+        [
+         0.0,
+         2.0
+        ]
+       ]
+      ],
+      "accumulated": false,
+      "broadcast_summed": true,
+      "total": [
+       [
+        [
+         0.0,
+         2.0
+        ]
+       ],
+       [
+        [
+         0.0,
+         2.0
+        ]
+       ]
+      ]
+     },
+     {
+      "src": "n6",
+      "index": 1,
+      "value": [
+       [
+        [
+         4.0,
+         6.0
+        ],
+        [
+         4.0,
+         6.0
+        ]
+       ]
+      ],
+      "accumulated": false,
+      "broadcast_summed": true,
+      "total": [
+       [
+        [
+         4.0,
+         6.0
+        ],
+        [
+         4.0,
+         6.0
+        ]
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "node": "n6",
+    "kind": "rule",
+    "op": "PERMUTE",
+    "grad": [
+     [
+      [
+       4.0,
+       6.0
+      ],
+      [
+       4.0,
+       6.0
+      ]
+     ]
+    ],
+    "contrib": [
+     {
+      "src": "n5",
+      "index": 0,
+      "value": [
+       [
+        [
+         4.0,
+         4.0
+        ],
+        [
+         6.0,
+         6.0
+        ]
+       ]
+      ],
+      "accumulated": false,
+      "broadcast_summed": false,
+      "total": [
+       [
+        [
+         4.0,
+         4.0
+        ],
+        [
+         6.0,
+         6.0
+        ]
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "node": "n5",
+    "kind": "rule",
+    "op": "RESHAPE",
+    "grad": [
+     [
+      [
+       4.0,
+       4.0
+      ],
+      [
+       6.0,
+       6.0
+      ]
+     ]
+    ],
+    "contrib": [
+     {
+      "src": "n4",
+      "index": 0,
+      "value": [
+       [
+        4.0,
+        4.0
+       ],
+       [
+        6.0,
+        6.0
+       ]
+      ],
+      "accumulated": false,
+      "broadcast_summed": false,
+      "total": [
+       [
+        4.0,
+        4.0
+       ],
+       [
+        6.0,
+        6.0
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "node": "n2",
+    "kind": "rule",
+    "op": "RESHAPE",
+    "grad": [
+     [
+      [
+       0.0,
+       2.0
+      ]
+     ],
+     [
+      [
+       0.0,
+       2.0
+      ]
+     ]
+    ],
+    "contrib": [
+     {
+      "src": "n1",
+      "index": 0,
+      "value": [
+       [
+        0.0,
+        2.0
+       ],
+       [
+        0.0,
+        2.0
+       ]
+      ],
+      "accumulated": false,
+      "broadcast_summed": false,
+      "total": [
+       [
+        0.0,
+        2.0
+       ],
+       [
+        0.0,
+        2.0
+       ]
+      ]
+     }
+    ]
+   }
+  ],
+  "result": {
+   "a": [
+    [
+     0.0,
+     2.0
+    ],
+    [
+     0.0,
+     2.0
+    ]
+   ],
+   "c": [
+    [
+     4.0,
+     4.0
+    ],
+    [
+     6.0,
+     6.0
+    ]
+   ]
+  },
+  "targets": {
+   "a": "n1",
+   "c": "n4"
+  }
+ },
+ "sigmoid": {
+  "title": "L = z.sigmoid().sum()",
+  "graph": {
+   "nodes": [
+    {
+     "id": "n0",
+     "op": "CONST",
+     "label": "CONST",
+     "arg": "1.0",
+     "shape": "()",
+     "value": 1.0
+    },
+    {
+     "id": "n1",
+     "op": "BUFFER",
+     "label": "BUFFER z",
+     "arg": "",
+     "shape": "(2,)",
+     "value": [
+      0.5,
+      -1.0
+     ]
+    },
+    {
+     "id": "n2",
+     "op": "CONST",
+     "label": "CONST",
+     "arg": "-1.4426950408889634",
+     "shape": "()",
+     "value": -1.4427
+    },
+    {
+     "id": "n3",
+     "op": "MUL",
+     "label": "MUL",
+     "arg": "",
+     "shape": "(2,)",
+     "value": [
+      -0.7213,
+      1.4427
+     ]
+    },
+    {
+     "id": "n4",
+     "op": "EXP2",
+     "label": "EXP2",
+     "arg": "",
+     "shape": "(2,)",
+     "value": [
+      0.6065,
+      2.7183
+     ]
+    },
+    {
+     "id": "n5",
+     "op": "ADD",
+     "label": "ADD",
+     "arg": "",
+     "shape": "(2,)",
+     "value": [
+      1.6065,
+      3.7183
+     ]
+    },
+    {
+     "id": "n6",
+     "op": "RECIP",
+     "label": "RECIP",
+     "arg": "",
+     "shape": "(2,)",
+     "value": [
+      0.6225,
+      0.2689
+     ]
+    },
+    {
+     "id": "n7",
+     "op": "REDUCE",
+     "label": "REDUCE",
+     "arg": "ADD, 1 axes",
+     "shape": "()",
+     "value": 0.8914
+    }
+   ],
+   "edges": [
+    [
+     "n1",
+     "n3",
+     0
+    ],
+    [
+     "n2",
+     "n3",
+     1
+    ],
+    [
+     "n3",
+     "n4",
+     0
+    ],
+    [
+     "n0",
+     "n5",
+     0
+    ],
+    [
+     "n4",
+     "n5",
+     1
+    ],
+    [
+     "n5",
+     "n6",
+     0
+    ],
+    [
+     "n6",
+     "n7",
+     0
+    ]
+   ]
+  },
+  "steps": [
+   {
+    "node": "n7",
+    "kind": "seed",
+    "grad": 1.0,
+    "text": "seed: dL/dL = 1 (Tensor.gradient uses const_like(1.0) when no gradient is passed)"
+   },
+   {
+    "node": "n7",
+    "kind": "rule",
+    "op": "REDUCE",
+    "grad": 1.0,
+    "contrib": [
+     {
+      "src": "n6",
+      "index": 0,
+      "value": [
+       1.0,
+       1.0
+      ],
+      "accumulated": false,
+      "broadcast_summed": false,
+      "total": [
+       1.0,
+       1.0
+      ]
+     }
+    ]
+   },
+   {
+    "node": "n6",
+    "kind": "rule",
+    "op": "RECIP",
+    "grad": [
+     1.0,
+     1.0
+    ],
+    "contrib": [
+     {
+      "src": "n5",
+      "index": 0,
+      "value": [
+       -0.3875,
+       -0.0723
+      ],
+      "accumulated": false,
+      "broadcast_summed": false,
+      "total": [
+       -0.3875,
+       -0.0723
+      ]
+     }
+    ]
+   },
+   {
+    "node": "n5",
+    "kind": "rule",
+    "op": "ADD",
+    "grad": [
+     -0.3875,
+     -0.0723
+    ],
+    "contrib": [
+     {
+      "src": "n0",
+      "index": 0,
+      "value": -0.4598,
+      "accumulated": false,
+      "broadcast_summed": true,
+      "total": -0.4598
+     },
+     {
+      "src": "n4",
+      "index": 1,
+      "value": [
+       -0.3875,
+       -0.0723
+      ],
+      "accumulated": false,
+      "broadcast_summed": false,
+      "total": [
+       -0.3875,
+       -0.0723
+      ]
+     }
+    ]
+   },
+   {
+    "node": "n4",
+    "kind": "rule",
+    "op": "EXP2",
+    "grad": [
+     -0.3875,
+     -0.0723
+    ],
+    "contrib": [
+     {
+      "src": "n3",
+      "index": 0,
+      "value": [
+       -0.1629,
+       -0.1363
+      ],
+      "accumulated": false,
+      "broadcast_summed": false,
+      "total": [
+       -0.1629,
+       -0.1363
+      ]
+     }
+    ]
+   },
+   {
+    "node": "n3",
+    "kind": "rule",
+    "op": "MUL",
+    "grad": [
+     -0.1629,
+     -0.1363
+    ],
+    "contrib": [
+     {
+      "src": "n1",
+      "index": 0,
+      "value": [
+       0.235,
+       0.1966
+      ],
+      "accumulated": false,
+      "broadcast_summed": false,
+      "total": [
+       0.235,
+       0.1966
+      ]
+     },
+     {
+      "src": "n2",
+      "index": 1,
+      "value": 0.0548,
+      "accumulated": false,
+      "broadcast_summed": true,
+      "total": 0.0548
+     }
+    ]
+   }
+  ],
+  "result": {
+   "z": [
+    0.235,
+    0.1966
+   ]
+  },
+  "targets": {
+   "z": "n1"
+  }
+ }
+}

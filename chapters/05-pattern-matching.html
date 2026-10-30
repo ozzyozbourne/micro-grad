@@ -1,0 +1,1039 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>5. UPat, PatternMatcher &amp; graph_rewrite — tinygrad internals</title>
+<link rel="stylesheet" href="../assets/vendor/hljs-dark.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/vendor/highlight.min.js"></script>
+<script src="../assets/vendor/dagre.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script src="../assets/chapters.js"></script>
+<script src="../assets/guide.js"></script>
+<style>
+.ch05-panel { background:#0d0f12; border:1px solid var(--line); border-radius:8px; padding:8px 10px; font-family:var(--mono); font-size:12.5px; }
+.ch05-panel h5 { margin:0 0 6px; font-family:var(--sans); color:var(--gold); font-size:12.5px; }
+.ch05-chip { display:inline-block; padding:1px 7px; margin:2px; border-radius:10px; border:1px solid var(--line); background:var(--bg3); white-space:nowrap; }
+.ch05-chip.s1 { border-color:var(--blue); color:var(--blue); } .ch05-chip.s2 { border-color:var(--purple); color:var(--purple); }
+.ch05-rules label { display:flex; gap:8px; align-items:flex-start; padding:3px 6px; border-radius:6px; font-family:var(--mono); font-size:12.5px; color:var(--fg); cursor:pointer; }
+.ch05-rules label:hover { background:var(--bg3); }
+.ch05-rules label.fired { background:rgba(244,211,69,.18); outline:1px solid var(--yellow); }
+.ch05-rules .cnt { margin-left:auto; color:var(--green); white-space:nowrap; }
+.ch05-log { max-height:260px; overflow:auto; }
+.ch05-log div { white-space:pre; }
+.ch05-log .hit { color:var(--yellow); }
+.ch05-log .cur { background:rgba(88,196,221,.18); }
+.ch05-repl td { padding:2px 8px; font-size:12px; font-family:var(--mono); }
+.ch05-badge { display:inline-block; font-family:var(--mono); font-size:12px; padding:2px 8px; border-radius:5px; background:rgba(131,193,103,.15); color:var(--green); border:1px solid rgba(131,193,103,.4); }
+.ch05-badge.bad { background:rgba(252,98,85,.15); color:var(--red); border-color:rgba(252,98,85,.4); }
+.ch05-err { color:var(--red); font-family:var(--mono); font-size:13px; }
+.ch05-legend span { display:inline-flex; align-items:center; gap:5px; margin-right:12px; font-size:12px; color:var(--dim); }
+.ch05-legend i { width:11px; height:11px; border-radius:3px; display:inline-block; }
+.ch05-cmp { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+.ch05-cmp > div > h5 { margin:0 0 4px; color:var(--teal); font-size:14px; }
+.ch05-stages { display:grid; grid-template-columns: repeat(3, 1fr); gap:10px; margin:14px 0; }
+.ch05-stages > div { background:var(--bg2); border:1px solid var(--line); border-radius:10px; padding:10px 12px; font-size:14px; }
+.ch05-stages b { color:var(--yellow); font-family:var(--mono); }
+.demo .uopgraph svg { height:auto; }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="sidebar" id="sidebar"></nav>
+<main>
+  <h1><span class="chnum">CHAPTER 05</span>UPat, PatternMatcher &amp; graph_rewrite</h1>
+  <p class="lede">tinygrad has no "pass manager" full of hand-written tree walkers. Nearly every compiler pass, from scheduling and
+  rangeify to symbolic simplification, devectorizing, decompositions, rendering C, and even compiling the patterns themselves, is the
+  same three-piece machine: a list of <b>(pattern, function)</b> rules (a <code>PatternMatcher</code>), a pattern language (<code>UPat</code>),
+  and one engine that applies the rules to a whole graph until nothing changes (<code>graph_rewrite</code>). This chapter builds that machine up
+  from a four-rule toy, then takes the real one apart down to its stack discipline. A JavaScript port of it, checked against 20 real traces,
+  lets you step through it.</p>
+
+  <!-- ===================================================================== -->
+  <h2 id="intuition"><span class="sec">5.1</span>Intuition: find-and-replace for graphs</h2>
+  <p>You know find-and-replace for text, and regexes with capture groups: <code>s/(\w+) \* 1/\1/</code>. Graph rewriting is the same idea
+  over a DAG: a <b>pattern</b> describes a small subgraph shape with named holes, and a <b>function</b> receives whatever filled the holes and
+  returns a replacement subgraph, or <code>None</code> for "never mind". The engine's job is to find every place a pattern applies, including places
+  that only appear <em>after</em> another rewrite, and to rebuild the graph around the replacements.</p>
+  <div class="callout analogy"><span class="title">Analogy: algebra homework</span>
+  When you simplify \( (x\cdot 1 + (2+3))\cdot(1+0) \) by hand, you apply a few identities (\(x\cdot1=x\), \(x+0=x\), "add numbers") wherever they
+  fit, innermost first, until none fits: \(x+5\). The identities are the PatternMatcher. "Innermost first, repeat until nothing changes" is
+  <code>graph_rewrite</code>. tinygrad's compiler is thousands of such identities, organised into ~40 named rewrite passes.</div>
+  <div class="callout aha"><span class="title">Why build a compiler this way?</span>
+  <ul style="margin:4px 0">
+    <li><b>Rules are local and declarative.</b> Each rule states one fact about one shape. Adding an optimization means appending a tuple, not
+    threading a new case through a visitor.</li>
+    <li><b>Composition is <code>+</code>.</b> <code>sym = symbolic + pm_simplify_valid + PatternMatcher([...])</code>. Passes are mixed
+    and matched per stage.</li>
+    <li><b>One engine means one set of guarantees:</b> fixed point, hash-consed sharing preserved, cycle detection, tracing for VIZ, and
+    match statistics, all for free in every pass.</li>
+  </ul></div>
+
+  <!-- ===================================================================== -->
+  <h2 id="upat"><span class="sec">5.2</span><code>UPat</code>: the pattern language</h2>
+  <p>A <a class="src" data-path="tinygrad/uop/ops.py" data-line="1404">UPat</a> mirrors a UOp's fields, but every field is a <em>constraint</em>
+  (<code>None</code> = "anything"):</p>
+  <table>
+    <tr><th>field</th><th>meaning</th></tr>
+    <tr><td><code>op</code></td><td>an <code>Ops</code>, or a tuple/set of them (e.g. <code>GroupOp.ALU</code>); stored as a tuple</td></tr>
+    <tr><td><code>dtype</code></td><td>a DType or a tuple of DTypes (stored as <code>match_dtype</code>)</td></tr>
+    <tr><td><code>src</code></td><td><b>tuple</b>: match the sources in this order · <b>list</b>: try <em>every permutation</em> (commutative ops) · a single <b>UPat</b>: every source must match it, any number of them</td></tr>
+    <tr><td><code>arg</code></td><td>must equal the node's arg</td></tr>
+    <tr><td><code>name</code></td><td>bind the matched UOp to this keyword for the function. The same name used twice must bind the <em>same object</em> (hash-consing makes that an <code>is</code> check)</td></tr>
+    <tr><td><code>allow_any_len</code></td><td>the tuple is a prefix: extra sources are allowed</td></tr>
+    <tr><td><code>location</code></td><td>file:line where the UPat was written, recorded automatically for match stats and VIZ</td></tr>
+  </table>
+  <p>Shorthands: <code>UPat.var("x")</code> = <code>UPat(name="x")</code> (anything); <code>UPat.cvar("c")</code> = a named CONST;
+  <code>UPat.const(dt, 0)</code>/<code>UPat.cvar(arg=1)</code> = a specific constant; <code>UPat.any(a, b)</code> = alternatives;
+  <code>.or_casted()</code>, <code>.or_after()</code>. And the <b>operator DSL</b>: <code>UPat</code> inherits the same operator mixin as
+  <code>Tensor</code> and <code>UOp</code> (<code>tinygrad/mixin/elementwise.py</code>), so <code>UPat.var("x") + 0</code> runs the
+  <em>exact same</em> <code>__add__ → _binop → alu</code> path. UPat only overrides the last step:</p>
+  <div class="codecap"><b>tinygrad/uop/ops.py:1491–1493</b> — commutative ops get a <em>list</em> src</div>
+  <pre><code class="language-python">  def alu(self, op:Ops, *src:UPat):
+    asrc = (self,)+src
+    return UPat(op, dtypes.bool if op in GroupOp.Comparison else asrc[-1].match_dtype, list(asrc) if op in GroupOp.Commutative else asrc)</code></pre>
+  <p>So <code>UPat.var("x") * 1</code> also matches <code>1*x</code>, with no extra rule. The matcher itself (the interpreted version) is short:</p>
+  <div class="codecap"><b>tinygrad/uop/ops.py:1495–1511</b> — <a class="src" data-path="tinygrad/uop/ops.py" data-line="1495">UPat.match</a></div>
+  <pre><code class="language-python">  def match(self:UPat, uop:UOp, store:dict[str, UOp]) -&gt; list[dict[str, UOp]]:
+    if self.is_any: return flatten([x.match(uop, store.copy()) for x in self.src[0]])
+    if (self.op is not None and uop.op not in self.op) or \
+       (self.name is not None and store.setdefault(self.name, uop) is not uop) or \
+       (self.match_dtype is not None and uop.dtype not in self.match_dtype) or \
+       (self.arg is not None and self.arg != uop.arg) or \
+       (len(uop.src) &lt; self.required_len) or \
+       (self.strict_length and len(uop.src) != self.required_len): return []
+    if self.src is None: return [store]
+    res: list[dict[str, UOp]] = []
+    for vp in self.src:
+      stores, new_stores = [store.copy()], []
+      for uu, vv in zip(uop.src, vp):
+        for s in stores: new_stores.extend(vv.match(uu, s))
+        stores, new_stores = new_stores, []
+      res.extend(stores)
+    return res</code></pre>
+  <p>It returns a <em>list</em> of bindings (one per way the pattern fits), each a dict <code>name → UOp</code>. Note
+  <code>store.setdefault(self.name, uop) is not uop</code>: that line enforces "same name, same object".</p>
+  <div class="codecap"><b>examples/05_pattern_matching.py</b> — run with <code>DEV=CPU python3 examples/05_pattern_matching.py</code> (full source in 5.4)</div>
+  <pre class="output"><code>=== 1. a UPat is a template; UPat.var(&#x27;x&#x27;) matches anything and names it ===
+op: (Ops.MUL,) | src permutations tried: 2 | early_reject: {Ops.CONST}
+match x*1: [{&#x27;x&#x27;: &#x27;x&#x27;}]
+match 1*x: [{&#x27;x&#x27;: &#x27;x&#x27;}]  &lt;- commutative: src is a list, so both orders are tried
+match x*2: []</code></pre>
+  <p><code>early_reject</code> is a cheap prefilter computed from the pattern. Here the pattern needs a CONST among the sources, so a MUL
+  whose sources contain no CONST is rejected before any matching code runs.</p>
+
+  <!-- ===================================================================== -->
+  <h2 id="pm"><span class="sec">5.3</span><code>PatternMatcher</code>: rules indexed by op</h2>
+  <p>A <a class="src" data-path="tinygrad/uop/ops.py" data-line="1544">PatternMatcher</a> is a list of <code>(UPat, fxn)</code>. At construction
+  it builds <code>pdict</code>, a map from each op to the list of rules whose root can be that op. Rewriting one node then means:
+  look up the node's op, skip rules whose <code>early_reject</code> set isn't contained in the node's source ops, and try the rest
+  <b>in order</b>. The first rule whose function returns something other than <code>None</code> (and other than the node itself) wins.</p>
+  <div class="codecap"><b>tinygrad/uop/ops.py:1544–1568</b></div>
+  <pre><code class="language-python">class PatternMatcher:
+  def __init__(self, patterns:Sequence[tuple[UPat, Callable|tuple]], compiled=bool(getenv(&quot;UPAT_COMPILE&quot;, 1))):
+    # if this comes from a pickle, we reconstruct the lambda functions here
+    self.patterns:list[tuple[UPat, Callable]] = [(p,types.FunctionType(*fxn) if isinstance(fxn, tuple) else fxn) for p,fxn in patterns]
+    # NOTE: use of DefaultDict here is very dangerous! all keys will live for the lifetime of the PatternMatcher!
+    self.pdict: dict[Ops, list[list]] = {}
+    # uop is required, arg is optional
+    for p,fxn in self.patterns:
+      assert p.op is not None
+      entry: list = [p, None, p.early_reject]
+      entry[1] = upat_deferred_compile(p, fxn, entry) if compiled else upat_interpret(p, fxn)
+      for uop in p.op: self.pdict.setdefault(uop, []).append(entry)
+
+  def __reduce__(self): return PatternMatcher, ([(x,deconstruct_function(fxn) if fxn.__name__ == &quot;&lt;lambda&gt;&quot; else fxn) for x,fxn in self.patterns],)
+
+  @functools.cache  # pylint: disable=method-cache-max-size-none
+  def __add__(self, more:PatternMatcher) -&gt; PatternMatcher: return PatternMatcher(self.patterns+more.patterns)
+
+  def rewrite(self, uop:UOp, ctx=None):
+    if len(pats:=self.pdict.get(uop.op, [])):
+      if (ler:=uop.__dict__.get(&#x27;_src_ops&#x27;)) is None: uop.__dict__[&#x27;_src_ops&#x27;] = ler = {u.op for u in uop.src}
+      for _,match,early_reject in pats:
+        if not early_reject.issubset(ler): continue
+        if (ret:=match(uop, ctx)) is not None and ret is not uop: return ret
+    return None</code></pre>
+  <ul>
+    <li><b><code>None</code> means "no match, keep trying".</b> A function may decline a match after inspecting it (e.g. "only if the constant
+    fits in the dtype"). Many real rules are <code>lambda ...: X if condition else None</code>.</li>
+    <li><b>Rule order matters</b> within an op. In <code>symbolic_simple</code>, the cheap identities come before the general folders.</li>
+    <li>A function can take a <code>ctx</code> keyword. If it does, it receives the context object passed to <code>graph_rewrite</code> (5.8).</li>
+    <li><code>__add__</code> concatenates pattern lists and is <code>functools.cache</code>d, so <code>symbolic+pm_x</code> built in a hot path is
+    created once.</li>
+  </ul>
+  <pre class="output"><code>=== 2. a tiny PatternMatcher: identities + constant folding ===
+before: ((x*1+(2+3))*(1+0))
+after : (x+5)
+pdict keys (rules are indexed by op): {&#x27;MUL&#x27;: 2, &#x27;ADD&#x27;: 2}
+
+=== 3. returning None means &#x27;no match, try the next rule&#x27; ===
+x*2 -&gt; (x+x)    x*3 -&gt; (x*3)  (fxn returned None: unchanged)</code></pre>
+
+  <!-- ===================================================================== -->
+  <h2 id="build"><span class="sec">5.4</span>Teach by building: a four-rule simplifier</h2>
+  <p>Here is the complete example. Sections 2–3 are the toy simplifier above. The rest of this chapter explains sections 4–8.</p>
+  <div class="codecap"><b>examples/05_pattern_matching.py</b></div>
+  <pre><code class="language-python"># Chapter 5 — UPat, PatternMatcher &amp; graph_rewrite.  Run with:  DEV=CPU python3 examples/05_pattern_matching.py
+# Builds a tiny rewrite system from scratch, then looks at the real machinery underneath it.
+import json, pathlib
+from tinygrad.uop import Ops
+from tinygrad.uop.ops import UOp, UPat, PatternMatcher, graph_rewrite
+from tinygrad.uop.upat import _get_code
+from tinygrad.uop.symbolic import symbolic_simple, symbolic, sym
+
+def section(t): print(f&quot;\n=== {t} ===&quot;)
+x = UOp.variable(&quot;x&quot;, 0, 10)
+c = UOp.const
+R = lambda u: u.render(simplify=False)     # render WITHOUT running symbolic, so we see the raw graph
+
+section(&quot;1. a UPat is a template; UPat.var(&#x27;x&#x27;) matches anything and names it&quot;)
+p = UPat.var(&quot;x&quot;) * 1                      # operator overloading builds UPat(Ops.MUL, src=[UPat(name=&#x27;x&#x27;), UPat.cvar(arg=1)])
+print(&quot;op:&quot;, p.op, &quot;| src permutations tried:&quot;, len(p.src), &quot;| early_reject:&quot;, p.early_reject)
+print(&quot;match x*1:&quot;, [{k: R(v) for k, v in m.items()} for m in p.match(x * 1, {})])
+print(&quot;match 1*x:&quot;, [{k: R(v) for k, v in m.items()} for m in p.match(c(1) * x, {})], &quot; &lt;- commutative: src is a list, so both orders are tried&quot;)
+print(&quot;match x*2:&quot;, p.match(x * 2, {}))
+
+section(&quot;2. a tiny PatternMatcher: identities + constant folding&quot;)
+tiny = PatternMatcher([
+  (UPat.var(&quot;x&quot;) * 1, lambda x: x),                                                       # x*1 -&gt; x
+  (UPat.var(&quot;x&quot;) + 0, lambda x: x),                                                       # x+0 -&gt; x
+  (UPat(Ops.ADD, src=(UPat.cvar(&quot;a&quot;), UPat.cvar(&quot;b&quot;))), lambda a, b: c(a.arg + b.arg)),   # const+const
+  (UPat(Ops.MUL, src=(UPat.cvar(&quot;a&quot;), UPat.cvar(&quot;b&quot;))), lambda a, b: c(a.arg * b.arg)),   # const*const
+])
+e = (x * 1 + (c(2) + 3)) * (c(1) + 0)
+print(&quot;before:&quot;, R(e))
+print(&quot;after :&quot;, R(graph_rewrite(e, tiny)))
+print(&quot;pdict keys (rules are indexed by op):&quot;, {k.name: len(v) for k, v in tiny.pdict.items()})
+
+section(&quot;3. returning None means &#x27;no match, try the next rule&#x27;&quot;)
+only_small = PatternMatcher([(UPat.var(&quot;x&quot;) * UPat.cvar(&quot;k&quot;), lambda x, k: x + x if k.arg == 2 else None)])
+print(&quot;x*2 -&gt;&quot;, R(graph_rewrite(x * 2, only_small)), &quot;   x*3 -&gt;&quot;, R(graph_rewrite(x * 3, only_small)), &quot; (fxn returned None: unchanged)&quot;)
+
+section(&quot;4. the order nodes are matched in: default vs bottom_up=True&quot;)
+class Logged(PatternMatcher):
+  log: list = []
+  def rewrite(self, uop, ctx=None):
+    ret = super().rewrite(uop, ctx)
+    Logged.log.append([R(uop), None if ret is None else R(ret)])
+    return ret
+logged = Logged(tiny.patterns)
+traces = {}
+for bu in (False, True):
+  Logged.log = []
+  out = graph_rewrite(e, logged, bottom_up=bu)
+  traces[&quot;bottom_up&quot; if bu else &quot;default&quot;] = {&quot;result&quot;: R(out), &quot;log&quot;: Logged.log}
+  print(f&quot;bottom_up={bu}: result {R(out)}&quot;)
+  for i, (before, after) in enumerate(Logged.log): print(f&quot;   {i:2d}. try {before:22s} -&gt; {after if after else &#x27;(no match)&#x27;}&quot;)
+
+section(&quot;5. fixed point: a rewritten node is rewritten again (unless walk=True)&quot;)
+expand = PatternMatcher([(UPat.var(&quot;x&quot;) * 4, lambda x: (x * 2) * 2), (UPat.var(&quot;x&quot;) * 2, lambda x: x + x)])
+print(&quot;graph_rewrite(x*4)            -&gt;&quot;, R(graph_rewrite(x * 4, expand)))
+print(&quot;graph_rewrite(x*4, walk=True) -&gt;&quot;, R(graph_rewrite(x * 4, expand, walk=True)), &quot; (single pass, no re-traversal of the replacement)&quot;)
+
+section(&quot;6. ctx: rules can read/write shared state (here: count the CONSTs we fold)&quot;)
+counting = PatternMatcher([(UPat(Ops.ADD, src=(UPat.cvar(&quot;a&quot;), UPat.cvar(&quot;b&quot;))), lambda ctx, a, b: ctx.append(a.arg + b.arg) or c(a.arg + b.arg))])
+seen: list = []
+print(&quot;result:&quot;, R(graph_rewrite(c(1) + 2 + 3 + 4, counting, ctx=seen)), &quot; ctx after:&quot;, seen)
+
+section(&quot;7. UPats are compiled to Python source (upat.py)&quot;)
+code, consts = _get_code(UPat.var(&quot;x&quot;) * 1, has_ctx=False)
+print(code.split(&quot;\n&quot;, 1)[1]); print(&quot;constants:&quot;, consts)
+code, consts = _get_code((UPat.var(&quot;x&quot;) // UPat.cvar(&quot;c1&quot;)) // UPat.cvar(&quot;c2&quot;), has_ctx=False)
+print(code.split(&quot;\n&quot;, 1)[1])
+
+section(&quot;8. the real matchers are just bigger lists of the same thing&quot;)
+for name, pm in [(&quot;symbolic_simple&quot;, symbolic_simple), (&quot;symbolic&quot;, symbolic), (&quot;sym&quot;, sym)]:
+  print(f&quot;{name:16s} {len(pm.patterns):4d} rules over {len(pm.pdict):2d} ops&quot;)
+print(&quot;symbolic_simple on our expression:&quot;, R(graph_rewrite(e, symbolic_simple)))
+print(&quot;composition is &#x27;+&#x27;:&quot;, len((tiny + expand).patterns), &quot;rules&quot;)
+
+pathlib.Path(__file__).resolve().parent.parent.joinpath(&quot;data&quot;, &quot;ch05_traces.json&quot;).write_text(json.dumps(traces, indent=1))</code></pre>
+
+  <div class="demo" id="demo-rules">
+    <div class="demo-title">Demo · write your own rule set (toggle panel)</div>
+    <div class="demo-desc">Tick rules to build a PatternMatcher, pick an expression and an engine mode, and the JS mirror of
+    <code>graph_rewrite</code> runs immediately. You see the input and output graphs, every call into the matcher, and how often each rule fired.
+    The rule texts are the actual Python used in <code>examples/05_capture_traces.py</code>. When your choice matches one of the 20 captured
+    Python runs, the badge compares the JS result with tinygrad's. Things to try: drop <code>cadd</code> and watch <code>2+3</code> survive; enable
+    <code>xx</code> + <code>mul2</code> on <code>x+x</code> (an infinite loop: see how each mode fails or doesn't); compare <code>default</code> and <code>walk</code> on <code>x*4</code>.</div>
+    <div class="row">
+      <div class="col" style="flex:1 1 360px"><div class="ch05-rules" id="ch05-rulebox"></div></div>
+      <div class="col" style="flex:1 1 300px">
+        <div class="controls"><label>expression <select id="ch05-expr"></select></label></div>
+        <div class="controls"><label>mode <select id="ch05-mode"><option>default</option><option>bottom_up</option><option>walk</option><option>walk+bottom_up</option></select></label></div>
+        <div id="ch05-res" style="font-family:var(--mono);font-size:14px;margin:8px 0"></div>
+        <div id="ch05-verify"></div>
+        <pre style="font-size:11.5px;margin-top:8px;white-space:pre-wrap"><code id="ch05-pycode" class="nohl"></code></pre>
+      </div>
+    </div>
+    <div class="row">
+      <div class="col"><div style="color:var(--dim);font-size:13px">input</div><div id="ch05-gin"></div></div>
+      <div class="col"><div style="color:var(--dim);font-size:13px">output</div><div id="ch05-gout"></div></div>
+      <div class="col" style="flex:1 1 260px"><div class="ch05-panel ch05-log" id="ch05-calls"></div></div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <h2 id="compile"><span class="sec">5.5</span>Under the hood: UPats compile to Python source</h2>
+  <p>Interpreting <code>UPat.match</code> for every rule on every node is slow, since patterns are tried millions of times per model. So by
+  default (<code>UPAT_COMPILE=1</code>) each rule is <b>compiled to a Python function</b>. Compilation is <b>lazy</b>: a rule's slot in
+  <code>pdict</code> starts as a stub that compiles the real matcher on its first call, overwrites itself (<code>entry[1] = …</code>), and runs it:</p>
+  <div class="codecap"><b>tinygrad/uop/ops.py:1537–1542</b></div>
+  <pre><code class="language-python">def upat_deferred_compile(p:UPat, fxn:Callable, entry:list) -&gt; Callable:
+  def lazy_compile(uop, ctx):
+    from tinygrad.uop.upat import upat_compile
+    entry[1] = upat_compile(p, fxn)
+    return entry[1](uop, ctx)
+  return lazy_compile</code></pre>
+  <p>The compiler in <a class="src" data-path="tinygrad/uop/upat.py" data-line="17">tinygrad/uop/upat.py</a> uses tinygrad's own machinery
+  on itself. <code>_get_clause</code> turns a UPat into a <b>UOp graph</b> of predicates: <code>AND</code>/<code>OR</code> nodes, <code>CUSTOM</code>
+  nodes holding format strings such as <code>"{0}.op is {1}"</code>, <code>STORE</code> for name bindings, <code>INDEX</code> for "src[i] of", and
+  <code>PYLITERAL</code> for Python constants. Then two PatternMatchers rewrite that graph: <code>pm_proc</code> flattens nested ANDs, multiplies
+  out ORs (one per permutation) and turns duplicate name bindings into <code>is</code> checks; <code>pm_renderer</code> collapses everything
+  into strings. <code>_final_render</code> prints <code>if …: return _ret</code> lines, and the result is <code>exec</code>'d. This is where
+  CUSTOM, CUSTOMI and PYLITERAL from the Ops atlas (<a href="04-uop.html#ops">Ch 4</a>) live.</p>
+  <pre class="output"><code>=== 7. UPats are compiled to Python source (upat.py) ===
+def compiled_match(uop, ctx):
+  if uop.op is a0 and len(uop.src) == 2:
+    if uop.src[1].op is a1 and uop.src[1].arg == 1 and (_ret:=_fxn(x=uop.src[0])) is not None: return _ret
+    if uop.src[0].op is a1 and uop.src[0].arg == 1 and (_ret:=_fxn(x=uop.src[1])) is not None: return _ret
+  return None
+constants: {&#x27;a0&#x27;: Ops.MUL, &#x27;a1&#x27;: Ops.CONST}
+def compiled_match(uop, ctx):
+  if uop.op is a0 and len(uop.src) == 2 and uop.src[0].op is a0 and len(uop.src[0].src) == 2 and uop.src[0].src[1].op is a1 and uop.src[1].op is a1 and (_ret:=_fxn(x=uop.src[0].src[0], c1=uop.src[0].src[1], c2=uop.src[1])) is not None: return _ret
+  return None</code></pre>
+  <p>Read the first function: the list src of <code>x*1</code> became <b>two</b> <code>if</code> lines, one per permutation, tried in written order
+  first. Constants were hoisted into globals (<code>a0</code>, <code>a1</code>), so the check is an identity test. The bound names become
+  keyword arguments to <code>_fxn</code>, the user's lambda. Patterns too complex to compile (≥4 OR-clauses) raise
+  <code>UPatCompileError</code> and need <code>compiled=False</code>, which uses the interpreter <code>upat_interpret</code>.</p>
+  <details class="deep-dive"><summary>Deep dive: <code>upat.py</code>'s two internal matchers</summary>
+  <div class="codecap"><b>tinygrad/uop/upat.py:114–131</b></div>
+  <pre><code class="language-python">pm_proc = PatternMatcher([(UPat(Ops.AND, name=&quot;a&quot;), do_process_and)], compiled=False)
+
+# renderer
+def wrap(ctx, x) -&gt; UOp:
+  ctx[ret:=f&quot;a{len(ctx)}&quot;] = x.arg
+  return UOp(Ops.CUSTOMI, arg=(ret, dtypes.void))
+
+pm_renderer = PatternMatcher([
+  (UPat(Ops.PYLITERAL, name=&quot;x&quot;), wrap),
+
+  # AND/OR of CUSTOMI fragments becomes a single CUSTOMI
+  (UPat(Ops.AND, src=UPat(Ops.CUSTOMI), name=&quot;x&quot;), lambda x: UOp(Ops.CUSTOMI, arg=(&quot;(&quot; + &#x27; and &#x27;.join(y.arg[0] for y in x.src) + &quot;)&quot;, dtypes.void))),
+  (UPat(Ops.OR, src=UPat(Ops.CUSTOMI), name=&quot;x&quot;), lambda x: UOp(Ops.CUSTOMI, arg=(&quot;(&quot; + &#x27; or &#x27;.join(y.arg[0] for y in x.src) + &quot;)&quot;, dtypes.void))),
+
+  (UPat(Ops.CUSTOM, src=UPat(Ops.CUSTOMI), name=&quot;x&quot;), lambda x: UOp(Ops.CUSTOMI, arg=(x.arg[0].format(*[y.arg[0] for y in x.src]), dtypes.void))),
+  (UPat(Ops.INDEX, src=(UPat(Ops.CUSTOMI, name=&quot;x&quot;), UPat(Ops.CONST, name=&quot;c&quot;))),
+   lambda x,c: x.replace(arg=(x.arg[0]+f&quot;.src[{c.val}]&quot;, dtypes.void)))
+], compiled=False)</code></pre>
+  <p>Both are built with <code>compiled=False</code>, since compiling the compiler's own patterns would recurse. The match statistics in 5.10 show
+  these rules are among the most frequently fired in a whole run, because every user rule gets compiled the first time it's needed.</p></details>
+
+  <!-- ===================================================================== -->
+  <h2 id="engine"><span class="sec">5.6</span><code>graph_rewrite</code> and the <code>unified_rewrite</code> algorithm</h2>
+  <div class="codecap"><b>tinygrad/uop/ops.py:1847–1854</b></div>
+  <pre><code class="language-python">@rewrite_group(new_ctx=False)
+def graph_rewrite(sink:UOp, pm:PatternMatcher, ctx=None, bottom_up=False, name=None, bpm=None, walk=False, enter_calls=False,
+                  init_ctx:type|None=None) -&gt; UOp:
+  if init_ctx is not None:
+    assert ctx is None
+    ctx = init_ctx()
+  rewrite_ctx = RewriteContext(pm if not bottom_up else None, pm if bottom_up else bpm, ctx, enter_calls)
+  return rewrite_ctx.walk_rewrite(sink) if walk else rewrite_ctx.unified_rewrite(sink)</code></pre>
+  <p>The arguments: <code>pm</code> is the matcher. <code>bottom_up=True</code> means "use <code>pm</code> as the <b>b</b>ottom-up matcher
+  <code>bpm</code> instead of the top-down <code>pm</code>"; you can also pass both, <code>pm</code> plus an extra <code>bpm=</code>. <code>ctx</code>
+  (or <code>init_ctx</code>, a class to instantiate) is handed to rules. <code>walk=True</code> switches to the single-pass driver.
+  <code>enter_calls</code> makes the engine descend into CALL bodies (normally a kernel's AST is opaque to graph-level passes).
+  <code>name</code> labels the pass in VIZ. All state lives in a <a class="src" data-path="tinygrad/uop/ops.py" data-line="1733">RewriteContext</a>:
+  <code>replace: dict[UOp, UOp]</code>, the memo "this original node has finished rewriting into that node", plus a cache for the bottom-up matcher.</p>
+  <p><a class="src" data-path="tinygrad/uop/ops.py" data-line="1776">unified_rewrite</a> is an iterative post-order traversal with an explicit stack of
+  <code>(n, stage, new_n)</code> triples (no Python recursion, so 100k-node graphs are fine). Every node passes through up to three stages:</p>
+  <div class="ch05-stages">
+    <div><b>stage 0 · descend</b><br>If there is a bottom-up matcher, apply it to <code>n</code> repeatedly until it returns <code>None</code>
+    (a fixed point; a repeated node raises <i>infinite loop in fixed_point_rewrite</i>). Then push <code>(n, 1, new_n)</code> and push the srcs of
+    <code>new_n</code> (reversed, skipping any already on the stack) for stage 0.</div>
+    <div><b>stage 1 · rebuild</b><br>All srcs should now be in <code>replace</code>. If one isn't, park this entry in a <code>waitlist</code> keyed on
+    that src. If no src changed, run the top-down matcher <code>pm</code> on the node. No match → done, <code>replace[n] = new_n</code>.
+    If srcs changed, build the new node from the rewritten srcs. Either way, the result <b>goes back through stage 0</b> and <code>(n, 2, result)</code> waits for it.</div>
+    <div><b>stage 2 · link</b><br>When the result has finished its own rewriting, <code>replace[n] = replace[result]</code>. That is the
+    <b>fixed point</b>: a replacement is itself rewritten until nothing matches. Finishing a node releases everything on its waitlist.</div>
+  </div>
+  <div class="codecap"><b>tinygrad/uop/ops.py:1776–1845</b></div>
+  <pre><code class="language-python">  def unified_rewrite(self, root:UOp) -&gt; UOp:
+    stack: collections.deque[tuple[UOp, int, UOp]] = collections.deque([(root, 0, root)])
+    on_stack = {root}  # all UOps either on the stack or in self.replace, i.e. dont have to be placed again
+    waitlist: dict[UOp, list[tuple[UOp, int, UOp]]] = {}  # UOps waiting on a dependency to be in self.replace
+    while stack:
+      if len(stack) &gt; REWRITE_STACK_LIMIT: raise RuntimeError(&quot;infinite loop in graph_rewrite (stack too big)&quot;)
+      n, stage, new_n = stack.pop()
+      if n in self.replace: continue  # skip any nodes we have seen
+      if stage == 0:
+        # if bottom up, we rewrite this node early. in both cases, we add its srcs to the stack
+        if self.bpm is not None:
+          # apply rewrite rules until a fixed point is reached. may return `uop` itself if PatternMatcher doesn&#x27;t match
+          test_n: UOp|None = n
+          seen = set()
+          try:
+            while test_n is not None:
+              if test_n in seen: raise RuntimeError(&quot;infinite loop in fixed_point_rewrite&quot;)
+              seen.add(test_n)
+              new_n, test_n = test_n, self.cached_bpm_rewrite(test_n)
+          except BottomUpGate:
+            # if the bpm matching raised a gate, we are done with this node and dont continue down the srcs
+            self.replace[n] = unwrap(test_n)
+            if n in waitlist: stack.extend(waitlist.pop(n))
+            continue
+        stack.append((n, 1, new_n))
+        # NOTE: CALLs are handled as a special case: their bodies are not included in the graph_rewrite,
+        # rewrites that need them pass enter_calls=True
+        for x in reversed(new_n.src[1:] if new_n.op is Ops.CALL and not self.enter_calls else new_n.src):
+          if x in on_stack: continue
+          stack.append((x, 0, x))
+          on_stack.add(x)
+      elif stage == 1:
+        skip = int(new_n.op is Ops.CALL and not self.enter_calls)
+        tmp = list(new_n.src[:skip])
+        for x in new_n.src[skip:]:
+          if (rx:=self.replace.get(x, SENTINEL)) is SENTINEL:
+            # source not ready: register in waitlist instead of spinning
+            waitlist.setdefault(x, []).append((n, 1, new_n))
+            break
+          tmp.append(rx)
+        else:
+          # in stage 1, once all srcs are rewritten, rebuild (if changed) or run top-down rewrite
+          if (new_src:=tuple(tmp)) == new_n.src:
+            # if top down, do the rewrite. if no rewrite or bottom up, we are done rewriting this node so we add it to the dict
+            if self.pm is None or (new_src_n:=self.pm_rewrite(new_n)) is None:
+              self.replace[n] = new_n
+              if n in waitlist: stack.extend(waitlist.pop(n))
+              continue
+          else:
+            # if srcs changed from rewrites, construct a new UOp with the new srcs
+            new_src_n = UOp(new_n.op, new_src, new_n.arg)
+          # trigger a rewrite of new_src_n, then after that rewrite is done, link it back to n
+          stack.append((n, 2, new_src_n))
+          stack.append((new_src_n, 0, new_src_n))
+      else:
+        # in stage 2, we link the result of new_n to the result of n
+        if (replaced_new_n:=self.replace.get(new_n, SENTINEL)) is SENTINEL:
+          # not ready: register in waitlist instead of spinning
+          waitlist.setdefault(new_n, []).append((n, 2, new_n))
+        else:
+          # otherwise we are done
+          self.replace[n] = replaced_new_n
+          if n in waitlist: stack.extend(waitlist.pop(n))
+    if root not in self.replace:
+      def label(u:UOp) -&gt; str: return f&quot;{u.op.name}@{id(u):x}&quot;
+      details = [f&quot;  {label(n)} -&gt; {label(new_n)} waits for {label(dep)}&quot;
+                 for dep, waiters in itertools.islice(waitlist.items(), 5) for n, _, new_n in waiters[:1]]
+      raise RuntimeError(&quot;graph_rewrite stalled: unresolved rewrite dependencies (possible cycle). &quot;
+                         &quot;A replacement may depend on the node being rewritten.\n&quot; + &quot;\n&quot;.join(details))
+    return self.replace[root]</code></pre>
+  <div class="callout note">Two subtle consequences you can see in the traces below:
+  <b>(1)</b> in default mode an original node whose sources changed is <em>never matched itself</em>. Only its rebuilt version is. In E1,
+  <code>(x*1+(2+3))</code> is never tried; <code>(x+5)</code> is.
+  <b>(2)</b> <code>pm_rewrite</code> is not cached, but each UOp reaches it at most once, because the <code>replace</code> check at the top skips finished nodes.
+  Hash-consing means a subexpression shared by many parents is rewritten exactly once.</div>
+
+  <h3>The real trace, step by step</h3>
+  <pre class="output"><code>=== 4. the order nodes are matched in: default vs bottom_up=True ===
+bottom_up=False: result (x+5)
+    0. try {}                     -&gt; (no match)
+    1. try x                      -&gt; (no match)
+    2. try 1                      -&gt; (no match)
+    3. try (x*1)                  -&gt; x
+    4. try 2                      -&gt; (no match)
+    5. try 3                      -&gt; (no match)
+    6. try (2+3)                  -&gt; 5
+    7. try 5                      -&gt; (no match)
+    8. try (x+5)                  -&gt; (no match)
+    9. try 0                      -&gt; (no match)
+   10. try (1+0)                  -&gt; 1
+   11. try ((x+5)*1)              -&gt; (x+5)
+bottom_up=True: result (x+5)
+    0. try ((x*1+(2+3))*(1+0))    -&gt; (no match)
+    1. try (x*1+(2+3))            -&gt; (no match)
+    2. try (x*1)                  -&gt; x
+    3. try x                      -&gt; (no match)
+    4. try {}                     -&gt; (no match)
+    5. try (2+3)                  -&gt; 5
+    6. try 5                      -&gt; (no match)
+    7. try (x+5)                  -&gt; (no match)
+    8. try (1+0)                  -&gt; 1
+    9. try 1                      -&gt; (no match)
+   10. try ((x+5)*1)              -&gt; (x+5)</code></pre>
+
+  <div class="demo" id="demo-step">
+    <div class="demo-title">Demo · unified_rewrite, one stack pop at a time</div>
+    <div class="demo-desc">This is a line-by-line JavaScript port of <code>RewriteContext.unified_rewrite</code> and <code>walk_rewrite</code>
+    (<a class="src" data-path="tinygrad/uop/ops.py" data-line="1750">ops.py:1750</a>) with a hash-consed mini-UOp. Each step is one
+    <code>stack.pop()</code>. The node being processed glows yellow; node colors show state. The panels show the live stack (top = right;
+    <span class="ch05-chip s1">stage 1</span> <span class="ch05-chip s2">stage 2</span>), the <code>replace</code> dict, and the matcher calls with the rule that fired.
+    The badge confirms that the JS engine reproduces the captured Python matcher-call log for all 20 (expression, rules, mode) combinations.</div>
+    <div class="controls"><label>expression + rules <select id="ch05-sexpr"></select></label><label>mode <select id="ch05-smode"><option>default</option><option>bottom_up</option><option>walk</option><option>walk+bottom_up</option></select></label>
+      <span id="ch05-allcheck"></span></div>
+    <div class="ch05-legend"><span><i style="background:#888"></i>untouched</span><span><i style="background:#58C4DD"></i>on stack</span><span><i style="background:#9A72AC"></i>waiting (waitlist)</span>
+      <span><i style="background:#83C167"></i>done, unchanged</span><span><i style="background:#FC6255"></i>done, replaced</span><span><i style="background:#F4D345"></i>new node (built by a rewrite)</span></div>
+    <div id="ch05-stepper"></div>
+    <div class="row">
+      <div class="col" style="flex:3 1 460px"><div id="ch05-sgraph"></div></div>
+      <div class="col" style="flex:2 1 300px">
+        <div class="ch05-panel" style="margin-bottom:8px"><h5>stack (top at right)</h5><div id="ch05-sstack"></div></div>
+        <div class="ch05-panel" style="margin-bottom:8px"><h5>replace dict (n → result)</h5><table class="ch05-repl" id="ch05-srepl"></table></div>
+        <div class="ch05-panel ch05-log"><h5>matcher calls</h5><div id="ch05-scalls"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <h2 id="direction"><span class="sec">5.7</span>Top-down vs bottom-up, and why the names look backwards</h2>
+  <p>Look at the two traces again. In <b>default</b> mode (<code>pm</code>, called "top-down" in the source comments), a node is matched
+  <em>after</em> all its sources are finished: <code>{}</code>, <code>x</code>, <code>1</code>, then <code>(x*1)</code>. In <b><code>bottom_up=True</code></b>
+  mode a node is matched <em>before</em> its sources: the whole expression is tried first. The names make sense in tinygrad's VIZ, which draws
+  graphs with sources on <b>top</b> and the SINK at the <b>bottom</b>. "Bottom-up" starts at the sink and works up toward the inputs.
+  (This guide's other chapters usually draw the root on top. The comparison demo below uses VIZ's orientation.)</p>
+  <table>
+    <tr><th></th><th>default (<code>pm</code>)</th><th><code>bottom_up=True</code> (<code>bpm</code>)</th><th><code>walk=True</code></th></tr>
+    <tr><td>when a node is matched</td><td>after its srcs are rewritten (on the rebuilt node)</td><td>before its srcs are visited</td><td>pm: after srcs · bpm: before, once</td></tr>
+    <tr><td>fixed point?</td><td>yes: results go back through stage 0</td><td>yes: rewrites the same node until <code>None</code>, then descends into the result</td><td><b>no</b>: a replacement is used as-is</td></tr>
+    <tr><td>a rule sees</td><td>srcs that are already simplified</td><td>the original, unsimplified srcs</td><td>pm: simplified srcs</td></tr>
+    <tr><td>typical use</td><td>algebra (<code>symbolic</code>), lowering. Most passes.</td><td>passes that must see context before children change it (e.g. <code>substitute</code>, <code>pm_mops</code>, rangeify's apply step, <code>pm_add_control_flow</code>); <code>BottomUpGate</code> stops descent</td><td>"MLIR-style walk": one cheap pass when you know replacements are final (<code>pm_group_gpudims</code>, <code>pm_cast_const</code>, renumbering)</td></tr>
+  </table>
+  <div class="demo" id="demo-cmp">
+    <div class="demo-title">Demo · the same expression, two traversal orders, side by side</div>
+    <div class="demo-desc">Both panels run the JS engine on the same expression and rule set. Press play: at each tick both engines make their
+    next call into the matcher. The node being tried glows, and every node gets a badge with the call numbers that tried it (✓ = a rule fired).
+    Watch the default engine climb from the leaves while the bottom-up engine starts at the root. Then switch the right panel to <code>walk</code>
+    with E4 (<code>x*4</code>) and notice that it stops early.</div>
+    <div class="controls"><label>expression + rules <select id="ch05-cexpr"></select></label><label>right panel <select id="ch05-cmode"><option>bottom_up</option><option>walk</option><option>walk+bottom_up</option></select></label></div>
+    <div id="ch05-cstep"></div>
+    <div class="ch05-cmp"><div><h5>default</h5><div id="ch05-cg1"></div><div class="ch05-panel" id="ch05-cl1" style="margin-top:6px"></div></div>
+      <div><h5 id="ch05-cmtitle">bottom_up=True</h5><div id="ch05-cg2"></div><div class="ch05-panel" id="ch05-cl2" style="margin-top:6px"></div></div></div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <h2 id="fixed"><span class="sec">5.8</span>Fixed points, <code>walk</code>, cycles and <code>ctx</code></h2>
+  <pre class="output"><code>=== 5. fixed point: a rewritten node is rewritten again (unless walk=True) ===
+graph_rewrite(x*4)            -&gt; (x+x+(x+x))
+graph_rewrite(x*4, walk=True) -&gt; (x*2*2)  (single pass, no re-traversal of the replacement)</code></pre>
+  <p>With the default driver, <code>x*4 → (x*2)*2</code> is not the end: the new node goes back through the engine, its inner <code>x*2</code>
+  becomes <code>x+x</code>, the outer <code>(x+x)*2</code> becomes <code>(x+x)+(x+x)</code>, and since hash-consing makes the two <code>x+x</code> one node,
+  the result is a DAG with 2 ADDs, not a tree of 3. With <code>walk=True</code>
+  (<a class="src" data-path="tinygrad/uop/ops.py" data-line="1750">walk_rewrite</a>) the replacement is final, which is cheaper and sometimes
+  exactly what a pass wants.</p>
+  <p>The fixed point has a price: rule sets must be <b>terminating</b>. Two rules that undo each other loop forever. The engine detects this
+  in two ways, and the captured runs of <code>x+x</code> under rules <code>{x+x → x*2, x*2 → x+x}</code> show both:</p>
+  <pre class="output"><code>E1 tiny   default         ((x*1+(2+3))*(1+0))                -&gt; (x+5)   (12 matcher calls)
+E1 tiny   bottom_up       ((x*1+(2+3))*(1+0))                -&gt; (x+5)   (11 matcher calls)
+E1 tiny   walk            ((x*1+(2+3))*(1+0))                -&gt; (x+5)   (11 matcher calls)
+E1 tiny   walk+bottom_up  ((x*1+(2+3))*(1+0))                -&gt; ((x+5)*1)   (5 matcher calls)
+E2 more   default         ((x+0)*(y*1)+0*(x+y))              -&gt; (x*y)   (11 matcher calls)
+E2 more   bottom_up       ((x+0)*(y*1)+0*(x+y))              -&gt; (x*y)   (11 matcher calls)
+E2 more   walk            ((x+0)*(y*1)+0*(x+y))              -&gt; (x*y)   (11 matcher calls)
+E2 more   walk+bottom_up  ((x+0)*(y*1)+0*(x+y))              -&gt; (x*y+0)   (5 matcher calls)
+E3 more   default         ((x+y)*(x+y)*1+(x+2+3))            -&gt; ((x+y)*(x+y)+(x+5))   (14 matcher calls)
+E3 more   bottom_up       ((x+y)*(x+y)*1+(x+2+3))            -&gt; ((x+y)*(x+y)+(x+5))   (11 matcher calls)
+E3 more   walk            ((x+y)*(x+y)*1+(x+2+3))            -&gt; ((x+y)*(x+y)+(x+5))   (12 matcher calls)
+E3 more   walk+bottom_up  ((x+y)*(x+y)*1+(x+2+3))            -&gt; ((x+y)*(x+y)+(x+5))   (3 matcher calls)
+E4 expand default         (x*4)                              -&gt; (x+x+(x+x))   (9 matcher calls)
+E4 expand bottom_up       (x*4)                              -&gt; (x+x+(x+x))   (8 matcher calls)
+E4 expand walk            (x*4)                              -&gt; (x*2*2)   (4 matcher calls)
+E4 expand walk+bottom_up  (x*4)                              -&gt; (x*2*2)   (1 matcher calls)
+E5 loop   default         (x+x)                              -&gt; RuntimeError: infinite loop in graph_rewrite (stack too big)   (250003 matcher calls)
+E5 loop   bottom_up       (x+x)                              -&gt; RuntimeError: infinite loop in fixed_point_rewrite   (2 matcher calls)
+E5 loop   walk            (x+x)                              -&gt; (x*2)   (3 matcher calls)
+E5 loop   walk+bottom_up  (x+x)                              -&gt; (x*2)   (1 matcher calls)</code></pre>
+  <p>Default mode keeps pushing alternately rebuilt nodes until the stack exceeds <code>REWRITE_STACK_LIMIT</code> (250000), after 250003 matcher calls.
+  Bottom-up mode notices on the second call, because the per-node <code>seen</code> set repeats. <code>walk</code> just stops after one rewrite.
+  The table above is also the reference the JS demos are verified against.</p>
+  <h3><code>ctx</code>: state shared between rules</h3>
+  <pre class="output"><code>=== 6. ctx: rules can read/write shared state (here: count the CONSTs we fold) ===
+result: 10  ctx after: [3, 6, 10]</code></pre>
+  <p>A rule function that declares a <code>ctx</code> parameter receives <code>graph_rewrite(..., ctx=…)</code>. Real passes use it for lookup
+  tables and accumulation: <code>_substitute</code>'s ctx is the replacement dict; the renderer's ctx maps UOps to already-rendered strings; rangeify's
+  ctx is an <code>IndexingContext</code>; <code>init_ctx=MapCtx</code> or <code>CountCtx</code> creates a fresh dict or counter per call. Since the
+  engine is deterministic, the order of side effects is well-defined: here <code>[3, 6, 10]</code>, innermost first.</p>
+
+  <div class="quiz" data-answer="2">
+    <div class="q">In default mode, you rewrite <code>((x*1)+(2+3))*(1+0)</code> with the four toy rules. Which node is never passed to the matcher?</div>
+    <button class="opt"><code>(x*1)</code></button><button class="opt"><code>(x+5)</code></button><button class="opt"><code>(x*1+(2+3))</code></button><button class="opt"><code>(1+0)</code></button>
+    <div class="explain">Its srcs changed (<code>x*1→x</code>, <code>2+3→5</code>), so stage 1 builds the new node <code>(x+5)</code> and sends <em>that</em> to stage 0.
+    The original is linked to the result in stage 2 without ever being matched. You can see the gap between calls 7 and 8 of the real trace.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">A rule returns the node it was given (<code>return x</code> where <code>x</code> is the root). What does PatternMatcher do?</div>
+    <button class="opt">Loops forever</button><button class="opt">Treats it as no match and tries the next rule (<code>ret is not uop</code>)</button><button class="opt">Raises an error</button>
+    <div class="explain"><code>if (ret:=match(uop, ctx)) is not None and ret is not uop: return ret</code>, so returning self means "no change".</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">You need a pass that replaces every <code>RESHAPE</code> of a buffer before the pass recurses into that buffer's subgraph (the parent decides what the child becomes). Which mode?</div>
+    <button class="opt"><code>bottom_up=True</code></button><button class="opt">default</button><button class="opt">it doesn't matter: the fixed point is the same</button>
+    <div class="explain">bottom_up matches a node before its sources are visited, so the rule sees the original subgraph. With confluent rules the final fixed point is often the same, but
+    many tinygrad passes are not confluent and rely on order.</div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <h2 id="real"><span class="sec">5.9</span>The real matchers: <code>symbolic_simple</code> and friends</h2>
+  <p>Everything above scales up unchanged. Here is the start of the real <a class="src" data-path="tinygrad/uop/symbolic.py" data-line="124">symbolic_simple</a>.
+  Compare its first rules with our toy:</p>
+  <div class="codecap"><b>tinygrad/uop/symbolic.py:124–169</b></div>
+  <pre><code class="language-python">symbolic_simple = pm_data_invalid + PatternMatcher([
+  # ** self folding **
+  (UPat({Ops.ADD, Ops.XOR, Ops.OR}, src=[UPat.var(&quot;x&quot;), UPat.const(0)]), lambda x: x),  # x+0 / x^0 / x|0 -&gt; x
+  (UPat({Ops.SHL, Ops.SHR}, src=(UPat.var(&quot;x&quot;), UPat.const(0))), lambda x: x),          # x&lt;&lt;0 / x&gt;&gt;0 -&gt; x
+  (UPat.var(&quot;x&quot;) * 1, lambda x: x),    # x*1 -&gt; x
+  (UPat.var(&quot;x&quot;) // UPat.var(&quot;x&quot;), lambda x: x.const_like(1)), # x//x -&gt; 1
+  (UPat.var(&quot;x&quot;) // 1, lambda x: x),   # x//1 -&gt; x
+  (UPat.var(&quot;x&quot;, dtypes.sints+(dtypes.weakint,)) // -1, lambda x: -x), # x//-1 -&gt; -x
+  ((UPat.var(&quot;x&quot;) ^ UPat.var(&quot;y&quot;, dtypes.weakint)) ^ UPat.var(&quot;y&quot;), lambda x,y: x), # (x^y)^y -&gt; x
+  ((UPat.var() % UPat.var(&quot;y&quot;)).named(&quot;base&quot;) % UPat.var(&quot;y&quot;), lambda base,y: base),  # (x%y)%y = -&gt; x%y (rewritten with base for speed)
+  # variations of (x%c)+(x//c)*c = x
+  (UPat(Ops.ADD, dtype=dtypes.weakint, name=&quot;x&quot;), fold_add_divmod_recombine),
+  (UPat.var(&quot;x&quot;, dtype=dtypes.bool) &amp; UPat.cvar(&quot;c&quot;), lambda x,c: x if c.val else c),
+  (UPat.var(&quot;x&quot;, dtype=dtypes.bool) | UPat.cvar(&quot;c&quot;), lambda x,c: c if c.val else x),
+  (UPat.var(&quot;x&quot;, dtype=dtypes.bool).eq(UPat.const(True, dtypes.bool)), lambda x: x),  # x == True -&gt; x
+  (UPat(GroupOp.Idempotent, src=(UPat.var(&quot;x&quot;), UPat.var(&quot;x&quot;))), lambda x: x),
+  (UPat.var(&quot;x&quot;, dtype=dtypes.bool).logical_not().logical_not(), lambda x: x),
+  (UPat.var(&quot;x&quot;, dtype=dtypes.bool).where(UPat.const(True, dtypes.bool), UPat.const(False, dtypes.bool)), lambda x: x),
+  (UPat.var(&quot;x&quot;, dtype=dtypes.bool).where(UPat.const(False, dtypes.bool), UPat.const(True, dtypes.bool)), lambda x: x.logical_not()),
+  # CAST(bool -&gt; int) == const — CAST(True)=1, CAST(False)=0, so fold based on const value
+  (UPat.var(&quot;x&quot;, dtype=dtypes.bool).cast(dtypes.ints+(dtypes.weakint,)).eq(UPat.cvar(&quot;c&quot;)),
+   lambda x,c: x.logical_not() if c.val == 0 else x if c.val == 1 else x.const_like(False)),
+  (UPat.var(&quot;x&quot;, dtype=dtypes.ints+(dtypes.bool, dtypes.weakint)).trunc(), lambda x: x),
+  # ** zero folding **
+  (UPat.var(&quot;x&quot;) &lt; UPat.var(&quot;x&quot;), lambda x: x.const_like(False, dtypes.bool)), # x &lt; x -&gt; False
+  (UPat.var(&quot;x&quot;) % UPat.var(&quot;x&quot;), lambda x: x.const_like(0)), # x%x -&gt; 0
+  (UPat.var(&quot;x&quot;) ^ UPat.var(&quot;x&quot;), lambda x: x.const_like(0)), # x^x -&gt; 0
+  (UPat.var(&quot;x&quot;) &amp; 0, lambda x: x.const_like(0)), # x&amp;0 -&gt; 0
+  # (x&amp;mask)&gt;&gt;k -&gt; x&gt;&gt;k when mask only clears bits below k
+  ((UPat.var(&quot;x&quot;) &amp; UPat.cvar(&quot;mask&quot;)) &gt;&gt; UPat.cvar(&quot;k&quot;),
+   lambda x,mask,k: x &gt;&gt; k.val if x.dtype.const(mask.val | ((1 &lt;&lt; k.val) - 1)) == x.dtype.const(-1) else None),
+  (UPat.var(&quot;x&quot;, dtype=dtypes.ints+(dtypes.bool, dtypes.weakint)).eq(UPat.var(&quot;x&quot;)),
+   lambda x: x.const_like(True, dtypes.bool)), # x == x -&gt; True (only ints)
+  # ** constant folding **
+  # canonicalize casted CONST
+  (UPat(Ops.CAST, dtypes.all, name=&quot;root&quot;, src=(UPat.cvar(&quot;c&quot;),)), lambda root, c: root.const_like(c.val)),
+  # collapse committed const conversions
+  (UPat(Ops.CAST, dtypes.all, name=&quot;root&quot;, src=(UPat(Ops.CAST, dtypes.all, src=(UPat(Ops.CONST, name=&quot;c&quot;),)),)),
+   lambda root,c: root.const_like(c.val)),
+  # one rule per spelling: bare has no width, a pair evaluates at its stated width, mixed commits to the promotion
+  # NOTE: THREEFRY(const,const) folds via its decomposition
+  (UPat(GroupOp.ALU-{Ops.THREEFRY}, src=bare_const, name=&quot;a&quot;), fold_const_alu),
+  (UPat(GroupOp.ALU-{Ops.THREEFRY}, src=casted_const, name=&quot;a&quot;), fold_const_alu),
+  (UPat(GroupOp.Binary-{Ops.THREEFRY}, src=[casted_const, bare_const], name=&quot;a&quot;), lambda a:
+   a.replace(src=tuple(s.ccast(dt) if s.dtype in dtypes.weaks else s for s in a.src))
+   if (dt:=promo_dtype(a.src)) not in dtypes.weaks else None),</code></pre>
+  <ul>
+    <li><code>UPat({Ops.ADD, Ops.XOR, Ops.OR}, src=[UPat.var("x"), UPat.const(0)])</code>: one rule for three ops, with a list src (both orders).</li>
+    <li><code>UPat.var("x") // UPat.var("x")</code>: the same name twice means the same object, so this is \(x/\!/x\), not \(a/\!/b\).</li>
+    <li><code>fold_add_divmod_recombine</code>, a named function, implements \((x\%c) + (x/\!/c)\cdot c \to x\) and its variants (Chapter 6).</li>
+    <li>The constant folding rules (<code>fold_const_alu</code>) call <code>exec_alu</code>, which evaluates the op in Python with the right dtype truncation.</li>
+    <li>The list starts with <code>pm_data_invalid +</code> and ends with <code>+ mop_cleanup</code>: matchers are built by concatenation.</li>
+  </ul>
+  <pre class="output"><code>=== 8. the real matchers are just bigger lists of the same thing ===
+symbolic_simple    74 rules over 38 ops
+symbolic          119 rules over 43 ops
+sym               133 rules over 44 ops
+symbolic_simple on our expression: (x+5)
+composition is &#x27;+&#x27;: 6 rules</code></pre>
+  <p>A codegen pipeline is a <em>sequence</em> of <code>graph_rewrite</code> calls, each with a composed matcher. Here is the beginning of
+  <a class="src" data-path="tinygrad/codegen/__init__.py" data-line="253">full_rewrite_to_sink</a> (Chapter 15):</p>
+  <div class="codecap"><b>tinygrad/codegen/__init__.py:253–282</b></div>
+  <pre><code class="language-python">def full_rewrite_to_sink(ast:UOp, ren:Renderer, optimize:bool=True) -&gt; UOp:
+  if DEBUG &gt;= 5: print(render_uir(ast))
+  if SPEC: type_verify(ast, spec_tensor)
+
+  # resolve UNSHARDs (multi-device UNSHARDs are already resolved by the scheduler; this handles in-kernel shards, e.g. fragments)
+  sink = graph_rewrite(ast, multi_pm, name=&quot;multi_pm&quot;)
+
+  # preprocess
+  sink = graph_rewrite(sink, pm_mops, name=&quot;early movement ops&quot;, bottom_up=True)
+
+  # first we optimize
+  if optimize:
+    # collapse loads reduce (indexing by a tensor)
+    sink = graph_rewrite(sink, pm_load_collapse, name=&quot;load collapse&quot;)
+
+    # split ranges
+    sink = graph_rewrite(sink, pm_split_ranges+pm_flatten_range, init_ctx=MapCtx, name=&quot;split ranges&quot;)
+
+    # symbolic (NOTE: this is a requirement for pm_simplify_ranges to be correct)
+    sink = graph_rewrite(sink, sym+pm_flatten_range, name=&quot;initial symbolic&quot;)
+
+    # optimize (schedule) the AST
+    sink = graph_rewrite(sink, pm_flatten_range+pm_simplify_ranges, init_ctx=MapCtx, name=&quot;simplify ranges&quot;)
+
+    # do postrange optimization, BEAM or hand_coded_optimizations
+    sink = apply_opts(sink, ren, beam=ast.arg.beam)
+
+  # ** expander (expand_rewrite) **
+  # reduce_unparented: a REDUCE whose src folded to a CONST (e.g. x*0) has no parented ranges, collapse it before the expander
+  sink = graph_rewrite(sink, sym+pm_move_where_on_load+pm_flatten_range+pm_reduce_unparented, name=&quot;postopt symbolic&quot;)</code></pre>
+
+  <!-- ===================================================================== -->
+  <h2 id="tracking"><span class="sec">5.10</span>Watching it work: TRACK_MATCH_STATS, rewrite_group, VIZ</h2>
+  <p>Because every pass goes through <code>graph_rewrite</code>, instrumenting that one function instruments the whole compiler:</p>
+  <ul>
+    <li><b><code>TRACK_MATCH_STATS=1</code></b> swaps <code>PatternMatcher</code> for <a class="src" data-path="tinygrad/uop/ops.py" data-line="1659">TrackedPatternMatcher</a>
+    at import time, which counts attempts, matches and time per UPat. At exit, <code>print_match_stats</code> prints the table (disable it with
+    <code>PRINT_MATCH_STATS=0</code>).</li>
+    <li><b><code>TRACK_MATCH_STATS=2</code></b> (the default when <code>VIZ</code> is set) also records, for every <code>graph_rewrite</code>, the input graph and
+    each match (before node, after node, rule location, time) into <code>tracked_ctxs</code>, grouped by <code>@rewrite_group</code>
+    (<a class="src" data-path="tinygrad/uop/ops.py" data-line="1618">ops.py:1618</a>) into named groups like "Schedule 1 → 1" and one group per kernel.
+    UOps are serialized compactly through <code>trace_num</code>. A rule that raises is recorded as a <code>REWRITE_ERROR</code> node.</li>
+    <li><b><code>VIZ=1</code></b> opens the browser viewer on that data. <b><code>VIZ=-1</code></b> just saves it, and <code>python -m tinygrad.viz.cli -q 'initial symbolic'</code>
+    prints any pass's graph in the terminal (that's how the ch04 data was explored). Chapter 21 covers this tooling.</li>
+  </ul>
+  <div class="codecap"><b>examples/05_match_stats.py</b> — run with <code>DEV=CPU python3 examples/05_match_stats.py</code> (the script sets <code>TRACK_MATCH_STATS=1</code> before importing tinygrad)</div>
+  <pre><code class="language-python"># Chapter 5 — which rules fire, and how often?  Run with:
+#   DEV=CPU python3 examples/05_match_stats.py   (it sets TRACK_MATCH_STATS=1 itself if you didn&#x27;t)
+# With TRACK_MATCH_STATS&gt;=1, PatternMatcher is swapped for TrackedPatternMatcher (ops.py), which counts every match attempt per UPat.
+# At exit it prints &quot;matches / attempts -- match time / total time -- file:line  &lt;rule source&gt;&quot;, sorted by time (the slowest rules last).
+import os
+os.environ.setdefault(&quot;TRACK_MATCH_STATS&quot;, &quot;1&quot;)   # must be set before `import tinygrad`: ContextVars read the env at import
+from tinygrad import Tensor
+from tinygrad.uop.ops import match_stats
+
+a = Tensor([[1., 2, 3], [4, 5, 6]]).realize()
+b = Tensor([10., 20, 30]).realize()
+print(&quot;result:&quot;, (a * 2 + b).sum(axis=1).tolist())
+fired = sorted(((v[0], v[1], f&quot;{k.location[0].split(&#x27;/&#x27;)[-1]}:{k.location[1]}&quot;) for k, v in match_stats.items() if v[0]), reverse=True)
+print(f&quot;{len(match_stats)} distinct UPats were tried; {len(fired)} of them matched at least once. Top 12 by number of matches:&quot;)
+for m, tries, loc in fired[:12]: print(f&quot;  {m:4d} matches / {tries:5d} attempts   {loc}&quot;)</code></pre>
+  <pre class="output"><code>result: [72.0, 90.0]
+282 distinct UPats were tried; 89 of them matched at least once. Top 12 by number of matches:
+   746 matches /   746 attempts   upat.py:128
+   391 matches /   391 attempts   upat.py:122
+   311 matches /  1086 attempts   upat.py:114
+   265 matches /   265 attempts   upat.py:129
+    34 matches /   321 attempts   upat.py:125
+    30 matches /    30 attempts   spec.py:56
+    19 matches /    19 attempts   spec.py:74
+    17 matches /   162 attempts   ops.py:1860
+    13 matches /    54 attempts   weak.py:85
+    13 matches /    13 attempts   spec.py:92
+    11 matches /    11 attempts   cstyle.py:64
+    10 matches /    10 attempts   spec.py:83
+... (201 more lines) ...
+     0 /       6 --      0.00 /      4.59 ms -- simplify.py:107      ).reduce(UPat.var(&quot;r&quot;), arg=Ops.ADD), lambda r,val,lower=None,upper=None:
+     0 /       1 --      0.00 /      6.39 ms -- simplify.py:146      (UPat(Ops.REDUCE, src=(UPat.var(&quot;u&quot;),), allow_any_len=True, arg=(Ops.ADD, 0), name=&quot;red&quot;), reduce_collapse),
+   311 /    1086 --      2.96 /      7.72 ms -- upat.py:114          pm_proc = PatternMatcher([(UPat(Ops.AND, name=&quot;a&quot;), do_process_and)], compiled=False)
+     1 /       3 --      8.25 /      8.25 ms -- __init__.py:463      (UPat(Ops.PROGRAM, src=(UPat(), UPat(Ops.LINEAR, name=&quot;lin&quot;)), name=&quot;prg&quot;), do_render),
+     0 /       2 --      0.00 /     16.49 ms -- __init__.py:222      (UPat((Ops.COPY, Ops.STAGE), src=(UPat(GroupOp.Movement|{Ops.BITCAST}, name=&quot;src&quot;),), allow_any_len=True, name=&quot;c&quot;), contiguous_mops_to_view),
+     3 /       9 --     33.36 /     33.37 ms -- __init__.py:150      (UPat(Ops.CALL, name=&quot;call&quot;), lower_sink_to_linear),
+  2107 /    5286 --     94.62 /    204.62 ms -- TOTAL
+282 rules, 89 matched once</code></pre>
+  <p>Even this one tiny kernel triggers 282 distinct rules. The most-fired ones are in <code>upat.py</code>: the pattern compiler compiling
+  patterns on first use. Next come <code>spec.py</code> (the <code>SPEC=1</code> type verification is also a PatternMatcher) and <code>ops.py:1860</code>,
+  which is <code>_substitute</code>. The atexit table at the bottom is sorted by time, so the most expensive rules come last; here that is
+  <code>lower_sink_to_linear</code> and <code>do_render</code>, the rules whose functions do whole sub-pipelines.</p>
+
+  <!-- ===================================================================== -->
+  <h2 id="hammer"><span class="sec">5.11</span>Hammer it: rules returning None vs a UOp, one more time</h2>
+  <p>Each rule application ends one of three ways, and the engine treats them differently:</p>
+  <table>
+    <tr><th>function returns</th><th>PatternMatcher.rewrite</th><th>engine (default mode)</th></tr>
+    <tr><td><code>None</code></td><td>try the next rule for this op</td><td>if no rule matches: <code>replace[n] = n</code>, done</td></tr>
+    <tr><td>the same node</td><td>same as <code>None</code> (<code>ret is not uop</code>)</td><td>same</td></tr>
+    <tr><td>a different UOp (possibly a pre-existing one)</td><td>return it immediately, skip later rules</td><td>push it through stage 0 (rewrite it too), then link <code>replace[n]</code> to its final form</td></tr>
+  </table>
+  <p>A useful mental model: a PatternMatcher is a <em>partial function</em> UOp → UOp, and <code>graph_rewrite</code> computes its
+  <em>normal form</em> on every node of the DAG. That is well-defined as long as the rules terminate, and unique when they're confluent.</p>
+
+  <div class="quiz" data-answer="3">
+    <div class="q">Why doesn't <code>graph_rewrite</code> recurse in Python?</div>
+    <button class="opt">Python recursion is slower than loops</button><button class="opt">Generators can't be used in rewrite rules</button><button class="opt">To allow parallel rewriting</button>
+    <button class="opt">Graphs can be hundreds of thousands of nodes deep (long chains), which would overflow the interpreter stack. The explicit stack and waitlist avoid that</button>
+    <div class="explain">Same reason as <code>toposort</code> and <code>recursive_property</code> in Chapter 4. The <code>REWRITE_STACK_LIMIT</code> is a guard against infinite loops, not against depth.</div>
+  </div>
+  <div class="quiz" data-answer="1">
+    <div class="q">You write <code>(UPat.var("x") + UPat.var("y"), lambda x,y: ...)</code>. How many source orders will the compiled matcher try for one ADD node?</div>
+    <button class="opt">1, because the names differ</button><button class="opt">2: ADD is in <code>GroupOp.Commutative</code>, so <code>alu</code> makes the src a list, and both permutations are tried</button><button class="opt">0: ADD patterns must use UPat(Ops.ADD)</button>
+    <div class="explain">Only when the list holds the same UPat twice (e.g. <code>var("x")+var("x")</code>, the same cached object) does <code>UPat.__init__</code> skip permutations (<code>all_same(src)</code>).</div>
+  </div>
+  <div class="quiz" data-answer="0">
+    <div class="q">What does <code>UOp.substitute({a: b})</code> run under the hood?</div>
+    <button class="opt"><code>graph_rewrite(self, _substitute, {a: b}, bottom_up=True)</code>, a one-rule matcher <code>lambda ctx,x: ctx.get(x, None)</code> for every op</button>
+    <button class="opt">A recursive copy of the graph</button><button class="opt">An in-place edit of every node pointing at <code>a</code></button>
+    <div class="explain"><a class="src" data-path="tinygrad/uop/ops.py" data-line="506">ops.py:506</a> and <a class="src" data-path="tinygrad/uop/ops.py" data-line="1860">ops.py:1860</a>. bottom_up so that the dict is consulted on original nodes before their children change.</div>
+  </div>
+
+  <div class="summary-box"><h3>Chapter summary</h3><ul>
+    <li><b>UPat</b> = a UOp with holes: op/dtype/arg constraints, tuple src (ordered), list src (all permutations, created automatically for commutative ops by the
+    operator DSL), single-UPat src (repeat), names that bind and must agree.</li>
+    <li><b>PatternMatcher</b> = ordered rules indexed by op in <code>pdict</code>, with an <code>early_reject</code> prefilter. A function returning <code>None</code> (or the
+    node itself) means "next rule". Matchers compose with <code>+</code>.</li>
+    <li>UPats are <b>compiled lazily into Python source</b> by <code>upat.py</code>, a mini-compiler that represents predicates as UOps and rewrites them with
+    two PatternMatchers.</li>
+    <li><b>graph_rewrite</b> → <b>unified_rewrite</b>: explicit-stack post-order traversal in three stages (descend / rebuild+match / link), a <code>replace</code> memo,
+    and a waitlist. The default <code>pm</code> matches after sources are done, <code>bottom_up</code> matches before, and both reach a <b>fixed point</b>.
+    <code>walk=True</code> is a single pass without one. Loops are caught by <code>REWRITE_STACK_LIMIT</code> or the fixed-point <code>seen</code> set.</li>
+    <li><code>ctx</code>/<code>init_ctx</code> give rules shared state. <code>enter_calls</code> opens CALL bodies. <code>name</code>, <code>rewrite_group</code> and
+    <code>TRACK_MATCH_STATS</code>/VIZ make every pass observable.</li>
+    <li>Next, <a href="06-symbolic.html">Chapter 6</a> looks at the biggest rule set: integer algebra and range analysis.</li>
+  </ul></div>
+</main>
+</div>
+<script>
+(function () {
+const G = Guide;
+// =====================================================================================
+// A faithful JS mirror of tinygrad's rewrite engine (tinygrad/uop/ops.py):
+//   mini-UOp with hash-consing, PatternMatcher.rewrite (rules in order, ret !== uop),
+//   RewriteContext.unified_rewrite (stages 0/1/2, on_stack, waitlist, bpm fixed point + cache),
+//   RewriteContext.walk_rewrite, and the infix renderer (uop/render.py strip_binary_parens).
+// =====================================================================================
+const UC = new Map(); let UID = 0;
+function U(op, src = [], arg = null) {
+  const k = op + "|" + src.map(s => s.id).join(",") + "|" + JSON.stringify(arg);
+  let u = UC.get(k); if (!u) { u = { id: "m" + (UID++), op, src, arg }; UC.set(k, u); } return u;
+}
+const C = v => U("CONST", [], v), V = n => U("PARAM", [U("STACK")], n);
+const add = (a, b) => U("ADD", [a, b]), mul = (a, b) => U("MUL", [a, b]);
+const PREC = { MUL: 1, ADD: 2 }, SYM = { MUL: "*", ADD: "+" };
+const balanced = s => { let d = 0; for (const ch of s) { if (ch === "(") d++; else if (ch === ")") { d--; if (d < 0) return false; } } return d === 0; };
+const strip = s => (s[0] === "(" && s[s.length - 1] === ")" && balanced(s.slice(1, -1))) ? s.slice(1, -1) : s;
+function render(u) {
+  if (u._r !== undefined) return u._r;
+  let r;
+  if (u.op === "PARAM") r = u.arg; else if (u.op === "CONST") r = String(u.arg);
+  else if (u.op === "STACK") r = "{" + u.src.map(render).join(",") + "}";
+  else { const l = render(u.src[0]), rr = render(u.src[1]), p = PREC[u.op];
+    r = `(${(PREC[u.src[0].op] ?? 99) <= p ? strip(l) : l}${SYM[u.op]}${(PREC[u.src[1].op] ?? 99) < p ? strip(rr) : rr})`; }
+  return (u._r = r);
+}
+const isC = (u, v) => u.op === "CONST" && (v === undefined || u.arg === v);
+// each rule: Python source (as used in examples/05_capture_traces.py) + a JS function with the same permutation order
+const RULES = {
+  mul1: { py: '(UPat.var("x") * 1, lambda x: x)', op: "MUL", fn: u => isC(u.src[1], 1) ? u.src[0] : isC(u.src[0], 1) ? u.src[1] : null },
+  add0: { py: '(UPat.var("x") + 0, lambda x: x)', op: "ADD", fn: u => isC(u.src[1], 0) ? u.src[0] : isC(u.src[0], 0) ? u.src[1] : null },
+  cadd: { py: '(UPat(Ops.ADD, src=(UPat.cvar("a"), UPat.cvar("b"))), lambda a,b: c(a.arg+b.arg))', op: "ADD", fn: u => isC(u.src[0]) && isC(u.src[1]) ? C(u.src[0].arg + u.src[1].arg) : null },
+  cmul: { py: '(UPat(Ops.MUL, src=(UPat.cvar("a"), UPat.cvar("b"))), lambda a,b: c(a.arg*b.arg))', op: "MUL", fn: u => isC(u.src[0]) && isC(u.src[1]) ? C(u.src[0].arg * u.src[1].arg) : null },
+  mul0: { py: '(UPat.var("x") * 0, lambda x: c(0))', op: "MUL", fn: u => isC(u.src[1], 0) || isC(u.src[0], 0) ? C(0) : null },
+  assoc: { py: '((UPat.var("x") + UPat.cvar("c1")) + UPat.cvar("c2"), lambda x,c1,c2: x + (c1.arg+c2.arg))', op: "ADD", fn: u => {
+    for (const [p, q] of [[u.src[0], u.src[1]], [u.src[1], u.src[0]]]) if (p.op === "ADD" && isC(q))
+      for (const [xx, c1] of [[p.src[0], p.src[1]], [p.src[1], p.src[0]]]) if (isC(c1)) return add(xx, C(c1.arg + q.arg));
+    return null; } },
+  xx: { py: '(UPat.var("x") + UPat.var("x"), lambda x: x*2)', op: "ADD", fn: u => u.src[0] === u.src[1] ? mul(u.src[0], C(2)) : null },
+  mul4: { py: '(UPat.var("x") * 4, lambda x: (x*2)*2)', op: "MUL", fn: u => isC(u.src[1], 4) ? mul(mul(u.src[0], C(2)), C(2)) : isC(u.src[0], 4) ? mul(mul(u.src[1], C(2)), C(2)) : null },
+  mul2: { py: '(UPat.var("x") * 2, lambda x: x+x)', op: "MUL", fn: u => isC(u.src[1], 2) ? add(u.src[0], u.src[0]) : isC(u.src[0], 2) ? add(u.src[1], u.src[1]) : null },
+};
+const SETS = { tiny: ["mul1", "add0", "cadd", "cmul"], more: ["mul1", "add0", "cadd", "cmul", "mul0", "assoc"], expand: ["mul4", "mul2"], loop: ["xx", "mul2"] };
+const x = V("x"), y = V("y");
+const EXPRS = { E1: mul(add(mul(x, C(1)), add(C(2), C(3))), add(C(1), C(0))), E2: add(mul(add(x, C(0)), mul(y, C(1))), mul(C(0), add(x, y))),
+  E3: add(mul(mul(add(x, y), add(x, y)), C(1)), add(add(x, C(2)), C(3))), E4: mul(x, C(4)), E5: add(x, x) };
+const COMBOS = [["E1", "tiny"], ["E2", "more"], ["E3", "more"], ["E4", "expand"], ["E5", "loop"]];
+class PM { constructor(names) { this.names = names; this.rules = names.map(n => RULES[n]); }
+  rewrite(u) { for (let i = 0; i < this.rules.length; i++) { const r = this.rules[i]; if (r.op !== u.op) continue; const ret = r.fn(u); if (ret && ret !== u) return { ret, rule: this.names[i] }; } return null; } }
+const STACK_LIMIT = 250000; // REWRITE_STACK_LIMIT
+// returns {result|error, calls:[{n, ret, rule}], steps:[...snapshots]} ; record=true keeps per-pop snapshots (small graphs only)
+function engine(root, pm, mode, record) {
+  const bottomUp = mode.includes("bottom_up"), walk = mode.startsWith("walk");
+  const P = bottomUp ? null : pm, B = bottomUp ? pm : null;
+  const replace = new Map(), bcache = new Map(), calls = [], steps = [];
+  let stack, onStack, waitlist, curCall = [];
+  const call = (n) => { const r = (P || B).rewrite(n); calls.push({ n, ret: r ? r.ret : null, rule: r ? r.rule : null }); curCall.push(calls.length - 1); return r ? r.ret : null; };
+  const pmRewrite = n => call(n);
+  const bpmRewrite = n => { if (bcache.has(n)) return bcache.get(n); const r = call(n); bcache.set(n, r); return r; };
+  const snap = (cap, cur) => { if (!record) return; steps.push({ caption: cap, cur, stack: stack.map(e => e.slice()), replace: new Map(replace), wait: waitlist ? [...waitlist.values()].flat().map(e => e[0]) : [], calls: curCall.slice() }); curCall = []; };
+  try {
+    if (walk) {
+      stack = [[root, false]];
+      snap("start: <code>stack = [(root, False)]</code>", null);
+      while (stack.length) {
+        const [n, processed] = stack.pop();
+        if (replace.has(n)) { snap(`pop ${render(n)}: already in replace → skip`, n); continue; }
+        if (!processed) {
+          let rw; if (B && (rw = bpmRewrite(n))) { replace.set(n, rw); snap(`pop <b>${G.escape(render(n))}</b>: bpm matched → replace[n] = <b>${G.escape(render(rw))}</b>, used as-is (no descent into the replacement)`, n); continue; }
+          stack.push([n, true]); for (const s of [...n.src].reverse()) if (!replace.has(s)) stack.push([s, false]);
+          snap(`pop <b>${G.escape(render(n))}</b>: push it back as processed, then its srcs`, n);
+        } else {
+          const ns = n.src.map(s => replace.get(s) ?? s); let nn = ns.every((s, i) => s === n.src[i]) ? n : U(n.op, ns, n.arg);
+          let rw; if (P && (rw = pmRewrite(nn))) nn = rw;
+          replace.set(n, nn); snap(`pop <b>${G.escape(render(n))}</b> (processed): rebuild from rewritten srcs${P ? ", run pm once" : ""} → replace[n] = <b>${G.escape(render(nn))}</b>`, n);
+        }
+      }
+      return { result: replace.get(root) ?? root, calls, steps };
+    }
+    stack = [[root, 0, root]]; onStack = new Set([root]); waitlist = new Map();
+    const release = n => { if (waitlist.has(n)) { stack.push(...waitlist.get(n)); waitlist.delete(n); } };
+    snap("start: <code>stack = [(root, 0, root)]</code>", null);
+    while (stack.length) {
+      if (stack.length > STACK_LIMIT) throw new Error("infinite loop in graph_rewrite (stack too big)");
+      let [n, stage, new_n] = stack.pop();
+      if (replace.has(n)) { snap(`pop (${G.escape(render(n))}, stage ${stage}): already in replace → skip`, n); continue; }
+      if (stage === 0) {
+        let msg = "";
+        if (B) { let test = n; const seen = new Set();
+          while (test) { if (seen.has(test)) throw new Error("infinite loop in fixed_point_rewrite"); seen.add(test); new_n = test; test = bpmRewrite(test); }
+          msg = new_n !== n ? ` bpm rewrote it to a fixed point: <b>${G.escape(render(new_n))}</b>;` : " bpm: no match;"; }
+        stack.push([n, 1, new_n]);
+        for (const s of [...new_n.src].reverse()) { if (onStack.has(s)) continue; stack.push([s, 0, s]); onStack.add(s); }
+        snap(`stage 0 <b>${G.escape(render(n))}</b>:${msg} push (n, 1) and its unvisited srcs`, n);
+      } else if (stage === 1) {
+        const tmp = []; let missing = null;
+        for (const s of new_n.src) { if (!replace.has(s)) { missing = s; break; } tmp.push(replace.get(s)); }
+        if (missing) { if (!waitlist.has(missing)) waitlist.set(missing, []); waitlist.get(missing).push([n, 1, new_n]); snap(`stage 1 <b>${G.escape(render(n))}</b>: src ${G.escape(render(missing))} not ready → waitlist`, n); continue; }
+        let nsn;
+        if (tmp.every((t, i) => t === new_n.src[i])) {
+          if (!P || !(nsn = pmRewrite(new_n))) { replace.set(n, new_n); release(n); snap(`stage 1 <b>${G.escape(render(n))}</b>: srcs unchanged, ${P ? "pm: no match" : "(bottom_up: no pm)"} → done, replace[n] = ${G.escape(render(new_n))}`, n); continue; }
+          snap(`stage 1 <b>${G.escape(render(n))}</b>: srcs unchanged, <b>pm matched</b> → ${G.escape(render(nsn))}; push (n, 2) and rewrite the result from stage 0`, n);
+        } else { nsn = U(new_n.op, tmp, new_n.arg); snap(`stage 1 <b>${G.escape(render(n))}</b>: srcs changed → build <b>${G.escape(render(nsn))}</b> (NOT matched yet); push (n, 2) and send it to stage 0`, n); }
+        stack.push([n, 2, nsn]); stack.push([nsn, 0, nsn]);
+        if (record) steps[steps.length - 1].stack = stack.map(e => e.slice());
+      } else {
+        if (!replace.has(new_n)) { if (!waitlist.has(new_n)) waitlist.set(new_n, []); waitlist.get(new_n).push([n, 2, new_n]); snap(`stage 2 <b>${G.escape(render(n))}</b>: result not finished → waitlist`, n); }
+        else { replace.set(n, replace.get(new_n)); release(n); snap(`stage 2 <b>${G.escape(render(n))}</b>: link → replace[n] = <b>${G.escape(render(replace.get(new_n)))}</b>`, n); }
+      }
+    }
+    return { result: replace.get(root), calls, steps };
+  } catch (e) { snap(`<span class="ch05-err">RuntimeError: ${G.escape(e.message)}</span>`, null); return { error: e.message, calls, steps }; }
+}
+// graph data for the renderer: every node reachable from roots
+function toGraph(roots, status = {}, labels = {}) {
+  const seen = new Set(), nodes = [], edges = [], st = [...roots];
+  while (st.length) { const u = st.pop(); if (!u || seen.has(u)) continue; seen.add(u); st.push(...u.src); }
+  for (const u of seen) {
+    nodes.push({ id: u.id, op: u.op, label: u.op === "PARAM" ? "PARAM" : u.op, sub: (labels[u.id] ? labels[u.id] + "  " : "") + render(u).slice(0, 26), color: status[u.id], note: render(u) });
+    u.src.forEach((s, i) => edges.push([s.id, u.id, i]));
+  }
+  return { nodes, edges };
+}
+
+// ------------------------------------------------ verification against the captured Python traces
+let VERIFY = null;
+const verifyP = G.loadJSON("../data/ch05_rewrite_traces.json").then(tr => {
+  let ok = 0; const bad = [];
+  for (const t of tr) {
+    const out = engine(EXPRS[t.expr], new PM(SETS[t.rules]), t.mode, false);
+    const log = out.calls.slice(0, 60).map(c => [render(c.n), c.ret ? render(c.ret) : null]);
+    const same = JSON.stringify(log) === JSON.stringify(t.log) && out.calls.length === t.n_calls &&
+      (t.error ? out.error === t.error : (!out.error && render(out.result) === t.result));
+    if (same) ok++; else bad.push(`${t.expr}/${t.rules}/${t.mode}`);
+  }
+  VERIFY = { ok, total: tr.length, bad, tr };
+  const html = `<span class="ch05-badge ${bad.length ? "bad" : ""}">${bad.length ? "✗" : "✓"} JS engine == Python on ${ok}/${tr.length} captured traces (same matcher calls, same results, same errors)</span>` + (bad.length ? " " + bad.join(", ") : "");
+  G.$("#ch05-allcheck").innerHTML = html;
+  return VERIFY;
+});
+
+const STATUS_COL = { untouched: null, stack: "#58C4DD", wait: "#9A72AC", done: "#83C167", repl: "#FC6255", fresh: "#F4D345" };
+const ORIG = new Set(); for (const e of Object.values(EXPRS)) { const st = [e]; while (st.length) { const u = st.pop(); if (ORIG.has(u.id)) continue; ORIG.add(u.id); st.push(...u.src); } }
+
+// ------------------------------------------------ Demo: step through unified_rewrite
+(function () {
+  const sel = G.$("#ch05-sexpr"), msel = G.$("#ch05-smode");
+  COMBOS.forEach(([e, s]) => sel.append(G.el("option", { value: e + "|" + s }, `${e}: ${render(EXPRS[e])}   rules=${s}`)));
+  let ctl = null;
+  function run() {
+    const [e, s] = sel.value.split("|"); const mode = msel.value;
+    if (e === "E5" && mode === "default") { G.$("#ch05-stepper").innerHTML = `<div class="ch05-err" style="margin:8px 0">This combination loops 250k times before failing; step it in the toggle panel above instead (it shows the error), or pick another mode.</div>`; G.$("#ch05-sgraph").innerHTML = ""; return; }
+    const out = engine(EXPRS[e], new PM(SETS[s]), mode, true);
+    G.$("#ch05-stepper").innerHTML = "";
+    const steps = out.steps.map(st => ({ ...st, caption: st.caption }));
+    steps.push({ ...steps[steps.length - 1], caption: out.error ? `<span class="ch05-err">RuntimeError: ${G.escape(out.error)}</span>` : `done: <code>graph_rewrite</code> returns <b>${G.escape(render(out.result))}</b> after ${out.calls.length} matcher calls`, calls: [] });
+    const allNodes = new Set([EXPRS[e]]);
+    G.stepper("#ch05-stepper", steps, (i, st) => {
+      // nodes known so far: original + everything on the stack / in replace up to this step
+      for (let k = 0; k <= i; k++) { steps[k].stack.forEach(en => { allNodes.add(en[0]); allNodes.add(en[2]); }); for (const v of steps[k].replace.values()) allNodes.add(v); }
+      const status = {};
+      const reach = new Set(); { const q = [...allNodes]; while (q.length) { const u = q.pop(); if (!u || reach.has(u)) continue; reach.add(u); q.push(...u.src); } }
+      for (const u of reach) if (!ORIG.has(u.id)) status[u.id] = STATUS_COL.fresh;
+      st.stack.forEach(en => { status[en[0].id] = STATUS_COL.stack; });
+      st.wait.forEach(n => status[n.id] = STATUS_COL.wait);
+      for (const [k, v] of st.replace) status[k.id] = v === k ? STATUS_COL.done : STATUS_COL.repl;
+      const g = toGraph([...allNodes], status);
+      if (!ctl) ctl = G.uopGraph("#ch05-sgraph", g, { rankdir: "BT", legend: false, height: 520, compact: true }); else ctl.setGraph(g);
+      if (st.cur) ctl.highlight([st.cur.id], { dimOthers: false }); else ctl.clear();
+      const sk = G.$("#ch05-sstack"); sk.innerHTML = "";
+      st.stack.forEach(en => sk.append(G.el("span", { class: "ch05-chip" + (en[1] === 1 ? " s1" : en[1] === 2 ? " s2" : "") }, `${render(en[0])}${en.length > 2 && en[1] ? "·" + en[1] : ""}`)));
+      const rt = G.$("#ch05-srepl"); rt.innerHTML = "";
+      for (const [k, v] of st.replace) rt.append(G.el("tr", {}, G.el("td", {}, render(k)), G.el("td", { style: `color:${v === k ? "var(--green)" : "var(--red)"}` }, "→ " + render(v))));
+      const cl = G.$("#ch05-scalls"); cl.innerHTML = "";
+      const upto = steps.slice(0, i + 1).flatMap(s2 => s2.calls);
+      upto.forEach((ci, j) => { const c = out.calls[ci]; cl.append(G.el("div", { class: (c.ret ? "hit " : "") + (st.calls.includes(ci) ? "cur" : "") }, `${String(j).padStart(2)}. ${render(c.n).padEnd(18)} ${c.ret ? "→ " + render(c.ret) + "  [" + c.rule + "]" : "(no match)"}`)); });
+      cl.scrollTop = 1e6;
+    }, { autoplayMs: 1200 });
+  }
+  sel.onchange = msel.onchange = () => { ctl = null; G.$("#ch05-sgraph").innerHTML = ""; run(); };
+  run();
+})();
+
+// ------------------------------------------------ Demo: toggle panel
+(function () {
+  const box = G.$("#ch05-rulebox"); const on = new Set(SETS.tiny);
+  const labels = {};
+  Object.entries(RULES).forEach(([k, r]) => {
+    const cb = G.el("input", { type: "checkbox" }); cb.checked = on.has(k);
+    cb.onchange = () => { cb.checked ? on.add(k) : on.delete(k); run(); };
+    labels[k] = G.el("label", {}, cb, G.el("span", {}, G.el("b", { style: "color:var(--teal)" }, k), " ", r.py), G.el("span", { class: "cnt" }));
+    box.append(labels[k]);
+  });
+  const esel = G.$("#ch05-expr"); Object.entries(EXPRS).forEach(([k, e]) => esel.append(G.el("option", { value: k }, `${k}: ${render(e)}`)));
+  const msel = G.$("#ch05-mode");
+  let gin = null, gout = null;
+  function run() {
+    const names = Object.keys(RULES).filter(k => on.has(k)); const pm = new PM(names); const root = EXPRS[esel.value]; const mode = msel.value;
+    const out = engine(root, pm, mode, false);
+    const counts = {}; out.calls.forEach(c => { if (c.rule) counts[c.rule] = (counts[c.rule] || 0) + 1; });
+    for (const [k, l] of Object.entries(labels)) { l.classList.toggle("fired", !!counts[k]); G.$(".cnt", l).textContent = counts[k] ? `fired ${counts[k]}×` : ""; }
+    G.$("#ch05-res").innerHTML = out.error ? `<span class="ch05-err">RuntimeError: ${G.escape(out.error)}</span><br><small style="color:var(--dim)">after ${out.calls.length} matcher calls</small>` :
+      `${G.escape(render(root))}<br>→ <b style="color:var(--yellow)">${G.escape(render(out.result))}</b> <small style="color:var(--dim)">(${out.calls.length} matcher calls)</small>`;
+    const kw = mode === "default" ? "" : mode === "bottom_up" ? ", bottom_up=True" : mode === "walk" ? ", walk=True" : ", walk=True, bottom_up=True";
+    G.$("#ch05-pycode").textContent = `pm = PatternMatcher([\n${names.map(n => "  " + RULES[n].py + ",").join("\n")}\n])\nout = graph_rewrite(${esel.value}, pm${kw})`;
+    gin = G.uopGraph("#ch05-gin", toGraph([root]), { legend: false, height: 300, compact: true });
+    gout = G.uopGraph("#ch05-gout", out.error ? G.mkGraph([["err", "NOOP", { label: "RuntimeError", sub: out.error.slice(0, 34) }]], []) : toGraph([out.result]), { legend: false, height: 300, compact: true });
+    const cl = G.$("#ch05-calls"); cl.innerHTML = "<h5>matcher calls (in order)</h5>";
+    out.calls.slice(0, 80).forEach((c, j) => cl.append(G.el("div", { class: c.ret ? "hit" : "" }, `${String(j).padStart(2)}. ${render(c.n).padEnd(16)} ${c.ret ? "→ " + render(c.ret) + " [" + c.rule + "]" : "·"}`)));
+    if (out.calls.length > 80) cl.append(G.el("div", {}, `… ${out.calls.length - 80} more`));
+    // compare against captured python, if this exact configuration was captured
+    verifyP.then(v => {
+      const set = Object.entries(SETS).find(([, s]) => s.length === names.length && s.every(r => on.has(r)));
+      const t = set && v.tr.find(t => t.expr === esel.value && t.rules === set[0] && t.mode === mode);
+      G.$("#ch05-verify").innerHTML = t ? `<span class="ch05-badge">captured Python: ${G.escape(t.error ? "RuntimeError: " + t.error : t.result)} · ${t.n_calls} calls — ${(t.error ? t.error === out.error : t.result === render(out.result)) && t.n_calls === out.calls.length ? "✓ identical" : "✗ differs"}</span>`
+        : `<span style="color:var(--dim);font-size:12.5px">(no captured Python run for this exact rule set; the badge appears for the sets tiny / more / expand / loop with E1–E5)</span>`;
+    });
+  }
+  esel.onchange = msel.onchange = run; run();
+})();
+
+// ------------------------------------------------ Demo: side-by-side comparison
+(function () {
+  const sel = G.$("#ch05-cexpr"), msel = G.$("#ch05-cmode");
+  COMBOS.filter(([e]) => e !== "E5").forEach(([e, s]) => sel.append(G.el("option", { value: e + "|" + s }, `${e}: ${render(EXPRS[e])}   rules=${s}`)));
+  sel.value = "E3|more";
+  let c1 = null, c2 = null;
+  function panel(out, k, root) {
+    const status = {}, labels = {}, roots = [root];
+    const shown = out.calls.slice(0, k);
+    const nodes = new Set(); shown.forEach(c => { nodes.add(c.n); if (c.ret) nodes.add(c.ret); });
+    shown.forEach((c, j) => { labels[c.n.id] = (labels[c.n.id] ? labels[c.n.id] + "," : "#") + j + (c.ret ? "✓" : ""); status[c.n.id] = c.ret ? STATUS_COL.repl : STATUS_COL.done; });
+    for (const n of nodes) if (!ORIG.has(n.id) && !status[n.id]) status[n.id] = STATUS_COL.fresh;
+    return { g: toGraph([...nodes, ...roots], status, labels), cur: k > 0 ? shown[k - 1].n.id : null };
+  }
+  function run() {
+    const [e, s] = sel.value.split("|"); const root = EXPRS[e];
+    const o1 = engine(root, new PM(SETS[s]), "default", false), o2 = engine(root, new PM(SETS[s]), msel.value, false);
+    G.$("#ch05-cmtitle").textContent = msel.value === "bottom_up" ? "bottom_up=True" : msel.value;
+    const n = Math.max(o1.calls.length, o2.calls.length);
+    const steps = Array.from({ length: n + 1 }, (_, k) => ({ caption: k === 0 ? "both engines start; nothing tried yet" : `matcher call #${k - 1} &nbsp; · &nbsp; default: <b>${k <= o1.calls.length ? G.escape(render(o1.calls[k - 1].n)) : "(finished)"}</b> &nbsp; | &nbsp; ${msel.value}: <b>${k <= o2.calls.length ? G.escape(render(o2.calls[k - 1].n)) : "(finished)"}</b>` }));
+    G.$("#ch05-cstep").innerHTML = ""; c1 = c2 = null; G.$("#ch05-cg1").innerHTML = G.$("#ch05-cg2").innerHTML = "";
+    const lst = (o, k) => o.calls.slice(0, k).map((c, j) => `${String(j).padStart(2)}. ${render(c.n).padEnd(16)} ${c.ret ? "→ " + render(c.ret) : "·"}`).join("\n") + (k >= o.calls.length ? `\n= ${o.error ? "RuntimeError" : render(o.result)}` : "");
+    G.stepper("#ch05-cstep", steps, (k) => {
+      const p1 = panel(o1, k, root), p2 = panel(o2, k, root);
+      if (!c1) c1 = G.uopGraph("#ch05-cg1", p1.g, { rankdir: "TB", legend: false, height: 420, compact: true }); else c1.setGraph(p1.g);
+      if (!c2) c2 = G.uopGraph("#ch05-cg2", p2.g, { rankdir: "TB", legend: false, height: 420, compact: true }); else c2.setGraph(p2.g);
+      p1.cur ? c1.highlight([p1.cur], { dimOthers: false }) : c1.clear(); p2.cur ? c2.highlight([p2.cur], { dimOthers: false }) : c2.clear();
+      G.$("#ch05-cl1").innerHTML = `<div style="white-space:pre">${G.escape(lst(o1, k))}</div>`; G.$("#ch05-cl2").innerHTML = `<div style="white-space:pre">${G.escape(lst(o2, k))}</div>`;
+    }, { autoplayMs: 1000 });
+  }
+  sel.onchange = msel.onchange = run; run();
+})();
+})();
+</script>
+</body>
+</html>

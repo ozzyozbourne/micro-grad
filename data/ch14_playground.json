@@ -1,0 +1,2502 @@
+{
+"r": {
+"opts": [],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+16,
+"GLOBAL"
+],
+[
+16,
+"WEAK"
+]
+],
+"name": "r_16_16_16",
+"src": "__kernel void r_16_16_16(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[1];\n  int gidx0 = get_group_id(0); /* 16 */\n  int gidx1 = get_group_id(1); /* 16 */\n  int alu0 = (gidx1<<4);\n  *(buf0+0) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 16; Lidx0++) {\n    float val0 = (*(data1_256+(alu0+Lidx0)));\n    float val1 = (*(data2_256+((Lidx0<<4)+gidx0)));\n    *(buf0+0) = ((*(buf0+0))+(val0*val1));\n  }\n  *(data0_256+(alu0+gidx0)) = (*(buf0+0));\n}",
+"est": {
+"ops": 8192,
+"lds": 33792,
+"mem": 3072
+},
+"uops": 42,
+"children": [
+{
+"label": "UPCAST axis 0 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))",
+"key": "r.0"
+},
+{
+"label": "LOCAL axis 0 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.LOCAL))",
+"key": "r.1"
+},
+{
+"label": "UPCAST axis 1 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+"key": "r.2"
+},
+{
+"label": "LOCAL axis 1 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.LOCAL))",
+"key": "r.3"
+},
+{
+"label": "UNROLL axis 2 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.UPCAST))",
+"key": "r.4"
+},
+{
+"label": "GROUP axis 2 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.LOCAL))",
+"key": "r.5"
+},
+{
+"label": "GROUPTOP axis 2 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.LOCAL, True))",
+"key": "r.6"
+}
+]
+},
+"r.0": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))"
+],
+"shape": [
+[
+4,
+"GLOBAL"
+],
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"UPCAST"
+],
+[
+16,
+"WEAK"
+]
+],
+"name": "r_4_16_4_16",
+"src": "__kernel void r_4_16_4_16(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[4];\n  int gidx0 = get_group_id(0); /* 16 */\n  int gidx1 = get_group_id(1); /* 4 */\n  int alu0 = (gidx1<<6);\n  *(buf0+0) = 0.0f;\n  *(buf0+1) = 0.0f;\n  *(buf0+2) = 0.0f;\n  *(buf0+3) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 16; Lidx0++) {\n    int alu5 = (alu0+Lidx0);\n    float val0 = (*(data1_256+(alu5+16)));\n    float val1 = (*(data1_256+(alu5+32)));\n    float val2 = (*(data1_256+(alu5+48)));\n    float val3 = (*(data1_256+alu5));\n    float val4 = (*(data2_256+((Lidx0<<4)+gidx0)));\n    *(buf0+0) = ((*(buf0+0))+(val3*val4));\n    *(buf0+1) = ((*(buf0+1))+(val0*val4));\n    *(buf0+2) = ((*(buf0+2))+(val1*val4));\n    *(buf0+3) = ((*(buf0+3))+(val2*val4));\n  }\n  int alu11 = (alu0+gidx0);\n  *(data0_256+(alu11+16)) = (*(buf0+1));\n  *(data0_256+(alu11+32)) = (*(buf0+2));\n  *(data0_256+(alu11+48)) = (*(buf0+3));\n  *(data0_256+alu11) = (*(buf0+0));\n}",
+"est": {
+"ops": 8192,
+"lds": 21504,
+"mem": 3072
+},
+"uops": 101,
+"children": [
+{
+"label": "UPCAST axis 0 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))",
+"key": "r.0.0"
+},
+{
+"label": "LOCAL axis 0 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.LOCAL))",
+"key": "r.0.1"
+},
+{
+"label": "UPCAST axis 1 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+"key": "r.0.2"
+},
+{
+"label": "LOCAL axis 1 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.LOCAL))",
+"key": "r.0.3"
+},
+{
+"label": "UPCAST axis 2 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.UPCAST))",
+"err": "AxisType.UPCAST is from (AxisType.GLOBAL, AxisType.LOCAL, AxisType.WEAK), not AxisType.UPCAST"
+},
+{
+"label": "LOCAL axis 2 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.LOCAL))",
+"err": "AxisType.LOCAL is from (AxisType.GLOBAL, AxisType.WEAK), not AxisType.UPCAST"
+},
+{
+"label": "UNROLL axis 3 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.UPCAST))",
+"key": "r.0.6"
+},
+{
+"label": "GROUP axis 3 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.LOCAL))",
+"key": "r.0.7"
+},
+{
+"label": "GROUPTOP axis 3 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.LOCAL, True))",
+"key": "r.0.8"
+}
+]
+},
+"r.0.0": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))",
+"Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"UPCAST"
+],
+[
+4,
+"UPCAST"
+],
+[
+16,
+"WEAK"
+]
+],
+"name": "r_16_4_4_16",
+"src": "__kernel void r_16_4_4_16(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[16];\n  int gidx0 = get_group_id(0); /* 16 */\n  *(buf0+0) = 0.0f;\n  *(buf0+1) = 0.0f;\n  *(buf0+10) = 0.0f;\n  *(buf0+11) = 0.0f;\n  *(buf0+12) = 0.0f;\n  *(buf0+13) = 0.0f;\n  *(buf0+14) = 0.0f;\n  *(buf0+15) = 0.0f;\n  *(buf0+2) = 0.0f;\n  *(buf0+3) = 0.0f;\n  *(buf0+4) = 0.0f;\n  *(buf0+5) = 0.0f;\n  *(buf0+6) = 0.0f;\n  *(buf0+7) = 0.0f;\n  *(buf0+8) = 0.0f;\n  *(buf0+9) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 16; Lidx0++) {\n    float val0 = (*(data1_256+(Lidx0+112)));\n    float val1 = (*(data1_256+(Lidx0+128)));\n    float val2 = (*(data1_256+(Lidx0+144)));\n    float val3 = (*(data1_256+(Lidx0+16)));\n    float val4 = (*(data1_256+(Lidx0+160)));\n    float val5 = (*(data1_256+(Lidx0+176)));\n    float val6 = (*(data1_256+(Lidx0+192)));\n    float val7 = (*(data1_256+(Lidx0+208)));\n    float val8 = (*(data1_256+(Lidx0+224)));\n    float val9 = (*(data1_256+(Lidx0+240)));\n    float val10 = (*(data1_256+(Lidx0+32)));\n    float val11 = (*(data1_256+(Lidx0+48)));\n    float val12 = (*(data1_256+(Lidx0+64)));\n    float val13 = (*(data1_256+(Lidx0+80)));\n    float val14 = (*(data1_256+(Lidx0+96)));\n    float val15 = (*(data1_256+Lidx0));\n    float val16 = (*(data2_256+((Lidx0<<4)+gidx0)));\n    *(buf0+0) = ((*(buf0+0))+(val15*val16));\n    *(buf0+1) = ((*(buf0+1))+(val12*val16));\n    *(buf0+10) = ((*(buf0+10))+(val4*val16));\n    *(buf0+11) = ((*(buf0+11))+(val8*val16));\n    *(buf0+12) = ((*(buf0+12))+(val11*val16));\n    *(buf0+13) = ((*(buf0+13))+(val0*val16));\n    *(buf0+14) = ((*(buf0+14))+(val5*val16));\n    *(buf0+15) = ((*(buf0+15))+(val9*val16));\n    *(buf0+2) = ((*(buf0+2))+(val1*val16));\n    *(buf0+3) = ((*(buf0+3))+(val6*val16));\n    *(buf0+4) = ((*(buf0+4))+(val3*val16));\n    *(buf0+5) = ((*(buf0+5))+(val13*val16));\n    *(buf0+6) = ((*(buf0+6))+(val2*val16));\n    *(buf0+7) = ((*(buf0+7))+(val7*val16));\n    *(buf0+8) = ((*(buf0+8))+(val10*val16));\n    *(buf0+9) = ((*(buf0+9))+(val14*val16));\n  }\n  *(data0_256+gidx0) = (*(buf0+0));\n  *(data0_256+(gidx0+112)) = (*(buf0+13));\n  *(data0_256+(gidx0+128)) = (*(buf0+2));\n  *(data0_256+(gidx0+144)) = (*(buf0+6));\n  *(data0_256+(gidx0+16)) = (*(buf0+4));\n  *(data0_256+(gidx0+160)) = (*(buf0+10));\n  *(data0_256+(gidx0+176)) = (*(buf0+14));\n  *(data0_256+(gidx0+192)) = (*(buf0+3));\n  *(data0_256+(gidx0+208)) = (*(buf0+7));\n  *(data0_256+(gidx0+224)) = (*(buf0+11));\n  *(data0_256+(gidx0+240)) = (*(buf0+15));\n  *(data0_256+(gidx0+32)) = (*(buf0+8));\n  *(data0_256+(gidx0+48)) = (*(buf0+12));\n  *(data0_256+(gidx0+64)) = (*(buf0+1));\n  *(data0_256+(gidx0+80)) = (*(buf0+5));\n  *(data0_256+(gidx0+96)) = (*(buf0+9));\n}",
+"est": {
+"ops": 8192,
+"lds": 18432,
+"mem": 3072
+},
+"uops": 321,
+"children": []
+},
+"r.0.1": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))",
+"Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.LOCAL))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"UPCAST"
+],
+[
+16,
+"WEAK"
+]
+],
+"name": "r_16_4_4_16",
+"src": "__kernel void r_16_4_4_16(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[4];\n  int gidx0 = get_group_id(0); /* 16 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int alu0 = (lidx0<<6);\n  *(buf0+0) = 0.0f;\n  *(buf0+1) = 0.0f;\n  *(buf0+2) = 0.0f;\n  *(buf0+3) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 16; Lidx0++) {\n    int alu5 = (alu0+Lidx0);\n    float val0 = (*(data1_256+(alu5+16)));\n    float val1 = (*(data1_256+(alu5+32)));\n    float val2 = (*(data1_256+(alu5+48)));\n    float val3 = (*(data1_256+alu5));\n    float val4 = (*(data2_256+((Lidx0<<4)+gidx0)));\n    *(buf0+0) = ((*(buf0+0))+(val3*val4));\n    *(buf0+1) = ((*(buf0+1))+(val0*val4));\n    *(buf0+2) = ((*(buf0+2))+(val1*val4));\n    *(buf0+3) = ((*(buf0+3))+(val2*val4));\n  }\n  int alu11 = (alu0+gidx0);\n  *(data0_256+(alu11+16)) = (*(buf0+1));\n  *(data0_256+(alu11+32)) = (*(buf0+2));\n  *(data0_256+(alu11+48)) = (*(buf0+3));\n  *(data0_256+alu11) = (*(buf0+0));\n}",
+"est": {
+"ops": 8192,
+"lds": 21504,
+"mem": 3072
+},
+"uops": 101,
+"children": []
+},
+"r.0.2": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))",
+"Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))"
+],
+"shape": [
+[
+4,
+"GLOBAL"
+],
+[
+4,
+"GLOBAL"
+],
+[
+4,
+"UPCAST"
+],
+[
+4,
+"UPCAST"
+],
+[
+16,
+"WEAK"
+]
+],
+"name": "r_4_4_4_4_16",
+"src": "__kernel void r_4_4_4_4_16(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[16];\n  int gidx0 = get_group_id(0); /* 4 */\n  int gidx1 = get_group_id(1); /* 4 */\n  int alu0 = (gidx0<<2);\n  int alu1 = (gidx1<<6);\n  *(buf0+0) = 0.0f;\n  *(buf0+1) = 0.0f;\n  *(buf0+10) = 0.0f;\n  *(buf0+11) = 0.0f;\n  *(buf0+12) = 0.0f;\n  *(buf0+13) = 0.0f;\n  *(buf0+14) = 0.0f;\n  *(buf0+15) = 0.0f;\n  *(buf0+2) = 0.0f;\n  *(buf0+3) = 0.0f;\n  *(buf0+4) = 0.0f;\n  *(buf0+5) = 0.0f;\n  *(buf0+6) = 0.0f;\n  *(buf0+7) = 0.0f;\n  *(buf0+8) = 0.0f;\n  *(buf0+9) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 16; Lidx0++) {\n    int alu18 = (alu1+Lidx0);\n    float val0 = (*(data1_256+(alu18+16)));\n    float val1 = (*(data1_256+(alu18+32)));\n    float val2 = (*(data1_256+(alu18+48)));\n    float val3 = (*(data1_256+alu18));\n    float4 val4 = (*((__global float4*)((data2_256+(alu0+(Lidx0<<4))))));\n    *(buf0+0) = ((*(buf0+0))+(val3*val4.x));\n    *(buf0+1) = ((*(buf0+1))+(val3*val4.y));\n    *(buf0+10) = ((*(buf0+10))+(val1*val4.z));\n    *(buf0+11) = ((*(buf0+11))+(val1*val4.w));\n    *(buf0+12) = ((*(buf0+12))+(val2*val4.x));\n    *(buf0+13) = ((*(buf0+13))+(val2*val4.y));\n    *(buf0+14) = ((*(buf0+14))+(val2*val4.z));\n    *(buf0+15) = ((*(buf0+15))+(val2*val4.w));\n    *(buf0+2) = ((*(buf0+2))+(val3*val4.z));\n    *(buf0+3) = ((*(buf0+3))+(val3*val4.w));\n    *(buf0+4) = ((*(buf0+4))+(val0*val4.x));\n    *(buf0+5) = ((*(buf0+5))+(val0*val4.y));\n    *(buf0+6) = ((*(buf0+6))+(val0*val4.z));\n    *(buf0+7) = ((*(buf0+7))+(val0*val4.w));\n    *(buf0+8) = ((*(buf0+8))+(val1*val4.x));\n    *(buf0+9) = ((*(buf0+9))+(val1*val4.y));\n  }\n  int alu36 = (alu0+alu1);\n  *((__global float4*)((data0_256+(alu36+16)))) = (float4)((*(buf0+4)),(*(buf0+5)),(*(buf0+6)),(*(buf0+7)));\n  *((__global float4*)((data0_256+(alu36+32)))) = (float4)((*(buf0+8)),(*(buf0+9)),(*(buf0+10)),(*(buf0+11)));\n  *((__global float4*)((data0_256+(alu36+48)))) = (float4)((*(buf0+12)),(*(buf0+13)),(*(buf0+14)),(*(buf0+15)));\n  *((__global float4*)((data0_256+alu36))) = (float4)((*(buf0+0)),(*(buf0+1)),(*(buf0+2)),(*(buf0+3)));\n}",
+"est": {
+"ops": 8192,
+"lds": 9216,
+"mem": 3072
+},
+"uops": 238,
+"children": []
+},
+"r.0.3": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))",
+"Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.LOCAL))"
+],
+"shape": [
+[
+4,
+"GLOBAL"
+],
+[
+4,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"UPCAST"
+],
+[
+16,
+"WEAK"
+]
+],
+"name": "r_4_4_4_4_16",
+"src": "__kernel void r_4_4_4_4_16(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[4];\n  int gidx0 = get_group_id(0); /* 4 */\n  int gidx1 = get_group_id(1); /* 4 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int alu0 = ((gidx0<<2)+lidx0);\n  int alu1 = (gidx1<<6);\n  *(buf0+0) = 0.0f;\n  *(buf0+1) = 0.0f;\n  *(buf0+2) = 0.0f;\n  *(buf0+3) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 16; Lidx0++) {\n    int alu6 = (alu1+Lidx0);\n    float val0 = (*(data1_256+(alu6+16)));\n    float val1 = (*(data1_256+(alu6+32)));\n    float val2 = (*(data1_256+(alu6+48)));\n    float val3 = (*(data1_256+alu6));\n    float val4 = (*(data2_256+(alu0+(Lidx0<<4))));\n    *(buf0+0) = ((*(buf0+0))+(val3*val4));\n    *(buf0+1) = ((*(buf0+1))+(val0*val4));\n    *(buf0+2) = ((*(buf0+2))+(val1*val4));\n    *(buf0+3) = ((*(buf0+3))+(val2*val4));\n  }\n  int alu12 = (alu0+alu1);\n  *(data0_256+(alu12+16)) = (*(buf0+1));\n  *(data0_256+(alu12+32)) = (*(buf0+2));\n  *(data0_256+(alu12+48)) = (*(buf0+3));\n  *(data0_256+alu12) = (*(buf0+0));\n}",
+"est": {
+"ops": 8192,
+"lds": 21504,
+"mem": 3072
+},
+"uops": 104,
+"children": []
+},
+"r.0.6": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))",
+"Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.UPCAST))"
+],
+"shape": [
+[
+4,
+"GLOBAL"
+],
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"UPCAST"
+],
+[
+4,
+"WEAK"
+],
+[
+4,
+"UPCAST"
+]
+],
+"name": "r_4_16_4_4_4",
+"src": "__kernel void r_4_16_4_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[4];\n  int gidx0 = get_group_id(0); /* 16 */\n  int gidx1 = get_group_id(1); /* 4 */\n  int alu0 = (gidx1<<6);\n  *(buf0+0) = 0.0f;\n  *(buf0+1) = 0.0f;\n  *(buf0+2) = 0.0f;\n  *(buf0+3) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 4; Lidx0++) {\n    int alu5 = ((Lidx0<<6)+gidx0);\n    float val0 = (*(data2_256+(alu5+16)));\n    float val1 = (*(data2_256+(alu5+32)));\n    float val2 = (*(data2_256+(alu5+48)));\n    float val3 = (*(data2_256+alu5));\n    int alu6 = (alu0+(Lidx0<<2));\n    float4 val4 = (*((__global float4*)((data1_256+(alu6+16)))));\n    float4 val5 = (*((__global float4*)((data1_256+(alu6+32)))));\n    float4 val6 = (*((__global float4*)((data1_256+(alu6+48)))));\n    float4 val7 = (*((__global float4*)((data1_256+alu6))));\n    *(buf0+0) = ((*(buf0+0))+(val7.x*val3)+(val7.y*val0)+(val7.z*val1)+(val7.w*val2));\n    *(buf0+1) = ((*(buf0+1))+(val4.x*val3)+(val4.y*val0)+(val4.z*val1)+(val4.w*val2));\n    *(buf0+2) = ((*(buf0+2))+(val5.x*val3)+(val5.y*val0)+(val5.z*val1)+(val5.w*val2));\n    *(buf0+3) = ((*(buf0+3))+(val6.x*val3)+(val6.y*val0)+(val6.z*val1)+(val6.w*val2));\n  }\n  int alu12 = (alu0+gidx0);\n  *(data0_256+(alu12+16)) = (*(buf0+1));\n  *(data0_256+(alu12+32)) = (*(buf0+2));\n  *(data0_256+(alu12+48)) = (*(buf0+3));\n  *(data0_256+alu12) = (*(buf0+0));\n}",
+"est": {
+"ops": 8192,
+"lds": 21504,
+"mem": 3072
+},
+"uops": 151,
+"children": []
+},
+"r.0.7": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))",
+"Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.LOCAL))"
+],
+"shape": [
+[
+4,
+"GLOBAL"
+],
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"UPCAST"
+],
+[
+4,
+"WEAK"
+]
+],
+"name": "r_4_16_4_4_4",
+"src": "__kernel void r_4_16_4_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[4];\n  float buf1[4];\n  __attribute__ ((aligned (16))) __local float buf2[16];\n  int gidx0 = get_group_id(0); /* 16 */\n  int gidx1 = get_group_id(1); /* 4 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int alu0 = (gidx1<<6);\n  *(buf0+0) = 0.0f;\n  *(buf0+1) = 0.0f;\n  *(buf0+2) = 0.0f;\n  *(buf0+3) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 4; Lidx0++) {\n    int alu5 = ((Lidx0<<2)+lidx0+alu0);\n    float val0 = (*(data1_256+(alu5+16)));\n    float val1 = (*(data1_256+(alu5+32)));\n    float val2 = (*(data1_256+(alu5+48)));\n    float val3 = (*(data1_256+alu5));\n    float val4 = (*(data2_256+((lidx0<<4)+(Lidx0<<6)+gidx0)));\n    *(buf0+0) = ((*(buf0+0))+(val3*val4));\n    *(buf0+1) = ((*(buf0+1))+(val0*val4));\n    *(buf0+2) = ((*(buf0+2))+(val1*val4));\n    *(buf0+3) = ((*(buf0+3))+(val2*val4));\n  }\n  *((__local float4*)((buf2+(lidx0<<2)))) = (float4)((*(buf0+0)),(*(buf0+1)),(*(buf0+2)),(*(buf0+3)));\n  barrier(CLK_LOCAL_MEM_FENCE);\n  *(buf1+0) = 0.0f;\n  *(buf1+1) = 0.0f;\n  *(buf1+2) = 0.0f;\n  *(buf1+3) = 0.0f;\n  for (int Lidx104 = 0; Lidx104 < 4; Lidx104++) {\n    float4 val5 = (*((__local float4*)((buf2+(Lidx104<<2)))));\n    *(buf1+0) = ((*(buf1+0))+val5.x);\n    *(buf1+1) = ((*(buf1+1))+val5.y);\n    *(buf1+2) = ((*(buf1+2))+val5.z);\n    *(buf1+3) = ((*(buf1+3))+val5.w);\n  }\n  int alu22 = (alu0+gidx0);\n  bool alu23 = (lidx0==0);\n  if (alu23) {\n    *(data0_256+(alu22+16)) = (*(buf1+1));\n  }\n  if (alu23) {\n    *(data0_256+(alu22+32)) = (*(buf1+2));\n  }\n  if (alu23) {\n    *(data0_256+(alu22+48)) = (*(buf1+3));\n  }\n  if (alu23) {\n    *(data0_256+alu22) = (*(buf1+0));\n  }\n}",
+"est": {
+"ops": 12544,
+"lds": 45056,
+"mem": 3072
+},
+"uops": 170,
+"children": []
+},
+"r.0.8": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))",
+"Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.LOCAL, True))"
+],
+"shape": [
+[
+4,
+"GLOBAL"
+],
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"UPCAST"
+],
+[
+4,
+"WEAK"
+]
+],
+"name": "r_4_16_4_4_4",
+"src": "__kernel void r_4_16_4_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[4];\n  float buf1[4];\n  __attribute__ ((aligned (16))) __local float buf2[16];\n  int gidx0 = get_group_id(0); /* 16 */\n  int gidx1 = get_group_id(1); /* 4 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int alu0 = (gidx1<<6);\n  int alu1 = (lidx0<<2);\n  *(buf0+0) = 0.0f;\n  *(buf0+1) = 0.0f;\n  *(buf0+2) = 0.0f;\n  *(buf0+3) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 4; Lidx0++) {\n    int alu6 = (alu1+Lidx0+alu0);\n    float val0 = (*(data1_256+(alu6+16)));\n    float val1 = (*(data1_256+(alu6+32)));\n    float val2 = (*(data1_256+(alu6+48)));\n    float val3 = (*(data1_256+alu6));\n    float val4 = (*(data2_256+((lidx0<<6)+(Lidx0<<4)+gidx0)));\n    *(buf0+0) = ((*(buf0+0))+(val3*val4));\n    *(buf0+1) = ((*(buf0+1))+(val0*val4));\n    *(buf0+2) = ((*(buf0+2))+(val1*val4));\n    *(buf0+3) = ((*(buf0+3))+(val2*val4));\n  }\n  *((__local float4*)((buf2+alu1))) = (float4)((*(buf0+0)),(*(buf0+1)),(*(buf0+2)),(*(buf0+3)));\n  barrier(CLK_LOCAL_MEM_FENCE);\n  *(buf1+0) = 0.0f;\n  *(buf1+1) = 0.0f;\n  *(buf1+2) = 0.0f;\n  *(buf1+3) = 0.0f;\n  for (int Lidx104 = 0; Lidx104 < 4; Lidx104++) {\n    float4 val5 = (*((__local float4*)((buf2+(Lidx104<<2)))));\n    *(buf1+0) = ((*(buf1+0))+val5.x);\n    *(buf1+1) = ((*(buf1+1))+val5.y);\n    *(buf1+2) = ((*(buf1+2))+val5.z);\n    *(buf1+3) = ((*(buf1+3))+val5.w);\n  }\n  int alu23 = (alu0+gidx0);\n  bool alu24 = (lidx0==0);\n  if (alu24) {\n    *(data0_256+(alu23+16)) = (*(buf1+1));\n  }\n  if (alu24) {\n    *(data0_256+(alu23+32)) = (*(buf1+2));\n  }\n  if (alu24) {\n    *(data0_256+(alu23+48)) = (*(buf1+3));\n  }\n  if (alu24) {\n    *(data0_256+alu23) = (*(buf1+0));\n  }\n}",
+"est": {
+"ops": 12544,
+"lds": 45056,
+"mem": 3072
+},
+"uops": 169,
+"children": []
+},
+"r.1": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.LOCAL))"
+],
+"shape": [
+[
+4,
+"GLOBAL"
+],
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+16,
+"WEAK"
+]
+],
+"name": "r_4_16_4_16",
+"src": "__kernel void r_4_16_4_16(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[1];\n  int gidx0 = get_group_id(0); /* 16 */\n  int gidx1 = get_group_id(1); /* 4 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int alu0 = ((gidx1<<6)+(lidx0<<4));\n  *(buf0+0) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 16; Lidx0++) {\n    float val0 = (*(data1_256+(alu0+Lidx0)));\n    float val1 = (*(data2_256+((Lidx0<<4)+gidx0)));\n    *(buf0+0) = ((*(buf0+0))+(val0*val1));\n  }\n  *(data0_256+(alu0+gidx0)) = (*(buf0+0));\n}",
+"est": {
+"ops": 8192,
+"lds": 33792,
+"mem": 3072
+},
+"uops": 47,
+"children": [
+{
+"label": "UPCAST axis 0 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))",
+"key": "r.1.0"
+},
+{
+"label": "LOCAL axis 0 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.LOCAL))",
+"key": "r.1.1"
+},
+{
+"label": "UPCAST axis 1 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+"key": "r.1.2"
+},
+{
+"label": "LOCAL axis 1 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.LOCAL))",
+"key": "r.1.3"
+},
+{
+"label": "UPCAST axis 2 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.UPCAST))",
+"key": "r.1.4"
+},
+{
+"label": "LOCAL axis 2 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.LOCAL))",
+"err": "AxisType.LOCAL is from (AxisType.GLOBAL, AxisType.WEAK), not AxisType.LOCAL"
+},
+{
+"label": "UNROLL axis 3 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.UPCAST))",
+"key": "r.1.6"
+},
+{
+"label": "GROUP axis 3 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.LOCAL))",
+"key": "r.1.7"
+},
+{
+"label": "GROUPTOP axis 3 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.LOCAL, True))",
+"key": "r.1.8"
+}
+]
+},
+"r.1.0": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.LOCAL))",
+"Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"UPCAST"
+],
+[
+16,
+"WEAK"
+]
+],
+"name": "r_16_4_4_16",
+"src": "__kernel void r_16_4_4_16(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[4];\n  int gidx0 = get_group_id(0); /* 16 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int alu0 = (lidx0<<4);\n  *(buf0+0) = 0.0f;\n  *(buf0+1) = 0.0f;\n  *(buf0+2) = 0.0f;\n  *(buf0+3) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 16; Lidx0++) {\n    int alu5 = (alu0+Lidx0);\n    float val0 = (*(data1_256+(alu5+128)));\n    float val1 = (*(data1_256+(alu5+192)));\n    float val2 = (*(data1_256+(alu5+64)));\n    float val3 = (*(data1_256+alu5));\n    float val4 = (*(data2_256+((Lidx0<<4)+gidx0)));\n    *(buf0+0) = ((*(buf0+0))+(val3*val4));\n    *(buf0+1) = ((*(buf0+1))+(val2*val4));\n    *(buf0+2) = ((*(buf0+2))+(val0*val4));\n    *(buf0+3) = ((*(buf0+3))+(val1*val4));\n  }\n  int alu11 = (alu0+gidx0);\n  *(data0_256+(alu11+128)) = (*(buf0+2));\n  *(data0_256+(alu11+192)) = (*(buf0+3));\n  *(data0_256+(alu11+64)) = (*(buf0+1));\n  *(data0_256+alu11) = (*(buf0+0));\n}",
+"est": {
+"ops": 8192,
+"lds": 21504,
+"mem": 3072
+},
+"uops": 101,
+"children": []
+},
+"r.1.1": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.LOCAL))",
+"Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.LOCAL))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+16,
+"WEAK"
+]
+],
+"name": "r_16_4_4_16",
+"src": "__kernel void r_16_4_4_16(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[1];\n  int gidx0 = get_group_id(0); /* 16 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int lidx1 = get_local_id(1); /* 4 */\n  int alu0 = ((lidx0<<4)+(lidx1<<6));\n  *(buf0+0) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 16; Lidx0++) {\n    float val0 = (*(data1_256+(alu0+Lidx0)));\n    float val1 = (*(data2_256+((Lidx0<<4)+gidx0)));\n    *(buf0+0) = ((*(buf0+0))+(val0*val1));\n  }\n  *(data0_256+(alu0+gidx0)) = (*(buf0+0));\n}",
+"est": {
+"ops": 8192,
+"lds": 33792,
+"mem": 3072
+},
+"uops": 47,
+"children": []
+},
+"r.1.2": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.LOCAL))",
+"Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))"
+],
+"shape": [
+[
+4,
+"GLOBAL"
+],
+[
+4,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"UPCAST"
+],
+[
+16,
+"WEAK"
+]
+],
+"name": "r_4_4_4_4_16",
+"src": "__kernel void r_4_4_4_4_16(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[4];\n  int gidx0 = get_group_id(0); /* 4 */\n  int gidx1 = get_group_id(1); /* 4 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int alu0 = ((gidx1<<6)+(lidx0<<4));\n  int alu1 = (gidx0<<2);\n  *(buf0+0) = 0.0f;\n  *(buf0+1) = 0.0f;\n  *(buf0+2) = 0.0f;\n  *(buf0+3) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 16; Lidx0++) {\n    float val0 = (*(data1_256+(alu0+Lidx0)));\n    float4 val1 = (*((__global float4*)((data2_256+(alu1+(Lidx0<<4))))));\n    *(buf0+0) = ((*(buf0+0))+(val0*val1.x));\n    *(buf0+1) = ((*(buf0+1))+(val0*val1.y));\n    *(buf0+2) = ((*(buf0+2))+(val0*val1.z));\n    *(buf0+3) = ((*(buf0+3))+(val0*val1.w));\n  }\n  *((__global float4*)((data0_256+(alu0+alu1)))) = (float4)((*(buf0+0)),(*(buf0+1)),(*(buf0+2)),(*(buf0+3)));\n}",
+"est": {
+"ops": 8192,
+"lds": 21504,
+"mem": 3072
+},
+"uops": 88,
+"children": []
+},
+"r.1.3": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.LOCAL))",
+"Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.LOCAL))"
+],
+"shape": [
+[
+4,
+"GLOBAL"
+],
+[
+4,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+16,
+"WEAK"
+]
+],
+"name": "r_4_4_4_4_16",
+"src": "__kernel void r_4_4_4_4_16(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[1];\n  int gidx0 = get_group_id(0); /* 4 */\n  int gidx1 = get_group_id(1); /* 4 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int lidx1 = get_local_id(1); /* 4 */\n  int alu0 = ((gidx0<<2)+lidx1);\n  int alu1 = ((gidx1<<6)+(lidx0<<4));\n  *(buf0+0) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 16; Lidx0++) {\n    float val0 = (*(data1_256+(alu1+Lidx0)));\n    float val1 = (*(data2_256+(alu0+(Lidx0<<4))));\n    *(buf0+0) = ((*(buf0+0))+(val0*val1));\n  }\n  *(data0_256+(alu0+alu1)) = (*(buf0+0));\n}",
+"est": {
+"ops": 8192,
+"lds": 33792,
+"mem": 3072
+},
+"uops": 52,
+"children": []
+},
+"r.1.4": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.LOCAL))",
+"Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.UPCAST))"
+],
+"shape": [
+[
+4,
+"GLOBAL"
+],
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"UPCAST"
+],
+[
+16,
+"WEAK"
+]
+],
+"name": "r_4_16_4_16",
+"src": "__kernel void r_4_16_4_16(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[4];\n  int gidx0 = get_group_id(0); /* 16 */\n  int gidx1 = get_group_id(1); /* 4 */\n  int alu0 = (gidx1<<6);\n  *(buf0+0) = 0.0f;\n  *(buf0+1) = 0.0f;\n  *(buf0+2) = 0.0f;\n  *(buf0+3) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 16; Lidx0++) {\n    int alu5 = (alu0+Lidx0);\n    float val0 = (*(data1_256+(alu5+16)));\n    float val1 = (*(data1_256+(alu5+32)));\n    float val2 = (*(data1_256+(alu5+48)));\n    float val3 = (*(data1_256+alu5));\n    float val4 = (*(data2_256+((Lidx0<<4)+gidx0)));\n    *(buf0+0) = ((*(buf0+0))+(val3*val4));\n    *(buf0+1) = ((*(buf0+1))+(val0*val4));\n    *(buf0+2) = ((*(buf0+2))+(val1*val4));\n    *(buf0+3) = ((*(buf0+3))+(val2*val4));\n  }\n  int alu11 = (alu0+gidx0);\n  *(data0_256+(alu11+16)) = (*(buf0+1));\n  *(data0_256+(alu11+32)) = (*(buf0+2));\n  *(data0_256+(alu11+48)) = (*(buf0+3));\n  *(data0_256+alu11) = (*(buf0+0));\n}",
+"est": {
+"ops": 8192,
+"lds": 21504,
+"mem": 3072
+},
+"uops": 101,
+"children": []
+},
+"r.1.6": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.LOCAL))",
+"Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.UPCAST))"
+],
+"shape": [
+[
+4,
+"GLOBAL"
+],
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"WEAK"
+],
+[
+4,
+"UPCAST"
+]
+],
+"name": "r_4_16_4_4_4",
+"src": "__kernel void r_4_16_4_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[1];\n  int gidx0 = get_group_id(0); /* 16 */\n  int gidx1 = get_group_id(1); /* 4 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int alu0 = ((gidx1<<6)+(lidx0<<4));\n  *(buf0+0) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 4; Lidx0++) {\n    int alu2 = ((Lidx0<<6)+gidx0);\n    float val0 = (*(data2_256+(alu2+16)));\n    float val1 = (*(data2_256+(alu2+32)));\n    float val2 = (*(data2_256+(alu2+48)));\n    float val3 = (*(data2_256+alu2));\n    float4 val4 = (*((__global float4*)((data1_256+(alu0+(Lidx0<<2))))));\n    *(buf0+0) = ((*(buf0+0))+(val4.x*val3)+(val4.y*val0)+(val4.z*val1)+(val4.w*val2));\n  }\n  *(data0_256+(alu0+gidx0)) = (*(buf0+0));\n}",
+"est": {
+"ops": 8192,
+"lds": 33792,
+"mem": 3072
+},
+"uops": 76,
+"children": []
+},
+"r.1.7": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.LOCAL))",
+"Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.LOCAL))"
+],
+"shape": [
+[
+4,
+"GLOBAL"
+],
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"WEAK"
+]
+],
+"name": "r_4_16_4_4_4",
+"src": "__kernel void r_4_16_4_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[1];\n  float buf1[1];\n  __attribute__ ((aligned (16))) __local float buf2[16];\n  int gidx0 = get_group_id(0); /* 16 */\n  int gidx1 = get_group_id(1); /* 4 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int lidx1 = get_local_id(1); /* 4 */\n  int alu0 = ((gidx1<<6)+(lidx0<<4));\n  *(buf0+0) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 4; Lidx0++) {\n    float val0 = (*(data1_256+(alu0+(Lidx0<<2)+lidx1)));\n    float val1 = (*(data2_256+((lidx1<<4)+(Lidx0<<6)+gidx0)));\n    *(buf0+0) = ((*(buf0+0))+(val0*val1));\n  }\n  int alu4 = (lidx0<<2);\n  *(buf2+(alu4+lidx1)) = (*(buf0+0));\n  barrier(CLK_LOCAL_MEM_FENCE);\n  *(buf1+0) = 0.0f;\n  for (int Lidx104 = 0; Lidx104 < 4; Lidx104++) {\n    float val2 = (*(buf2+(alu4+Lidx104)));\n    *(buf1+0) = ((*(buf1+0))+val2);\n  }\n  if ((lidx1==0)) {\n    *(data0_256+(alu0+gidx0)) = (*(buf1+0));\n  }\n}",
+"est": {
+"ops": 13312,
+"lds": 57344,
+"mem": 3072
+},
+"uops": 82,
+"children": []
+},
+"r.1.8": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.LOCAL))",
+"Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.LOCAL, True))"
+],
+"shape": [
+[
+4,
+"GLOBAL"
+],
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"WEAK"
+]
+],
+"name": "r_4_16_4_4_4",
+"src": "__kernel void r_4_16_4_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[1];\n  float buf1[1];\n  __attribute__ ((aligned (16))) __local float buf2[16];\n  int gidx0 = get_group_id(0); /* 16 */\n  int gidx1 = get_group_id(1); /* 4 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int lidx1 = get_local_id(1); /* 4 */\n  int alu0 = ((gidx1<<6)+(lidx0<<4));\n  *(buf0+0) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 4; Lidx0++) {\n    float val0 = (*(data1_256+(alu0+(lidx1<<2)+Lidx0)));\n    float val1 = (*(data2_256+((lidx1<<6)+(Lidx0<<4)+gidx0)));\n    *(buf0+0) = ((*(buf0+0))+(val0*val1));\n  }\n  int alu4 = (lidx0<<2);\n  *(buf2+(alu4+lidx1)) = (*(buf0+0));\n  barrier(CLK_LOCAL_MEM_FENCE);\n  *(buf1+0) = 0.0f;\n  for (int Lidx104 = 0; Lidx104 < 4; Lidx104++) {\n    float val2 = (*(buf2+(alu4+Lidx104)));\n    *(buf1+0) = ((*(buf1+0))+val2);\n  }\n  if ((lidx1==0)) {\n    *(data0_256+(alu0+gidx0)) = (*(buf1+0));\n  }\n}",
+"est": {
+"ops": 13312,
+"lds": 57344,
+"mem": 3072
+},
+"uops": 82,
+"children": []
+},
+"r.2": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"GLOBAL"
+],
+[
+4,
+"UPCAST"
+],
+[
+16,
+"WEAK"
+]
+],
+"name": "r_16_4_4_16",
+"src": "__kernel void r_16_4_4_16(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[4];\n  int gidx0 = get_group_id(0); /* 4 */\n  int gidx1 = get_group_id(1); /* 16 */\n  int alu0 = (gidx0<<2);\n  int alu1 = (gidx1<<4);\n  *(buf0+0) = 0.0f;\n  *(buf0+1) = 0.0f;\n  *(buf0+2) = 0.0f;\n  *(buf0+3) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 16; Lidx0++) {\n    float val0 = (*(data1_256+(alu1+Lidx0)));\n    float4 val1 = (*((__global float4*)((data2_256+(alu0+(Lidx0<<4))))));\n    *(buf0+0) = ((*(buf0+0))+(val0*val1.x));\n    *(buf0+1) = ((*(buf0+1))+(val0*val1.y));\n    *(buf0+2) = ((*(buf0+2))+(val0*val1.z));\n    *(buf0+3) = ((*(buf0+3))+(val0*val1.w));\n  }\n  *((__global float4*)((data0_256+(alu0+alu1)))) = (float4)((*(buf0+0)),(*(buf0+1)),(*(buf0+2)),(*(buf0+3)));\n}",
+"est": {
+"ops": 8192,
+"lds": 21504,
+"mem": 3072
+},
+"uops": 83,
+"children": [
+{
+"label": "UPCAST axis 0 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))",
+"key": "r.2.0"
+},
+{
+"label": "LOCAL axis 0 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.LOCAL))",
+"key": "r.2.1"
+},
+{
+"label": "UPCAST axis 1 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+"key": "r.2.2"
+},
+{
+"label": "LOCAL axis 1 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.LOCAL))",
+"key": "r.2.3"
+},
+{
+"label": "UPCAST axis 2 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.UPCAST))",
+"err": "AxisType.UPCAST is from (AxisType.GLOBAL, AxisType.LOCAL, AxisType.WEAK), not AxisType.UPCAST"
+},
+{
+"label": "LOCAL axis 2 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.LOCAL))",
+"err": "AxisType.LOCAL is from (AxisType.GLOBAL, AxisType.WEAK), not AxisType.UPCAST"
+},
+{
+"label": "UNROLL axis 3 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.UPCAST))",
+"key": "r.2.6"
+},
+{
+"label": "GROUP axis 3 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.LOCAL))",
+"key": "r.2.7"
+},
+{
+"label": "GROUPTOP axis 3 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.LOCAL, True))",
+"key": "r.2.8"
+}
+]
+},
+"r.2.0": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+"Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))"
+],
+"shape": [
+[
+4,
+"GLOBAL"
+],
+[
+4,
+"GLOBAL"
+],
+[
+4,
+"UPCAST"
+],
+[
+4,
+"UPCAST"
+],
+[
+16,
+"WEAK"
+]
+],
+"name": "r_4_4_4_4_16",
+"src": "__kernel void r_4_4_4_4_16(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[16];\n  int gidx0 = get_group_id(0); /* 4 */\n  int gidx1 = get_group_id(1); /* 4 */\n  int alu0 = (gidx0<<2);\n  int alu1 = (gidx1<<6);\n  *(buf0+0) = 0.0f;\n  *(buf0+1) = 0.0f;\n  *(buf0+10) = 0.0f;\n  *(buf0+11) = 0.0f;\n  *(buf0+12) = 0.0f;\n  *(buf0+13) = 0.0f;\n  *(buf0+14) = 0.0f;\n  *(buf0+15) = 0.0f;\n  *(buf0+2) = 0.0f;\n  *(buf0+3) = 0.0f;\n  *(buf0+4) = 0.0f;\n  *(buf0+5) = 0.0f;\n  *(buf0+6) = 0.0f;\n  *(buf0+7) = 0.0f;\n  *(buf0+8) = 0.0f;\n  *(buf0+9) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 16; Lidx0++) {\n    int alu18 = (alu1+Lidx0);\n    float val0 = (*(data1_256+(alu18+16)));\n    float val1 = (*(data1_256+(alu18+32)));\n    float val2 = (*(data1_256+(alu18+48)));\n    float val3 = (*(data1_256+alu18));\n    float4 val4 = (*((__global float4*)((data2_256+(alu0+(Lidx0<<4))))));\n    *(buf0+0) = ((*(buf0+0))+(val3*val4.x));\n    *(buf0+1) = ((*(buf0+1))+(val3*val4.y));\n    *(buf0+10) = ((*(buf0+10))+(val1*val4.z));\n    *(buf0+11) = ((*(buf0+11))+(val1*val4.w));\n    *(buf0+12) = ((*(buf0+12))+(val2*val4.x));\n    *(buf0+13) = ((*(buf0+13))+(val2*val4.y));\n    *(buf0+14) = ((*(buf0+14))+(val2*val4.z));\n    *(buf0+15) = ((*(buf0+15))+(val2*val4.w));\n    *(buf0+2) = ((*(buf0+2))+(val3*val4.z));\n    *(buf0+3) = ((*(buf0+3))+(val3*val4.w));\n    *(buf0+4) = ((*(buf0+4))+(val0*val4.x));\n    *(buf0+5) = ((*(buf0+5))+(val0*val4.y));\n    *(buf0+6) = ((*(buf0+6))+(val0*val4.z));\n    *(buf0+7) = ((*(buf0+7))+(val0*val4.w));\n    *(buf0+8) = ((*(buf0+8))+(val1*val4.x));\n    *(buf0+9) = ((*(buf0+9))+(val1*val4.y));\n  }\n  int alu36 = (alu0+alu1);\n  *((__global float4*)((data0_256+(alu36+16)))) = (float4)((*(buf0+4)),(*(buf0+5)),(*(buf0+6)),(*(buf0+7)));\n  *((__global float4*)((data0_256+(alu36+32)))) = (float4)((*(buf0+8)),(*(buf0+9)),(*(buf0+10)),(*(buf0+11)));\n  *((__global float4*)((data0_256+(alu36+48)))) = (float4)((*(buf0+12)),(*(buf0+13)),(*(buf0+14)),(*(buf0+15)));\n  *((__global float4*)((data0_256+alu36))) = (float4)((*(buf0+0)),(*(buf0+1)),(*(buf0+2)),(*(buf0+3)));\n}",
+"est": {
+"ops": 8192,
+"lds": 9216,
+"mem": 3072
+},
+"uops": 238,
+"children": []
+},
+"r.2.1": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+"Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.LOCAL))"
+],
+"shape": [
+[
+4,
+"GLOBAL"
+],
+[
+4,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"UPCAST"
+],
+[
+16,
+"WEAK"
+]
+],
+"name": "r_4_4_4_4_16",
+"src": "__kernel void r_4_4_4_4_16(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[4];\n  int gidx0 = get_group_id(0); /* 4 */\n  int gidx1 = get_group_id(1); /* 4 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int alu0 = ((gidx1<<6)+(lidx0<<4));\n  int alu1 = (gidx0<<2);\n  *(buf0+0) = 0.0f;\n  *(buf0+1) = 0.0f;\n  *(buf0+2) = 0.0f;\n  *(buf0+3) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 16; Lidx0++) {\n    float val0 = (*(data1_256+(alu0+Lidx0)));\n    float4 val1 = (*((__global float4*)((data2_256+(alu1+(Lidx0<<4))))));\n    *(buf0+0) = ((*(buf0+0))+(val0*val1.x));\n    *(buf0+1) = ((*(buf0+1))+(val0*val1.y));\n    *(buf0+2) = ((*(buf0+2))+(val0*val1.z));\n    *(buf0+3) = ((*(buf0+3))+(val0*val1.w));\n  }\n  *((__global float4*)((data0_256+(alu0+alu1)))) = (float4)((*(buf0+0)),(*(buf0+1)),(*(buf0+2)),(*(buf0+3)));\n}",
+"est": {
+"ops": 8192,
+"lds": 21504,
+"mem": 3072
+},
+"uops": 88,
+"children": []
+},
+"r.2.2": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+"Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"UPCAST"
+],
+[
+4,
+"UPCAST"
+],
+[
+16,
+"WEAK"
+]
+],
+"name": "r_16_4_4_16",
+"src": "__kernel void r_16_4_4_16(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[16];\n  int gidx0 = get_group_id(0); /* 16 */\n  int alu0 = (gidx0<<4);\n  *(buf0+0) = 0.0f;\n  *(buf0+1) = 0.0f;\n  *(buf0+10) = 0.0f;\n  *(buf0+11) = 0.0f;\n  *(buf0+12) = 0.0f;\n  *(buf0+13) = 0.0f;\n  *(buf0+14) = 0.0f;\n  *(buf0+15) = 0.0f;\n  *(buf0+2) = 0.0f;\n  *(buf0+3) = 0.0f;\n  *(buf0+4) = 0.0f;\n  *(buf0+5) = 0.0f;\n  *(buf0+6) = 0.0f;\n  *(buf0+7) = 0.0f;\n  *(buf0+8) = 0.0f;\n  *(buf0+9) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 16; Lidx0++) {\n    float val0 = (*(data1_256+(alu0+Lidx0)));\n    int alu17 = (Lidx0<<4);\n    float4 val1 = (*((__global float4*)((data2_256+(alu17+12)))));\n    float4 val2 = (*((__global float4*)((data2_256+(alu17+4)))));\n    float4 val3 = (*((__global float4*)((data2_256+(alu17+8)))));\n    float4 val4 = (*((__global float4*)((data2_256+alu17))));\n    *(buf0+0) = ((*(buf0+0))+(val0*val4.x));\n    *(buf0+1) = ((*(buf0+1))+(val0*val4.y));\n    *(buf0+10) = ((*(buf0+10))+(val0*val3.z));\n    *(buf0+11) = ((*(buf0+11))+(val0*val3.w));\n    *(buf0+12) = ((*(buf0+12))+(val0*val1.x));\n    *(buf0+13) = ((*(buf0+13))+(val0*val1.y));\n    *(buf0+14) = ((*(buf0+14))+(val0*val1.z));\n    *(buf0+15) = ((*(buf0+15))+(val0*val1.w));\n    *(buf0+2) = ((*(buf0+2))+(val0*val4.z));\n    *(buf0+3) = ((*(buf0+3))+(val0*val4.w));\n    *(buf0+4) = ((*(buf0+4))+(val0*val2.x));\n    *(buf0+5) = ((*(buf0+5))+(val0*val2.y));\n    *(buf0+6) = ((*(buf0+6))+(val0*val2.z));\n    *(buf0+7) = ((*(buf0+7))+(val0*val2.w));\n    *(buf0+8) = ((*(buf0+8))+(val0*val3.x));\n    *(buf0+9) = ((*(buf0+9))+(val0*val3.y));\n  }\n  *((__global float4*)((data0_256+(alu0+12)))) = (float4)((*(buf0+12)),(*(buf0+13)),(*(buf0+14)),(*(buf0+15)));\n  *((__global float4*)((data0_256+(alu0+4)))) = (float4)((*(buf0+4)),(*(buf0+5)),(*(buf0+6)),(*(buf0+7)));\n  *((__global float4*)((data0_256+(alu0+8)))) = (float4)((*(buf0+8)),(*(buf0+9)),(*(buf0+10)),(*(buf0+11)));\n  *((__global float4*)((data0_256+alu0))) = (float4)((*(buf0+0)),(*(buf0+1)),(*(buf0+2)),(*(buf0+3)));\n}",
+"est": {
+"ops": 8192,
+"lds": 18432,
+"mem": 3072
+},
+"uops": 242,
+"children": []
+},
+"r.2.3": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+"Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.LOCAL))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"UPCAST"
+],
+[
+16,
+"WEAK"
+]
+],
+"name": "r_16_4_4_16",
+"src": "__kernel void r_16_4_4_16(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[4];\n  int gidx0 = get_group_id(0); /* 16 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int alu0 = (gidx0<<4);\n  int alu1 = (lidx0<<2);\n  *(buf0+0) = 0.0f;\n  *(buf0+1) = 0.0f;\n  *(buf0+2) = 0.0f;\n  *(buf0+3) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 16; Lidx0++) {\n    float val0 = (*(data1_256+(alu0+Lidx0)));\n    float4 val1 = (*((__global float4*)((data2_256+(alu1+(Lidx0<<4))))));\n    *(buf0+0) = ((*(buf0+0))+(val0*val1.x));\n    *(buf0+1) = ((*(buf0+1))+(val0*val1.y));\n    *(buf0+2) = ((*(buf0+2))+(val0*val1.z));\n    *(buf0+3) = ((*(buf0+3))+(val0*val1.w));\n  }\n  *((__global float4*)((data0_256+(alu0+alu1)))) = (float4)((*(buf0+0)),(*(buf0+1)),(*(buf0+2)),(*(buf0+3)));\n}",
+"est": {
+"ops": 8192,
+"lds": 21504,
+"mem": 3072
+},
+"uops": 83,
+"children": []
+},
+"r.2.6": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+"Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.UPCAST))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"GLOBAL"
+],
+[
+4,
+"UPCAST"
+],
+[
+4,
+"WEAK"
+],
+[
+4,
+"UPCAST"
+]
+],
+"name": "r_16_4_4_4_4",
+"src": "__kernel void r_16_4_4_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[4];\n  int gidx0 = get_group_id(0); /* 4 */\n  int gidx1 = get_group_id(1); /* 16 */\n  int alu0 = (gidx0<<2);\n  int alu1 = (gidx1<<4);\n  *(buf0+0) = 0.0f;\n  *(buf0+1) = 0.0f;\n  *(buf0+2) = 0.0f;\n  *(buf0+3) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 4; Lidx0++) {\n    float4 val0 = (*((__global float4*)((data1_256+(alu1+(Lidx0<<2))))));\n    int alu6 = (alu0+(Lidx0<<6));\n    float4 val1 = (*((__global float4*)((data2_256+(alu6+16)))));\n    float4 val2 = (*((__global float4*)((data2_256+(alu6+32)))));\n    float4 val3 = (*((__global float4*)((data2_256+(alu6+48)))));\n    float4 val4 = (*((__global float4*)((data2_256+alu6))));\n    *(buf0+0) = ((*(buf0+0))+(val0.x*val4.x)+(val0.y*val1.x)+(val0.z*val2.x)+(val0.w*val3.x));\n    *(buf0+1) = ((*(buf0+1))+(val0.x*val4.y)+(val0.y*val1.y)+(val0.z*val2.y)+(val0.w*val3.y));\n    *(buf0+2) = ((*(buf0+2))+(val0.x*val4.z)+(val0.y*val1.z)+(val0.z*val2.z)+(val0.w*val3.z));\n    *(buf0+3) = ((*(buf0+3))+(val0.x*val4.w)+(val0.y*val1.w)+(val0.z*val2.w)+(val0.w*val3.w));\n  }\n  *((__global float4*)((data0_256+(alu0+alu1)))) = (float4)((*(buf0+0)),(*(buf0+1)),(*(buf0+2)),(*(buf0+3)));\n}",
+"est": {
+"ops": 8192,
+"lds": 21504,
+"mem": 3072
+},
+"uops": 139,
+"children": []
+},
+"r.2.7": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+"Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.LOCAL))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"UPCAST"
+],
+[
+4,
+"WEAK"
+]
+],
+"name": "r_16_4_4_4_4",
+"src": "__kernel void r_16_4_4_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[4];\n  float buf1[4];\n  __attribute__ ((aligned (16))) __local float buf2[16];\n  int gidx0 = get_group_id(0); /* 4 */\n  int gidx1 = get_group_id(1); /* 16 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int alu0 = (gidx0<<2);\n  int alu1 = (gidx1<<4);\n  *(buf0+0) = 0.0f;\n  *(buf0+1) = 0.0f;\n  *(buf0+2) = 0.0f;\n  *(buf0+3) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 4; Lidx0++) {\n    float val0 = (*(data1_256+((Lidx0<<2)+lidx0+alu1)));\n    float4 val1 = (*((__global float4*)((data2_256+((lidx0<<4)+(Lidx0<<6)+alu0)))));\n    *(buf0+0) = ((*(buf0+0))+(val0*val1.x));\n    *(buf0+1) = ((*(buf0+1))+(val0*val1.y));\n    *(buf0+2) = ((*(buf0+2))+(val0*val1.z));\n    *(buf0+3) = ((*(buf0+3))+(val0*val1.w));\n  }\n  *((__local float4*)((buf2+(lidx0<<2)))) = (float4)((*(buf0+0)),(*(buf0+1)),(*(buf0+2)),(*(buf0+3)));\n  barrier(CLK_LOCAL_MEM_FENCE);\n  *(buf1+0) = 0.0f;\n  *(buf1+1) = 0.0f;\n  *(buf1+2) = 0.0f;\n  *(buf1+3) = 0.0f;\n  for (int Lidx104 = 0; Lidx104 < 4; Lidx104++) {\n    float4 val2 = (*((__local float4*)((buf2+(Lidx104<<2)))));\n    *(buf1+0) = ((*(buf1+0))+val2.x);\n    *(buf1+1) = ((*(buf1+1))+val2.y);\n    *(buf1+2) = ((*(buf1+2))+val2.z);\n    *(buf1+3) = ((*(buf1+3))+val2.w);\n  }\n  if ((lidx0==0)) {\n    *((__global float4*)((data0_256+(alu0+alu1)))) = (float4)((*(buf1+0)),(*(buf1+1)),(*(buf1+2)),(*(buf1+3)));\n  }\n}",
+"est": {
+"ops": 12544,
+"lds": 45056,
+"mem": 3072
+},
+"uops": 148,
+"children": []
+},
+"r.2.8": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+"Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.LOCAL, True))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"UPCAST"
+],
+[
+4,
+"WEAK"
+]
+],
+"name": "r_16_4_4_4_4",
+"src": "__kernel void r_16_4_4_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[4];\n  float buf1[4];\n  __attribute__ ((aligned (16))) __local float buf2[16];\n  int gidx0 = get_group_id(0); /* 4 */\n  int gidx1 = get_group_id(1); /* 16 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int alu0 = (gidx0<<2);\n  int alu1 = (gidx1<<4);\n  int alu2 = (lidx0<<2);\n  *(buf0+0) = 0.0f;\n  *(buf0+1) = 0.0f;\n  *(buf0+2) = 0.0f;\n  *(buf0+3) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 4; Lidx0++) {\n    float val0 = (*(data1_256+(alu2+Lidx0+alu1)));\n    float4 val1 = (*((__global float4*)((data2_256+((lidx0<<6)+(Lidx0<<4)+alu0)))));\n    *(buf0+0) = ((*(buf0+0))+(val0*val1.x));\n    *(buf0+1) = ((*(buf0+1))+(val0*val1.y));\n    *(buf0+2) = ((*(buf0+2))+(val0*val1.z));\n    *(buf0+3) = ((*(buf0+3))+(val0*val1.w));\n  }\n  *((__local float4*)((buf2+alu2))) = (float4)((*(buf0+0)),(*(buf0+1)),(*(buf0+2)),(*(buf0+3)));\n  barrier(CLK_LOCAL_MEM_FENCE);\n  *(buf1+0) = 0.0f;\n  *(buf1+1) = 0.0f;\n  *(buf1+2) = 0.0f;\n  *(buf1+3) = 0.0f;\n  for (int Lidx104 = 0; Lidx104 < 4; Lidx104++) {\n    float4 val2 = (*((__local float4*)((buf2+(Lidx104<<2)))));\n    *(buf1+0) = ((*(buf1+0))+val2.x);\n    *(buf1+1) = ((*(buf1+1))+val2.y);\n    *(buf1+2) = ((*(buf1+2))+val2.z);\n    *(buf1+3) = ((*(buf1+3))+val2.w);\n  }\n  if ((lidx0==0)) {\n    *((__global float4*)((data0_256+(alu0+alu1)))) = (float4)((*(buf1+0)),(*(buf1+1)),(*(buf1+2)),(*(buf1+3)));\n  }\n}",
+"est": {
+"ops": 12544,
+"lds": 45056,
+"mem": 3072
+},
+"uops": 147,
+"children": []
+},
+"r.3": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.LOCAL))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+16,
+"WEAK"
+]
+],
+"name": "r_16_4_4_16",
+"src": "__kernel void r_16_4_4_16(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[1];\n  int gidx0 = get_group_id(0); /* 4 */\n  int gidx1 = get_group_id(1); /* 16 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int alu0 = ((gidx0<<2)+lidx0);\n  int alu1 = (gidx1<<4);\n  *(buf0+0) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 16; Lidx0++) {\n    float val0 = (*(data1_256+(alu1+Lidx0)));\n    float val1 = (*(data2_256+(alu0+(Lidx0<<4))));\n    *(buf0+0) = ((*(buf0+0))+(val0*val1));\n  }\n  *(data0_256+(alu0+alu1)) = (*(buf0+0));\n}",
+"est": {
+"ops": 8192,
+"lds": 33792,
+"mem": 3072
+},
+"uops": 47,
+"children": [
+{
+"label": "UPCAST axis 0 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))",
+"key": "r.3.0"
+},
+{
+"label": "LOCAL axis 0 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.LOCAL))",
+"key": "r.3.1"
+},
+{
+"label": "UPCAST axis 1 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+"key": "r.3.2"
+},
+{
+"label": "LOCAL axis 1 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.LOCAL))",
+"key": "r.3.3"
+},
+{
+"label": "UPCAST axis 2 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.UPCAST))",
+"key": "r.3.4"
+},
+{
+"label": "LOCAL axis 2 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.LOCAL))",
+"err": "AxisType.LOCAL is from (AxisType.GLOBAL, AxisType.WEAK), not AxisType.LOCAL"
+},
+{
+"label": "UNROLL axis 3 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.UPCAST))",
+"key": "r.3.6"
+},
+{
+"label": "GROUP axis 3 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.LOCAL))",
+"key": "r.3.7"
+},
+{
+"label": "GROUPTOP axis 3 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.LOCAL, True))",
+"key": "r.3.8"
+}
+]
+},
+"r.3.0": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.LOCAL))",
+"Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))"
+],
+"shape": [
+[
+4,
+"GLOBAL"
+],
+[
+4,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"UPCAST"
+],
+[
+16,
+"WEAK"
+]
+],
+"name": "r_4_4_4_4_16",
+"src": "__kernel void r_4_4_4_4_16(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[4];\n  int gidx0 = get_group_id(0); /* 4 */\n  int gidx1 = get_group_id(1); /* 4 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int alu0 = ((gidx0<<2)+lidx0);\n  int alu1 = (gidx1<<6);\n  *(buf0+0) = 0.0f;\n  *(buf0+1) = 0.0f;\n  *(buf0+2) = 0.0f;\n  *(buf0+3) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 16; Lidx0++) {\n    int alu6 = (alu1+Lidx0);\n    float val0 = (*(data1_256+(alu6+16)));\n    float val1 = (*(data1_256+(alu6+32)));\n    float val2 = (*(data1_256+(alu6+48)));\n    float val3 = (*(data1_256+alu6));\n    float val4 = (*(data2_256+(alu0+(Lidx0<<4))));\n    *(buf0+0) = ((*(buf0+0))+(val3*val4));\n    *(buf0+1) = ((*(buf0+1))+(val0*val4));\n    *(buf0+2) = ((*(buf0+2))+(val1*val4));\n    *(buf0+3) = ((*(buf0+3))+(val2*val4));\n  }\n  int alu12 = (alu0+alu1);\n  *(data0_256+(alu12+16)) = (*(buf0+1));\n  *(data0_256+(alu12+32)) = (*(buf0+2));\n  *(data0_256+(alu12+48)) = (*(buf0+3));\n  *(data0_256+alu12) = (*(buf0+0));\n}",
+"est": {
+"ops": 8192,
+"lds": 21504,
+"mem": 3072
+},
+"uops": 104,
+"children": []
+},
+"r.3.1": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.LOCAL))",
+"Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.LOCAL))"
+],
+"shape": [
+[
+4,
+"GLOBAL"
+],
+[
+4,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+16,
+"WEAK"
+]
+],
+"name": "r_4_4_4_4_16",
+"src": "__kernel void r_4_4_4_4_16(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[1];\n  int gidx0 = get_group_id(0); /* 4 */\n  int gidx1 = get_group_id(1); /* 4 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int lidx1 = get_local_id(1); /* 4 */\n  int alu0 = ((gidx0<<2)+lidx0);\n  int alu1 = ((gidx1<<6)+(lidx1<<4));\n  *(buf0+0) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 16; Lidx0++) {\n    float val0 = (*(data1_256+(alu1+Lidx0)));\n    float val1 = (*(data2_256+(alu0+(Lidx0<<4))));\n    *(buf0+0) = ((*(buf0+0))+(val0*val1));\n  }\n  *(data0_256+(alu0+alu1)) = (*(buf0+0));\n}",
+"est": {
+"ops": 8192,
+"lds": 33792,
+"mem": 3072
+},
+"uops": 52,
+"children": []
+},
+"r.3.2": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.LOCAL))",
+"Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"UPCAST"
+],
+[
+16,
+"WEAK"
+]
+],
+"name": "r_16_4_4_16",
+"src": "__kernel void r_16_4_4_16(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[4];\n  int gidx0 = get_group_id(0); /* 16 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int alu0 = (gidx0<<4);\n  *(buf0+0) = 0.0f;\n  *(buf0+1) = 0.0f;\n  *(buf0+2) = 0.0f;\n  *(buf0+3) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 16; Lidx0++) {\n    float val0 = (*(data1_256+(alu0+Lidx0)));\n    int alu5 = ((Lidx0<<4)+lidx0);\n    float val1 = (*(data2_256+(alu5+12)));\n    float val2 = (*(data2_256+(alu5+4)));\n    float val3 = (*(data2_256+(alu5+8)));\n    float val4 = (*(data2_256+alu5));\n    *(buf0+0) = ((*(buf0+0))+(val0*val4));\n    *(buf0+1) = ((*(buf0+1))+(val0*val2));\n    *(buf0+2) = ((*(buf0+2))+(val0*val3));\n    *(buf0+3) = ((*(buf0+3))+(val0*val1));\n  }\n  int alu11 = (alu0+lidx0);\n  *(data0_256+(alu11+12)) = (*(buf0+3));\n  *(data0_256+(alu11+4)) = (*(buf0+1));\n  *(data0_256+(alu11+8)) = (*(buf0+2));\n  *(data0_256+alu11) = (*(buf0+0));\n}",
+"est": {
+"ops": 8192,
+"lds": 21504,
+"mem": 3072
+},
+"uops": 99,
+"children": []
+},
+"r.3.3": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.LOCAL))",
+"Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.LOCAL))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+16,
+"WEAK"
+]
+],
+"name": "r_16_4_4_16",
+"src": "__kernel void r_16_4_4_16(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[1];\n  int gidx0 = get_group_id(0); /* 16 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int lidx1 = get_local_id(1); /* 4 */\n  int alu0 = ((lidx1<<2)+lidx0);\n  int alu1 = (gidx0<<4);\n  *(buf0+0) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 16; Lidx0++) {\n    float val0 = (*(data1_256+(alu1+Lidx0)));\n    float val1 = (*(data2_256+(alu0+(Lidx0<<4))));\n    *(buf0+0) = ((*(buf0+0))+(val0*val1));\n  }\n  *(data0_256+(alu0+alu1)) = (*(buf0+0));\n}",
+"est": {
+"ops": 8192,
+"lds": 33792,
+"mem": 3072
+},
+"uops": 47,
+"children": []
+},
+"r.3.4": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.LOCAL))",
+"Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.UPCAST))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"GLOBAL"
+],
+[
+4,
+"UPCAST"
+],
+[
+16,
+"WEAK"
+]
+],
+"name": "r_16_4_4_16",
+"src": "__kernel void r_16_4_4_16(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[4];\n  int gidx0 = get_group_id(0); /* 4 */\n  int gidx1 = get_group_id(1); /* 16 */\n  int alu0 = (gidx0<<2);\n  int alu1 = (gidx1<<4);\n  *(buf0+0) = 0.0f;\n  *(buf0+1) = 0.0f;\n  *(buf0+2) = 0.0f;\n  *(buf0+3) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 16; Lidx0++) {\n    float val0 = (*(data1_256+(alu1+Lidx0)));\n    float4 val1 = (*((__global float4*)((data2_256+(alu0+(Lidx0<<4))))));\n    *(buf0+0) = ((*(buf0+0))+(val0*val1.x));\n    *(buf0+1) = ((*(buf0+1))+(val0*val1.y));\n    *(buf0+2) = ((*(buf0+2))+(val0*val1.z));\n    *(buf0+3) = ((*(buf0+3))+(val0*val1.w));\n  }\n  *((__global float4*)((data0_256+(alu0+alu1)))) = (float4)((*(buf0+0)),(*(buf0+1)),(*(buf0+2)),(*(buf0+3)));\n}",
+"est": {
+"ops": 8192,
+"lds": 21504,
+"mem": 3072
+},
+"uops": 83,
+"children": []
+},
+"r.3.6": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.LOCAL))",
+"Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.UPCAST))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"WEAK"
+],
+[
+4,
+"UPCAST"
+]
+],
+"name": "r_16_4_4_4_4",
+"src": "__kernel void r_16_4_4_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[1];\n  int gidx0 = get_group_id(0); /* 4 */\n  int gidx1 = get_group_id(1); /* 16 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int alu0 = ((gidx0<<2)+lidx0);\n  int alu1 = (gidx1<<4);\n  *(buf0+0) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 4; Lidx0++) {\n    int alu3 = (alu0+(Lidx0<<6));\n    float val0 = (*(data2_256+(alu3+16)));\n    float val1 = (*(data2_256+(alu3+32)));\n    float val2 = (*(data2_256+(alu3+48)));\n    float val3 = (*(data2_256+alu3));\n    float4 val4 = (*((__global float4*)((data1_256+(alu1+(Lidx0<<2))))));\n    *(buf0+0) = ((*(buf0+0))+(val4.x*val3)+(val4.y*val0)+(val4.z*val1)+(val4.w*val2));\n  }\n  *(data0_256+(alu0+alu1)) = (*(buf0+0));\n}",
+"est": {
+"ops": 8192,
+"lds": 33792,
+"mem": 3072
+},
+"uops": 76,
+"children": []
+},
+"r.3.7": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.LOCAL))",
+"Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.LOCAL))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"WEAK"
+]
+],
+"name": "r_16_4_4_4_4",
+"src": "__kernel void r_16_4_4_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[1];\n  float buf1[1];\n  __attribute__ ((aligned (16))) __local float buf2[16];\n  int gidx0 = get_group_id(0); /* 4 */\n  int gidx1 = get_group_id(1); /* 16 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int lidx1 = get_local_id(1); /* 4 */\n  int alu0 = ((gidx0<<2)+lidx0);\n  int alu1 = (gidx1<<4);\n  *(buf0+0) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 4; Lidx0++) {\n    float val0 = (*(data1_256+((Lidx0<<2)+lidx1+alu1)));\n    float val1 = (*(data2_256+(alu0+(lidx1<<4)+(Lidx0<<6))));\n    *(buf0+0) = ((*(buf0+0))+(val0*val1));\n  }\n  int alu5 = (lidx0<<2);\n  *(buf2+(alu5+lidx1)) = (*(buf0+0));\n  barrier(CLK_LOCAL_MEM_FENCE);\n  *(buf1+0) = 0.0f;\n  for (int Lidx104 = 0; Lidx104 < 4; Lidx104++) {\n    float val2 = (*(buf2+(alu5+Lidx104)));\n    *(buf1+0) = ((*(buf1+0))+val2);\n  }\n  if ((lidx1==0)) {\n    *(data0_256+(alu0+alu1)) = (*(buf1+0));\n  }\n}",
+"est": {
+"ops": 13312,
+"lds": 57344,
+"mem": 3072
+},
+"uops": 82,
+"children": []
+},
+"r.3.8": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.LOCAL))",
+"Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.LOCAL, True))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"WEAK"
+]
+],
+"name": "r_16_4_4_4_4",
+"src": "__kernel void r_16_4_4_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[1];\n  float buf1[1];\n  __attribute__ ((aligned (16))) __local float buf2[16];\n  int gidx0 = get_group_id(0); /* 4 */\n  int gidx1 = get_group_id(1); /* 16 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int lidx1 = get_local_id(1); /* 4 */\n  int alu0 = ((gidx0<<2)+lidx0);\n  int alu1 = (gidx1<<4);\n  *(buf0+0) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 4; Lidx0++) {\n    float val0 = (*(data1_256+((lidx1<<2)+Lidx0+alu1)));\n    float val1 = (*(data2_256+(alu0+(lidx1<<6)+(Lidx0<<4))));\n    *(buf0+0) = ((*(buf0+0))+(val0*val1));\n  }\n  int alu5 = (lidx0<<2);\n  *(buf2+(alu5+lidx1)) = (*(buf0+0));\n  barrier(CLK_LOCAL_MEM_FENCE);\n  *(buf1+0) = 0.0f;\n  for (int Lidx104 = 0; Lidx104 < 4; Lidx104++) {\n    float val2 = (*(buf2+(alu5+Lidx104)));\n    *(buf1+0) = ((*(buf1+0))+val2);\n  }\n  if ((lidx1==0)) {\n    *(data0_256+(alu0+alu1)) = (*(buf1+0));\n  }\n}",
+"est": {
+"ops": 13312,
+"lds": 57344,
+"mem": 3072
+},
+"uops": 82,
+"children": []
+},
+"r.4": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.UPCAST))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"WEAK"
+],
+[
+4,
+"UPCAST"
+]
+],
+"name": "r_16_16_4_4",
+"src": "__kernel void r_16_16_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[1];\n  int gidx0 = get_group_id(0); /* 16 */\n  int gidx1 = get_group_id(1); /* 16 */\n  int alu0 = (gidx1<<4);\n  *(buf0+0) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 4; Lidx0++) {\n    int alu2 = ((Lidx0<<6)+gidx0);\n    float val0 = (*(data2_256+(alu2+16)));\n    float val1 = (*(data2_256+(alu2+32)));\n    float val2 = (*(data2_256+(alu2+48)));\n    float val3 = (*(data2_256+alu2));\n    float4 val4 = (*((__global float4*)((data1_256+(alu0+(Lidx0<<2))))));\n    *(buf0+0) = ((*(buf0+0))+(val4.x*val3)+(val4.y*val0)+(val4.z*val1)+(val4.w*val2));\n  }\n  *(data0_256+(alu0+gidx0)) = (*(buf0+0));\n}",
+"est": {
+"ops": 8192,
+"lds": 33792,
+"mem": 3072
+},
+"uops": 73,
+"children": [
+{
+"label": "UPCAST axis 0 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))",
+"key": "r.4.0"
+},
+{
+"label": "LOCAL axis 0 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.LOCAL))",
+"key": "r.4.1"
+},
+{
+"label": "UPCAST axis 1 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+"key": "r.4.2"
+},
+{
+"label": "LOCAL axis 1 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.LOCAL))",
+"key": "r.4.3"
+},
+{
+"label": "UNROLL axis 2 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.UPCAST))",
+"key": "r.4.4"
+},
+{
+"label": "GROUP axis 2 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.LOCAL))",
+"key": "r.4.5"
+},
+{
+"label": "GROUPTOP axis 2 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.LOCAL, True))",
+"key": "r.4.6"
+},
+{
+"label": "UNROLL axis 3 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.UPCAST))",
+"err": "AxisType.UPCAST is from (AxisType.GLOBAL, AxisType.LOCAL, AxisType.WEAK), not AxisType.UPCAST"
+},
+{
+"label": "GROUP axis 3 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.LOCAL))",
+"err": "AxisType.LOCAL is from (AxisType.GLOBAL, AxisType.WEAK), not AxisType.UPCAST"
+},
+{
+"label": "GROUPTOP axis 3 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.LOCAL, True))",
+"err": "AxisType.LOCAL is from (AxisType.GLOBAL, AxisType.WEAK), not AxisType.UPCAST"
+}
+]
+},
+"r.4.0": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.UPCAST))",
+"Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))"
+],
+"shape": [
+[
+4,
+"GLOBAL"
+],
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"UPCAST"
+],
+[
+4,
+"WEAK"
+],
+[
+4,
+"UPCAST"
+]
+],
+"name": "r_4_16_4_4_4",
+"src": "__kernel void r_4_16_4_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[4];\n  int gidx0 = get_group_id(0); /* 16 */\n  int gidx1 = get_group_id(1); /* 4 */\n  int alu0 = (gidx1<<6);\n  *(buf0+0) = 0.0f;\n  *(buf0+1) = 0.0f;\n  *(buf0+2) = 0.0f;\n  *(buf0+3) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 4; Lidx0++) {\n    int alu5 = ((Lidx0<<6)+gidx0);\n    float val0 = (*(data2_256+(alu5+16)));\n    float val1 = (*(data2_256+(alu5+32)));\n    float val2 = (*(data2_256+(alu5+48)));\n    float val3 = (*(data2_256+alu5));\n    int alu6 = (alu0+(Lidx0<<2));\n    float4 val4 = (*((__global float4*)((data1_256+(alu6+16)))));\n    float4 val5 = (*((__global float4*)((data1_256+(alu6+32)))));\n    float4 val6 = (*((__global float4*)((data1_256+(alu6+48)))));\n    float4 val7 = (*((__global float4*)((data1_256+alu6))));\n    *(buf0+0) = ((*(buf0+0))+(val7.x*val3)+(val7.y*val0)+(val7.z*val1)+(val7.w*val2));\n    *(buf0+1) = ((*(buf0+1))+(val4.x*val3)+(val4.y*val0)+(val4.z*val1)+(val4.w*val2));\n    *(buf0+2) = ((*(buf0+2))+(val5.x*val3)+(val5.y*val0)+(val5.z*val1)+(val5.w*val2));\n    *(buf0+3) = ((*(buf0+3))+(val6.x*val3)+(val6.y*val0)+(val6.z*val1)+(val6.w*val2));\n  }\n  int alu12 = (alu0+gidx0);\n  *(data0_256+(alu12+16)) = (*(buf0+1));\n  *(data0_256+(alu12+32)) = (*(buf0+2));\n  *(data0_256+(alu12+48)) = (*(buf0+3));\n  *(data0_256+alu12) = (*(buf0+0));\n}",
+"est": {
+"ops": 8192,
+"lds": 21504,
+"mem": 3072
+},
+"uops": 151,
+"children": []
+},
+"r.4.1": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.UPCAST))",
+"Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.LOCAL))"
+],
+"shape": [
+[
+4,
+"GLOBAL"
+],
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"WEAK"
+],
+[
+4,
+"UPCAST"
+]
+],
+"name": "r_4_16_4_4_4",
+"src": "__kernel void r_4_16_4_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[1];\n  int gidx0 = get_group_id(0); /* 16 */\n  int gidx1 = get_group_id(1); /* 4 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int alu0 = ((gidx1<<6)+(lidx0<<4));\n  *(buf0+0) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 4; Lidx0++) {\n    int alu2 = ((Lidx0<<6)+gidx0);\n    float val0 = (*(data2_256+(alu2+16)));\n    float val1 = (*(data2_256+(alu2+32)));\n    float val2 = (*(data2_256+(alu2+48)));\n    float val3 = (*(data2_256+alu2));\n    float4 val4 = (*((__global float4*)((data1_256+(alu0+(Lidx0<<2))))));\n    *(buf0+0) = ((*(buf0+0))+(val4.x*val3)+(val4.y*val0)+(val4.z*val1)+(val4.w*val2));\n  }\n  *(data0_256+(alu0+gidx0)) = (*(buf0+0));\n}",
+"est": {
+"ops": 8192,
+"lds": 33792,
+"mem": 3072
+},
+"uops": 76,
+"children": []
+},
+"r.4.2": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.UPCAST))",
+"Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"GLOBAL"
+],
+[
+4,
+"UPCAST"
+],
+[
+4,
+"WEAK"
+],
+[
+4,
+"UPCAST"
+]
+],
+"name": "r_16_4_4_4_4",
+"src": "__kernel void r_16_4_4_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[4];\n  int gidx0 = get_group_id(0); /* 4 */\n  int gidx1 = get_group_id(1); /* 16 */\n  int alu0 = (gidx0<<2);\n  int alu1 = (gidx1<<4);\n  *(buf0+0) = 0.0f;\n  *(buf0+1) = 0.0f;\n  *(buf0+2) = 0.0f;\n  *(buf0+3) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 4; Lidx0++) {\n    float4 val0 = (*((__global float4*)((data1_256+(alu1+(Lidx0<<2))))));\n    int alu6 = (alu0+(Lidx0<<6));\n    float4 val1 = (*((__global float4*)((data2_256+(alu6+16)))));\n    float4 val2 = (*((__global float4*)((data2_256+(alu6+32)))));\n    float4 val3 = (*((__global float4*)((data2_256+(alu6+48)))));\n    float4 val4 = (*((__global float4*)((data2_256+alu6))));\n    *(buf0+0) = ((*(buf0+0))+(val0.x*val4.x)+(val0.y*val1.x)+(val0.z*val2.x)+(val0.w*val3.x));\n    *(buf0+1) = ((*(buf0+1))+(val0.x*val4.y)+(val0.y*val1.y)+(val0.z*val2.y)+(val0.w*val3.y));\n    *(buf0+2) = ((*(buf0+2))+(val0.x*val4.z)+(val0.y*val1.z)+(val0.z*val2.z)+(val0.w*val3.z));\n    *(buf0+3) = ((*(buf0+3))+(val0.x*val4.w)+(val0.y*val1.w)+(val0.z*val2.w)+(val0.w*val3.w));\n  }\n  *((__global float4*)((data0_256+(alu0+alu1)))) = (float4)((*(buf0+0)),(*(buf0+1)),(*(buf0+2)),(*(buf0+3)));\n}",
+"est": {
+"ops": 8192,
+"lds": 21504,
+"mem": 3072
+},
+"uops": 139,
+"children": []
+},
+"r.4.3": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.UPCAST))",
+"Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.LOCAL))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"WEAK"
+],
+[
+4,
+"UPCAST"
+]
+],
+"name": "r_16_4_4_4_4",
+"src": "__kernel void r_16_4_4_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[1];\n  int gidx0 = get_group_id(0); /* 4 */\n  int gidx1 = get_group_id(1); /* 16 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int alu0 = ((gidx0<<2)+lidx0);\n  int alu1 = (gidx1<<4);\n  *(buf0+0) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 4; Lidx0++) {\n    int alu3 = (alu0+(Lidx0<<6));\n    float val0 = (*(data2_256+(alu3+16)));\n    float val1 = (*(data2_256+(alu3+32)));\n    float val2 = (*(data2_256+(alu3+48)));\n    float val3 = (*(data2_256+alu3));\n    float4 val4 = (*((__global float4*)((data1_256+(alu1+(Lidx0<<2))))));\n    *(buf0+0) = ((*(buf0+0))+(val4.x*val3)+(val4.y*val0)+(val4.z*val1)+(val4.w*val2));\n  }\n  *(data0_256+(alu0+alu1)) = (*(buf0+0));\n}",
+"est": {
+"ops": 8192,
+"lds": 33792,
+"mem": 3072
+},
+"uops": 76,
+"children": []
+},
+"r.4.4": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.UPCAST))",
+"Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.UPCAST))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"UPCAST"
+],
+[
+4,
+"UPCAST"
+]
+],
+"name": "r_16_16_4_4",
+"src": "__kernel void r_16_16_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  int gidx0 = get_group_id(0); /* 16 */\n  float val0 = (*(data2_256+gidx0));\n  float val1 = (*(data2_256+(gidx0+112)));\n  float val2 = (*(data2_256+(gidx0+128)));\n  float val3 = (*(data2_256+(gidx0+144)));\n  float val4 = (*(data2_256+(gidx0+16)));\n  float val5 = (*(data2_256+(gidx0+160)));\n  float val6 = (*(data2_256+(gidx0+176)));\n  float val7 = (*(data2_256+(gidx0+192)));\n  float val8 = (*(data2_256+(gidx0+208)));\n  float val9 = (*(data2_256+(gidx0+224)));\n  float val10 = (*(data2_256+(gidx0+240)));\n  float val11 = (*(data2_256+(gidx0+32)));\n  float val12 = (*(data2_256+(gidx0+48)));\n  float val13 = (*(data2_256+(gidx0+64)));\n  float val14 = (*(data2_256+(gidx0+80)));\n  float val15 = (*(data2_256+(gidx0+96)));\n  int gidx1 = get_group_id(1); /* 16 */\n  int alu0 = (gidx1<<4);\n  float4 val16 = (*((__global float4*)((data1_256+(alu0+12)))));\n  float4 val17 = (*((__global float4*)((data1_256+(alu0+4)))));\n  float4 val18 = (*((__global float4*)((data1_256+(alu0+8)))));\n  float4 val19 = (*((__global float4*)((data1_256+alu0))));\n  *(data0_256+(alu0+gidx0)) = ((val19.x*val0)+(val19.y*val4)+(val19.z*val11)+(val19.w*val12)+(val17.x*val13)+(val17.y*val14)+(val17.z*val15)+(val17.w*val1)+(val18.x*val2)+(val18.y*val3)+(val18.z*val5)+(val18.w*val6)+(val16.x*val7)+(val16.y*val8)+(val16.z*val9)+(val16.w*val10));\n}",
+"est": {
+"ops": 7936,
+"lds": 18432,
+"mem": 3072
+},
+"uops": 160,
+"children": []
+},
+"r.4.5": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.UPCAST))",
+"Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.LOCAL))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"UPCAST"
+]
+],
+"name": "r_16_16_4_4",
+"src": "__kernel void r_16_16_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[1];\n  __attribute__ ((aligned (16))) __local float buf1[4];\n  int gidx0 = get_group_id(0); /* 16 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int alu0 = ((lidx0<<6)+gidx0);\n  float val0 = (*(data2_256+(alu0+16)));\n  float val1 = (*(data2_256+(alu0+32)));\n  float val2 = (*(data2_256+(alu0+48)));\n  float val3 = (*(data2_256+alu0));\n  int gidx1 = get_group_id(1); /* 16 */\n  int alu1 = (gidx1<<4);\n  float4 val4 = (*((__global float4*)((data1_256+(alu1+(lidx0<<2))))));\n  *(buf1+lidx0) = ((val4.x*val3)+(val4.y*val0)+(val4.z*val1)+(val4.w*val2));\n  barrier(CLK_LOCAL_MEM_FENCE);\n  *(buf0+0) = 0.0f;\n  for (int Lidx104 = 0; Lidx104 < 4; Lidx104++) {\n    float val5 = (*(buf1+Lidx104));\n    *(buf0+0) = ((*(buf0+0))+val5);\n  }\n  if ((lidx0==0)) {\n    *(data0_256+(alu1+gidx0)) = (*(buf0+0));\n  }\n}",
+"est": {
+"ops": 12288,
+"lds": 41984,
+"mem": 3072
+},
+"uops": 84,
+"children": []
+},
+"r.4.6": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.UPCAST))",
+"Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.LOCAL, True))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"UPCAST"
+]
+],
+"name": "r_16_16_4_4",
+"src": "__kernel void r_16_16_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[1];\n  __attribute__ ((aligned (16))) __local float buf1[4];\n  int gidx0 = get_group_id(0); /* 16 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int alu0 = ((lidx0<<6)+gidx0);\n  float val0 = (*(data2_256+(alu0+16)));\n  float val1 = (*(data2_256+(alu0+32)));\n  float val2 = (*(data2_256+(alu0+48)));\n  float val3 = (*(data2_256+alu0));\n  int gidx1 = get_group_id(1); /* 16 */\n  int alu1 = (gidx1<<4);\n  float4 val4 = (*((__global float4*)((data1_256+(alu1+(lidx0<<2))))));\n  *(buf1+lidx0) = ((val4.x*val3)+(val4.y*val0)+(val4.z*val1)+(val4.w*val2));\n  barrier(CLK_LOCAL_MEM_FENCE);\n  *(buf0+0) = 0.0f;\n  for (int Lidx104 = 0; Lidx104 < 4; Lidx104++) {\n    float val5 = (*(buf1+Lidx104));\n    *(buf0+0) = ((*(buf0+0))+val5);\n  }\n  if ((lidx0==0)) {\n    *(data0_256+(alu1+gidx0)) = (*(buf0+0));\n  }\n}",
+"est": {
+"ops": 12288,
+"lds": 41984,
+"mem": 3072
+},
+"uops": 84,
+"children": []
+},
+"r.5": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.LOCAL))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"WEAK"
+]
+],
+"name": "r_16_16_4_4",
+"src": "__kernel void r_16_16_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[1];\n  float buf1[1];\n  __attribute__ ((aligned (16))) __local float buf2[4];\n  int gidx0 = get_group_id(0); /* 16 */\n  int gidx1 = get_group_id(1); /* 16 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int alu0 = (gidx1<<4);\n  *(buf0+0) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 4; Lidx0++) {\n    float val0 = (*(data1_256+((Lidx0<<2)+lidx0+alu0)));\n    float val1 = (*(data2_256+((lidx0<<4)+(Lidx0<<6)+gidx0)));\n    *(buf0+0) = ((*(buf0+0))+(val0*val1));\n  }\n  *(buf2+lidx0) = (*(buf0+0));\n  barrier(CLK_LOCAL_MEM_FENCE);\n  *(buf1+0) = 0.0f;\n  for (int Lidx103 = 0; Lidx103 < 4; Lidx103++) {\n    float val2 = (*(buf2+Lidx103));\n    *(buf1+0) = ((*(buf1+0))+val2);\n  }\n  if ((lidx0==0)) {\n    *(data0_256+(alu0+gidx0)) = (*(buf1+0));\n  }\n}",
+"est": {
+"ops": 13312,
+"lds": 57344,
+"mem": 3072
+},
+"uops": 76,
+"children": [
+{
+"label": "UPCAST axis 0 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))",
+"key": "r.5.0"
+},
+{
+"label": "LOCAL axis 0 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.LOCAL))",
+"key": "r.5.1"
+},
+{
+"label": "UPCAST axis 1 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+"key": "r.5.2"
+},
+{
+"label": "LOCAL axis 1 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.LOCAL))",
+"key": "r.5.3"
+},
+{
+"label": "UNROLL axis 2 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.UPCAST))",
+"key": "r.5.4"
+},
+{
+"label": "GROUP axis 2 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.LOCAL))",
+"err": "AxisType.LOCAL is from (AxisType.GLOBAL, AxisType.WEAK), not AxisType.LOCAL"
+},
+{
+"label": "GROUPTOP axis 2 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.LOCAL, True))",
+"err": "AxisType.LOCAL is from (AxisType.GLOBAL, AxisType.WEAK), not AxisType.LOCAL"
+},
+{
+"label": "UNROLL axis 3 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.UPCAST))",
+"key": "r.5.7"
+},
+{
+"label": "GROUP axis 3 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.LOCAL))",
+"key": "r.5.8"
+},
+{
+"label": "GROUPTOP axis 3 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.LOCAL, True))",
+"key": "r.5.9"
+}
+]
+},
+"r.5.0": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.LOCAL))",
+"Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))"
+],
+"shape": [
+[
+4,
+"GLOBAL"
+],
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"UPCAST"
+],
+[
+4,
+"WEAK"
+]
+],
+"name": "r_4_16_4_4_4",
+"src": "__kernel void r_4_16_4_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[4];\n  float buf1[4];\n  __attribute__ ((aligned (16))) __local float buf2[16];\n  int gidx0 = get_group_id(0); /* 16 */\n  int gidx1 = get_group_id(1); /* 4 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int alu0 = (gidx1<<6);\n  *(buf0+0) = 0.0f;\n  *(buf0+1) = 0.0f;\n  *(buf0+2) = 0.0f;\n  *(buf0+3) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 4; Lidx0++) {\n    int alu5 = ((Lidx0<<2)+lidx0+alu0);\n    float val0 = (*(data1_256+(alu5+16)));\n    float val1 = (*(data1_256+(alu5+32)));\n    float val2 = (*(data1_256+(alu5+48)));\n    float val3 = (*(data1_256+alu5));\n    float val4 = (*(data2_256+((lidx0<<4)+(Lidx0<<6)+gidx0)));\n    *(buf0+0) = ((*(buf0+0))+(val3*val4));\n    *(buf0+1) = ((*(buf0+1))+(val0*val4));\n    *(buf0+2) = ((*(buf0+2))+(val1*val4));\n    *(buf0+3) = ((*(buf0+3))+(val2*val4));\n  }\n  *((__local float4*)((buf2+(lidx0<<2)))) = (float4)((*(buf0+0)),(*(buf0+1)),(*(buf0+2)),(*(buf0+3)));\n  barrier(CLK_LOCAL_MEM_FENCE);\n  *(buf1+0) = 0.0f;\n  *(buf1+1) = 0.0f;\n  *(buf1+2) = 0.0f;\n  *(buf1+3) = 0.0f;\n  for (int Lidx103 = 0; Lidx103 < 4; Lidx103++) {\n    float4 val5 = (*((__local float4*)((buf2+(Lidx103<<2)))));\n    *(buf1+0) = ((*(buf1+0))+val5.x);\n    *(buf1+1) = ((*(buf1+1))+val5.y);\n    *(buf1+2) = ((*(buf1+2))+val5.z);\n    *(buf1+3) = ((*(buf1+3))+val5.w);\n  }\n  int alu22 = (alu0+gidx0);\n  bool alu23 = (lidx0==0);\n  if (alu23) {\n    *(data0_256+(alu22+16)) = (*(buf1+1));\n  }\n  if (alu23) {\n    *(data0_256+(alu22+32)) = (*(buf1+2));\n  }\n  if (alu23) {\n    *(data0_256+(alu22+48)) = (*(buf1+3));\n  }\n  if (alu23) {\n    *(data0_256+alu22) = (*(buf1+0));\n  }\n}",
+"est": {
+"ops": 12544,
+"lds": 45056,
+"mem": 3072
+},
+"uops": 170,
+"children": []
+},
+"r.5.1": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.LOCAL))",
+"Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.LOCAL))"
+],
+"shape": [
+[
+4,
+"GLOBAL"
+],
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"WEAK"
+]
+],
+"name": "r_4_16_4_4_4",
+"src": "__kernel void r_4_16_4_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[1];\n  float buf1[1];\n  __attribute__ ((aligned (16))) __local float buf2[16];\n  int gidx0 = get_group_id(0); /* 16 */\n  int gidx1 = get_group_id(1); /* 4 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int lidx1 = get_local_id(1); /* 4 */\n  int alu0 = ((gidx1<<6)+(lidx1<<4));\n  *(buf0+0) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 4; Lidx0++) {\n    float val0 = (*(data1_256+(alu0+(Lidx0<<2)+lidx0)));\n    float val1 = (*(data2_256+((lidx0<<4)+(Lidx0<<6)+gidx0)));\n    *(buf0+0) = ((*(buf0+0))+(val0*val1));\n  }\n  int alu4 = (lidx1<<2);\n  *(buf2+(alu4+lidx0)) = (*(buf0+0));\n  barrier(CLK_LOCAL_MEM_FENCE);\n  *(buf1+0) = 0.0f;\n  for (int Lidx103 = 0; Lidx103 < 4; Lidx103++) {\n    float val2 = (*(buf2+(alu4+Lidx103)));\n    *(buf1+0) = ((*(buf1+0))+val2);\n  }\n  if ((lidx0==0)) {\n    *(data0_256+(alu0+gidx0)) = (*(buf1+0));\n  }\n}",
+"est": {
+"ops": 13312,
+"lds": 57344,
+"mem": 3072
+},
+"uops": 82,
+"children": []
+},
+"r.5.2": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.LOCAL))",
+"Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"UPCAST"
+],
+[
+4,
+"WEAK"
+]
+],
+"name": "r_16_4_4_4_4",
+"src": "__kernel void r_16_4_4_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[4];\n  float buf1[4];\n  __attribute__ ((aligned (16))) __local float buf2[16];\n  int gidx0 = get_group_id(0); /* 4 */\n  int gidx1 = get_group_id(1); /* 16 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int alu0 = (gidx0<<2);\n  int alu1 = (gidx1<<4);\n  *(buf0+0) = 0.0f;\n  *(buf0+1) = 0.0f;\n  *(buf0+2) = 0.0f;\n  *(buf0+3) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 4; Lidx0++) {\n    float val0 = (*(data1_256+((Lidx0<<2)+lidx0+alu1)));\n    float4 val1 = (*((__global float4*)((data2_256+((lidx0<<4)+(Lidx0<<6)+alu0)))));\n    *(buf0+0) = ((*(buf0+0))+(val0*val1.x));\n    *(buf0+1) = ((*(buf0+1))+(val0*val1.y));\n    *(buf0+2) = ((*(buf0+2))+(val0*val1.z));\n    *(buf0+3) = ((*(buf0+3))+(val0*val1.w));\n  }\n  *((__local float4*)((buf2+(lidx0<<2)))) = (float4)((*(buf0+0)),(*(buf0+1)),(*(buf0+2)),(*(buf0+3)));\n  barrier(CLK_LOCAL_MEM_FENCE);\n  *(buf1+0) = 0.0f;\n  *(buf1+1) = 0.0f;\n  *(buf1+2) = 0.0f;\n  *(buf1+3) = 0.0f;\n  for (int Lidx103 = 0; Lidx103 < 4; Lidx103++) {\n    float4 val2 = (*((__local float4*)((buf2+(Lidx103<<2)))));\n    *(buf1+0) = ((*(buf1+0))+val2.x);\n    *(buf1+1) = ((*(buf1+1))+val2.y);\n    *(buf1+2) = ((*(buf1+2))+val2.z);\n    *(buf1+3) = ((*(buf1+3))+val2.w);\n  }\n  if ((lidx0==0)) {\n    *((__global float4*)((data0_256+(alu0+alu1)))) = (float4)((*(buf1+0)),(*(buf1+1)),(*(buf1+2)),(*(buf1+3)));\n  }\n}",
+"est": {
+"ops": 12544,
+"lds": 45056,
+"mem": 3072
+},
+"uops": 148,
+"children": []
+},
+"r.5.3": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.LOCAL))",
+"Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.LOCAL))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"WEAK"
+]
+],
+"name": "r_16_4_4_4_4",
+"src": "__kernel void r_16_4_4_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[1];\n  float buf1[1];\n  __attribute__ ((aligned (16))) __local float buf2[16];\n  int gidx0 = get_group_id(0); /* 4 */\n  int gidx1 = get_group_id(1); /* 16 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int lidx1 = get_local_id(1); /* 4 */\n  int alu0 = ((gidx0<<2)+lidx1);\n  int alu1 = (gidx1<<4);\n  *(buf0+0) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 4; Lidx0++) {\n    float val0 = (*(data1_256+((Lidx0<<2)+lidx0+alu1)));\n    float val1 = (*(data2_256+(alu0+(lidx0<<4)+(Lidx0<<6))));\n    *(buf0+0) = ((*(buf0+0))+(val0*val1));\n  }\n  int alu5 = (lidx1<<2);\n  *(buf2+(alu5+lidx0)) = (*(buf0+0));\n  barrier(CLK_LOCAL_MEM_FENCE);\n  *(buf1+0) = 0.0f;\n  for (int Lidx103 = 0; Lidx103 < 4; Lidx103++) {\n    float val2 = (*(buf2+(alu5+Lidx103)));\n    *(buf1+0) = ((*(buf1+0))+val2);\n  }\n  if ((lidx0==0)) {\n    *(data0_256+(alu0+alu1)) = (*(buf1+0));\n  }\n}",
+"est": {
+"ops": 13312,
+"lds": 57344,
+"mem": 3072
+},
+"uops": 82,
+"children": []
+},
+"r.5.4": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.LOCAL))",
+"Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.UPCAST))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"WEAK"
+],
+[
+4,
+"UPCAST"
+]
+],
+"name": "r_16_16_4_4",
+"src": "__kernel void r_16_16_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[1];\n  int gidx0 = get_group_id(0); /* 16 */\n  int gidx1 = get_group_id(1); /* 16 */\n  int alu0 = (gidx1<<4);\n  *(buf0+0) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 4; Lidx0++) {\n    int alu2 = ((Lidx0<<6)+gidx0);\n    float val0 = (*(data2_256+(alu2+16)));\n    float val1 = (*(data2_256+(alu2+32)));\n    float val2 = (*(data2_256+(alu2+48)));\n    float val3 = (*(data2_256+alu2));\n    float4 val4 = (*((__global float4*)((data1_256+(alu0+(Lidx0<<2))))));\n    *(buf0+0) = ((*(buf0+0))+(val4.x*val3)+(val4.y*val0)+(val4.z*val1)+(val4.w*val2));\n  }\n  *(data0_256+(alu0+gidx0)) = (*(buf0+0));\n}",
+"est": {
+"ops": 8192,
+"lds": 33792,
+"mem": 3072
+},
+"uops": 73,
+"children": []
+},
+"r.5.7": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.LOCAL))",
+"Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.UPCAST))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"UPCAST"
+]
+],
+"name": "r_16_16_4_4",
+"src": "__kernel void r_16_16_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[1];\n  __attribute__ ((aligned (16))) __local float buf1[4];\n  int gidx1 = get_group_id(1); /* 16 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int alu0 = (gidx1<<4);\n  int alu1 = (alu0+lidx0);\n  float val0 = (*(data1_256+(alu1+12)));\n  float val1 = (*(data1_256+(alu1+4)));\n  float val2 = (*(data1_256+(alu1+8)));\n  float val3 = (*(data1_256+alu1));\n  int gidx0 = get_group_id(0); /* 16 */\n  int alu2 = ((lidx0<<4)+gidx0);\n  float val4 = (*(data2_256+(alu2+128)));\n  float val5 = (*(data2_256+(alu2+192)));\n  float val6 = (*(data2_256+(alu2+64)));\n  float val7 = (*(data2_256+alu2));\n  *(buf1+lidx0) = ((val3*val7)+(val1*val6)+(val2*val4)+(val0*val5));\n  barrier(CLK_LOCAL_MEM_FENCE);\n  *(buf0+0) = 0.0f;\n  for (int Lidx103 = 0; Lidx103 < 4; Lidx103++) {\n    float val8 = (*(buf1+Lidx103));\n    *(buf0+0) = ((*(buf0+0))+val8);\n  }\n  if ((lidx0==0)) {\n    *(data0_256+(alu0+gidx0)) = (*(buf0+0));\n  }\n}",
+"est": {
+"ops": 12288,
+"lds": 41984,
+"mem": 3072
+},
+"uops": 87,
+"children": []
+},
+"r.5.8": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.LOCAL))",
+"Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.LOCAL))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"LOCAL"
+]
+],
+"name": "r_16_16_4_4",
+"src": "__kernel void r_16_16_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[1];\n  __attribute__ ((aligned (16))) __local float buf1[16];\n  int gidx1 = get_group_id(1); /* 16 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int lidx1 = get_local_id(1); /* 4 */\n  int alu0 = ((lidx1<<2)+lidx0);\n  int alu1 = (gidx1<<4);\n  float val0 = (*(data1_256+(alu0+alu1)));\n  int gidx0 = get_group_id(0); /* 16 */\n  float val1 = (*(data2_256+((lidx0<<4)+(lidx1<<6)+gidx0)));\n  *(buf1+alu0) = (val0*val1);\n  barrier(CLK_LOCAL_MEM_FENCE);\n  *(buf0+0) = 0.0f;\n  for (int Lidx103 = 0; Lidx103 < 4; Lidx103++) {\n    for (int Lidx104 = 0; Lidx104 < 4; Lidx104++) {\n      float val2 = (*(buf1+((Lidx104<<2)+Lidx103)));\n      *(buf0+0) = ((*(buf0+0))+val2);\n    }\n  }\n  if (((lidx0==0)&(lidx1==0))) {\n    *(data0_256+(alu1+gidx0)) = (*(buf0+0));\n  }\n}",
+"est": {
+"ops": 81920,
+"lds": 312320,
+"mem": 3072
+},
+"uops": 69,
+"children": []
+},
+"r.5.9": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.LOCAL))",
+"Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.LOCAL, True))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"LOCAL"
+]
+],
+"name": "r_16_16_4_4",
+"src": "__kernel void r_16_16_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[1];\n  __attribute__ ((aligned (16))) __local float buf1[16];\n  int gidx1 = get_group_id(1); /* 16 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int lidx1 = get_local_id(1); /* 4 */\n  int alu0 = ((lidx1<<2)+lidx0);\n  int alu1 = (gidx1<<4);\n  float val0 = (*(data1_256+(alu0+alu1)));\n  int gidx0 = get_group_id(0); /* 16 */\n  float val1 = (*(data2_256+((lidx0<<4)+(lidx1<<6)+gidx0)));\n  *(buf1+alu0) = (val0*val1);\n  barrier(CLK_LOCAL_MEM_FENCE);\n  *(buf0+0) = 0.0f;\n  for (int Lidx103 = 0; Lidx103 < 4; Lidx103++) {\n    for (int Lidx104 = 0; Lidx104 < 4; Lidx104++) {\n      float val2 = (*(buf1+((Lidx104<<2)+Lidx103)));\n      *(buf0+0) = ((*(buf0+0))+val2);\n    }\n  }\n  if (((lidx0==0)&(lidx1==0))) {\n    *(data0_256+(alu1+gidx0)) = (*(buf0+0));\n  }\n}",
+"est": {
+"ops": 81920,
+"lds": 312320,
+"mem": 3072
+},
+"uops": 69,
+"children": []
+},
+"r.6": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.LOCAL, True))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"WEAK"
+]
+],
+"name": "r_16_16_4_4",
+"src": "__kernel void r_16_16_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[1];\n  float buf1[1];\n  __attribute__ ((aligned (16))) __local float buf2[4];\n  int gidx0 = get_group_id(0); /* 16 */\n  int gidx1 = get_group_id(1); /* 16 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int alu0 = (gidx1<<4);\n  *(buf0+0) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 4; Lidx0++) {\n    float val0 = (*(data1_256+((lidx0<<2)+Lidx0+alu0)));\n    float val1 = (*(data2_256+((lidx0<<6)+(Lidx0<<4)+gidx0)));\n    *(buf0+0) = ((*(buf0+0))+(val0*val1));\n  }\n  *(buf2+lidx0) = (*(buf0+0));\n  barrier(CLK_LOCAL_MEM_FENCE);\n  *(buf1+0) = 0.0f;\n  for (int Lidx103 = 0; Lidx103 < 4; Lidx103++) {\n    float val2 = (*(buf2+Lidx103));\n    *(buf1+0) = ((*(buf1+0))+val2);\n  }\n  if ((lidx0==0)) {\n    *(data0_256+(alu0+gidx0)) = (*(buf1+0));\n  }\n}",
+"est": {
+"ops": 13312,
+"lds": 57344,
+"mem": 3072
+},
+"uops": 76,
+"children": [
+{
+"label": "UPCAST axis 0 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))",
+"key": "r.6.0"
+},
+{
+"label": "LOCAL axis 0 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.LOCAL))",
+"key": "r.6.1"
+},
+{
+"label": "UPCAST axis 1 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))",
+"key": "r.6.2"
+},
+{
+"label": "LOCAL axis 1 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.LOCAL))",
+"key": "r.6.3"
+},
+{
+"label": "UNROLL axis 2 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.UPCAST))",
+"key": "r.6.4"
+},
+{
+"label": "GROUP axis 2 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.LOCAL))",
+"err": "AxisType.LOCAL is from (AxisType.GLOBAL, AxisType.WEAK), not AxisType.LOCAL"
+},
+{
+"label": "GROUPTOP axis 2 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.LOCAL, True))",
+"err": "AxisType.LOCAL is from (AxisType.GLOBAL, AxisType.WEAK), not AxisType.LOCAL"
+},
+{
+"label": "UNROLL axis 3 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.UPCAST))",
+"key": "r.6.7"
+},
+{
+"label": "GROUP axis 3 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.LOCAL))",
+"key": "r.6.8"
+},
+{
+"label": "GROUPTOP axis 3 by 4",
+"opt": "Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.LOCAL, True))",
+"key": "r.6.9"
+}
+]
+},
+"r.6.0": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.LOCAL, True))",
+"Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.UPCAST))"
+],
+"shape": [
+[
+4,
+"GLOBAL"
+],
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"UPCAST"
+],
+[
+4,
+"WEAK"
+]
+],
+"name": "r_4_16_4_4_4",
+"src": "__kernel void r_4_16_4_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[4];\n  float buf1[4];\n  __attribute__ ((aligned (16))) __local float buf2[16];\n  int gidx0 = get_group_id(0); /* 16 */\n  int gidx1 = get_group_id(1); /* 4 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int alu0 = (gidx1<<6);\n  int alu1 = (lidx0<<2);\n  *(buf0+0) = 0.0f;\n  *(buf0+1) = 0.0f;\n  *(buf0+2) = 0.0f;\n  *(buf0+3) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 4; Lidx0++) {\n    int alu6 = (alu1+Lidx0+alu0);\n    float val0 = (*(data1_256+(alu6+16)));\n    float val1 = (*(data1_256+(alu6+32)));\n    float val2 = (*(data1_256+(alu6+48)));\n    float val3 = (*(data1_256+alu6));\n    float val4 = (*(data2_256+((lidx0<<6)+(Lidx0<<4)+gidx0)));\n    *(buf0+0) = ((*(buf0+0))+(val3*val4));\n    *(buf0+1) = ((*(buf0+1))+(val0*val4));\n    *(buf0+2) = ((*(buf0+2))+(val1*val4));\n    *(buf0+3) = ((*(buf0+3))+(val2*val4));\n  }\n  *((__local float4*)((buf2+alu1))) = (float4)((*(buf0+0)),(*(buf0+1)),(*(buf0+2)),(*(buf0+3)));\n  barrier(CLK_LOCAL_MEM_FENCE);\n  *(buf1+0) = 0.0f;\n  *(buf1+1) = 0.0f;\n  *(buf1+2) = 0.0f;\n  *(buf1+3) = 0.0f;\n  for (int Lidx103 = 0; Lidx103 < 4; Lidx103++) {\n    float4 val5 = (*((__local float4*)((buf2+(Lidx103<<2)))));\n    *(buf1+0) = ((*(buf1+0))+val5.x);\n    *(buf1+1) = ((*(buf1+1))+val5.y);\n    *(buf1+2) = ((*(buf1+2))+val5.z);\n    *(buf1+3) = ((*(buf1+3))+val5.w);\n  }\n  int alu23 = (alu0+gidx0);\n  bool alu24 = (lidx0==0);\n  if (alu24) {\n    *(data0_256+(alu23+16)) = (*(buf1+1));\n  }\n  if (alu24) {\n    *(data0_256+(alu23+32)) = (*(buf1+2));\n  }\n  if (alu24) {\n    *(data0_256+(alu23+48)) = (*(buf1+3));\n  }\n  if (alu24) {\n    *(data0_256+alu23) = (*(buf1+0));\n  }\n}",
+"est": {
+"ops": 12544,
+"lds": 45056,
+"mem": 3072
+},
+"uops": 169,
+"children": []
+},
+"r.6.1": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.LOCAL, True))",
+"Opt(op=OptOps.SPLIT, axis=0, arg=(4, AxisType.LOCAL))"
+],
+"shape": [
+[
+4,
+"GLOBAL"
+],
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"WEAK"
+]
+],
+"name": "r_4_16_4_4_4",
+"src": "__kernel void r_4_16_4_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[1];\n  float buf1[1];\n  __attribute__ ((aligned (16))) __local float buf2[16];\n  int gidx0 = get_group_id(0); /* 16 */\n  int gidx1 = get_group_id(1); /* 4 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int lidx1 = get_local_id(1); /* 4 */\n  int alu0 = ((gidx1<<6)+(lidx1<<4));\n  *(buf0+0) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 4; Lidx0++) {\n    float val0 = (*(data1_256+(alu0+(lidx0<<2)+Lidx0)));\n    float val1 = (*(data2_256+((lidx0<<6)+(Lidx0<<4)+gidx0)));\n    *(buf0+0) = ((*(buf0+0))+(val0*val1));\n  }\n  int alu4 = (lidx1<<2);\n  *(buf2+(alu4+lidx0)) = (*(buf0+0));\n  barrier(CLK_LOCAL_MEM_FENCE);\n  *(buf1+0) = 0.0f;\n  for (int Lidx103 = 0; Lidx103 < 4; Lidx103++) {\n    float val2 = (*(buf2+(alu4+Lidx103)));\n    *(buf1+0) = ((*(buf1+0))+val2);\n  }\n  if ((lidx0==0)) {\n    *(data0_256+(alu0+gidx0)) = (*(buf1+0));\n  }\n}",
+"est": {
+"ops": 13312,
+"lds": 57344,
+"mem": 3072
+},
+"uops": 82,
+"children": []
+},
+"r.6.2": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.LOCAL, True))",
+"Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.UPCAST))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"UPCAST"
+],
+[
+4,
+"WEAK"
+]
+],
+"name": "r_16_4_4_4_4",
+"src": "__kernel void r_16_4_4_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[4];\n  float buf1[4];\n  __attribute__ ((aligned (16))) __local float buf2[16];\n  int gidx0 = get_group_id(0); /* 4 */\n  int gidx1 = get_group_id(1); /* 16 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int alu0 = (gidx0<<2);\n  int alu1 = (gidx1<<4);\n  int alu2 = (lidx0<<2);\n  *(buf0+0) = 0.0f;\n  *(buf0+1) = 0.0f;\n  *(buf0+2) = 0.0f;\n  *(buf0+3) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 4; Lidx0++) {\n    float val0 = (*(data1_256+(alu2+Lidx0+alu1)));\n    float4 val1 = (*((__global float4*)((data2_256+((lidx0<<6)+(Lidx0<<4)+alu0)))));\n    *(buf0+0) = ((*(buf0+0))+(val0*val1.x));\n    *(buf0+1) = ((*(buf0+1))+(val0*val1.y));\n    *(buf0+2) = ((*(buf0+2))+(val0*val1.z));\n    *(buf0+3) = ((*(buf0+3))+(val0*val1.w));\n  }\n  *((__local float4*)((buf2+alu2))) = (float4)((*(buf0+0)),(*(buf0+1)),(*(buf0+2)),(*(buf0+3)));\n  barrier(CLK_LOCAL_MEM_FENCE);\n  *(buf1+0) = 0.0f;\n  *(buf1+1) = 0.0f;\n  *(buf1+2) = 0.0f;\n  *(buf1+3) = 0.0f;\n  for (int Lidx103 = 0; Lidx103 < 4; Lidx103++) {\n    float4 val2 = (*((__local float4*)((buf2+(Lidx103<<2)))));\n    *(buf1+0) = ((*(buf1+0))+val2.x);\n    *(buf1+1) = ((*(buf1+1))+val2.y);\n    *(buf1+2) = ((*(buf1+2))+val2.z);\n    *(buf1+3) = ((*(buf1+3))+val2.w);\n  }\n  if ((lidx0==0)) {\n    *((__global float4*)((data0_256+(alu0+alu1)))) = (float4)((*(buf1+0)),(*(buf1+1)),(*(buf1+2)),(*(buf1+3)));\n  }\n}",
+"est": {
+"ops": 12544,
+"lds": 45056,
+"mem": 3072
+},
+"uops": 147,
+"children": []
+},
+"r.6.3": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.LOCAL, True))",
+"Opt(op=OptOps.SPLIT, axis=1, arg=(4, AxisType.LOCAL))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"WEAK"
+]
+],
+"name": "r_16_4_4_4_4",
+"src": "__kernel void r_16_4_4_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[1];\n  float buf1[1];\n  __attribute__ ((aligned (16))) __local float buf2[16];\n  int gidx0 = get_group_id(0); /* 4 */\n  int gidx1 = get_group_id(1); /* 16 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int lidx1 = get_local_id(1); /* 4 */\n  int alu0 = ((gidx0<<2)+lidx1);\n  int alu1 = (gidx1<<4);\n  *(buf0+0) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 4; Lidx0++) {\n    float val0 = (*(data1_256+((lidx0<<2)+Lidx0+alu1)));\n    float val1 = (*(data2_256+(alu0+(lidx0<<6)+(Lidx0<<4))));\n    *(buf0+0) = ((*(buf0+0))+(val0*val1));\n  }\n  int alu5 = (lidx1<<2);\n  *(buf2+(alu5+lidx0)) = (*(buf0+0));\n  barrier(CLK_LOCAL_MEM_FENCE);\n  *(buf1+0) = 0.0f;\n  for (int Lidx103 = 0; Lidx103 < 4; Lidx103++) {\n    float val2 = (*(buf2+(alu5+Lidx103)));\n    *(buf1+0) = ((*(buf1+0))+val2);\n  }\n  if ((lidx0==0)) {\n    *(data0_256+(alu0+alu1)) = (*(buf1+0));\n  }\n}",
+"est": {
+"ops": 13312,
+"lds": 57344,
+"mem": 3072
+},
+"uops": 82,
+"children": []
+},
+"r.6.4": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.LOCAL, True))",
+"Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.UPCAST))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"WEAK"
+],
+[
+4,
+"UPCAST"
+]
+],
+"name": "r_16_16_4_4",
+"src": "__kernel void r_16_16_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[1];\n  int gidx0 = get_group_id(0); /* 16 */\n  int gidx1 = get_group_id(1); /* 16 */\n  int alu0 = (gidx1<<4);\n  *(buf0+0) = 0.0f;\n  for (int Lidx0 = 0; Lidx0 < 4; Lidx0++) {\n    int alu2 = (alu0+Lidx0);\n    float val0 = (*(data1_256+(alu2+12)));\n    float val1 = (*(data1_256+(alu2+4)));\n    float val2 = (*(data1_256+(alu2+8)));\n    float val3 = (*(data1_256+alu2));\n    int alu3 = ((Lidx0<<4)+gidx0);\n    float val4 = (*(data2_256+(alu3+128)));\n    float val5 = (*(data2_256+(alu3+192)));\n    float val6 = (*(data2_256+(alu3+64)));\n    float val7 = (*(data2_256+alu3));\n    *(buf0+0) = ((*(buf0+0))+(val3*val7)+(val1*val6)+(val2*val4)+(val0*val5));\n  }\n  *(data0_256+(alu0+gidx0)) = (*(buf0+0));\n}",
+"est": {
+"ops": 8192,
+"lds": 33792,
+"mem": 3072
+},
+"uops": 76,
+"children": []
+},
+"r.6.7": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.LOCAL, True))",
+"Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.UPCAST))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"UPCAST"
+]
+],
+"name": "r_16_16_4_4",
+"src": "__kernel void r_16_16_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[1];\n  __attribute__ ((aligned (16))) __local float buf1[4];\n  int gidx0 = get_group_id(0); /* 16 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int alu0 = ((lidx0<<6)+gidx0);\n  float val0 = (*(data2_256+(alu0+16)));\n  float val1 = (*(data2_256+(alu0+32)));\n  float val2 = (*(data2_256+(alu0+48)));\n  float val3 = (*(data2_256+alu0));\n  int gidx1 = get_group_id(1); /* 16 */\n  int alu1 = (gidx1<<4);\n  float4 val4 = (*((__global float4*)((data1_256+(alu1+(lidx0<<2))))));\n  *(buf1+lidx0) = ((val4.x*val3)+(val4.y*val0)+(val4.z*val1)+(val4.w*val2));\n  barrier(CLK_LOCAL_MEM_FENCE);\n  *(buf0+0) = 0.0f;\n  for (int Lidx103 = 0; Lidx103 < 4; Lidx103++) {\n    float val5 = (*(buf1+Lidx103));\n    *(buf0+0) = ((*(buf0+0))+val5);\n  }\n  if ((lidx0==0)) {\n    *(data0_256+(alu1+gidx0)) = (*(buf0+0));\n  }\n}",
+"est": {
+"ops": 12288,
+"lds": 41984,
+"mem": 3072
+},
+"uops": 84,
+"children": []
+},
+"r.6.8": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.LOCAL, True))",
+"Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.LOCAL))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"LOCAL"
+]
+],
+"name": "r_16_16_4_4",
+"src": "__kernel void r_16_16_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[1];\n  __attribute__ ((aligned (16))) __local float buf1[16];\n  int gidx1 = get_group_id(1); /* 16 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int lidx1 = get_local_id(1); /* 4 */\n  int alu0 = ((lidx0<<2)+lidx1);\n  int alu1 = (gidx1<<4);\n  float val0 = (*(data1_256+(alu0+alu1)));\n  int gidx0 = get_group_id(0); /* 16 */\n  float val1 = (*(data2_256+((lidx0<<6)+(lidx1<<4)+gidx0)));\n  *(buf1+alu0) = (val0*val1);\n  barrier(CLK_LOCAL_MEM_FENCE);\n  *(buf0+0) = 0.0f;\n  for (int Lidx103 = 0; Lidx103 < 4; Lidx103++) {\n    for (int Lidx104 = 0; Lidx104 < 4; Lidx104++) {\n      float val2 = (*(buf1+((Lidx103<<2)+Lidx104)));\n      *(buf0+0) = ((*(buf0+0))+val2);\n    }\n  }\n  if (((lidx0==0)&(lidx1==0))) {\n    *(data0_256+(alu1+gidx0)) = (*(buf0+0));\n  }\n}",
+"est": {
+"ops": 81920,
+"lds": 312320,
+"mem": 3072
+},
+"uops": 69,
+"children": []
+},
+"r.6.9": {
+"opts": [
+"Opt(op=OptOps.SPLIT, axis=2, arg=(4, AxisType.LOCAL, True))",
+"Opt(op=OptOps.SPLIT, axis=3, arg=(4, AxisType.LOCAL, True))"
+],
+"shape": [
+[
+16,
+"GLOBAL"
+],
+[
+16,
+"GLOBAL"
+],
+[
+4,
+"LOCAL"
+],
+[
+4,
+"LOCAL"
+]
+],
+"name": "r_16_16_4_4",
+"src": "__kernel void r_16_16_4_4(__global float* data0_256, __global float* data1_256, __global float* data2_256) {\n  float buf0[1];\n  __attribute__ ((aligned (16))) __local float buf1[16];\n  int gidx1 = get_group_id(1); /* 16 */\n  int lidx0 = get_local_id(0); /* 4 */\n  int lidx1 = get_local_id(1); /* 4 */\n  int alu0 = ((lidx0<<2)+lidx1);\n  int alu1 = (gidx1<<4);\n  float val0 = (*(data1_256+(alu0+alu1)));\n  int gidx0 = get_group_id(0); /* 16 */\n  float val1 = (*(data2_256+((lidx0<<6)+(lidx1<<4)+gidx0)));\n  *(buf1+alu0) = (val0*val1);\n  barrier(CLK_LOCAL_MEM_FENCE);\n  *(buf0+0) = 0.0f;\n  for (int Lidx103 = 0; Lidx103 < 4; Lidx103++) {\n    for (int Lidx104 = 0; Lidx104 < 4; Lidx104++) {\n      float val2 = (*(buf1+((Lidx103<<2)+Lidx104)));\n      *(buf0+0) = ((*(buf0+0))+val2);\n    }\n  }\n  if (((lidx0==0)&(lidx1==0))) {\n    *(data0_256+(alu1+gidx0)) = (*(buf0+0));\n  }\n}",
+"est": {
+"ops": 81920,
+"lds": 312320,
+"mem": 3072
+},
+"uops": 69,
+"children": []
+}
+}

@@ -1,0 +1,1502 @@
+{
+ "tensor": {
+  "nodes": [
+   {
+    "id": "n0",
+    "op": "CONST",
+    "dtype": "dtypes.weakint",
+    "arg": "6",
+    "shape": "()"
+   },
+   {
+    "id": "n1",
+    "op": "BUFFER",
+    "dtype": "dtypes.f32",
+    "arg": "ParamArg(1, dtypes.f32, device='CPU', buffer=UOp.new_buffer\u2026",
+    "shape": "(6,)"
+   },
+   {
+    "id": "n2",
+    "op": "CONST",
+    "dtype": "dtypes.weakint",
+    "arg": "2",
+    "shape": "()"
+   },
+   {
+    "id": "n3",
+    "op": "CONST",
+    "dtype": "dtypes.weakint",
+    "arg": "3",
+    "shape": "()"
+   },
+   {
+    "id": "n4",
+    "op": "STACK",
+    "dtype": "dtypes.weakint",
+    "arg": "None",
+    "shape": "(2,)"
+   },
+   {
+    "id": "n5",
+    "op": "RESHAPE",
+    "dtype": "dtypes.f32",
+    "arg": "None",
+    "shape": "(2, 3)"
+   },
+   {
+    "id": "n6",
+    "op": "CONST",
+    "dtype": "dtypes.weakfloat",
+    "arg": "2.0",
+    "shape": "()"
+   },
+   {
+    "id": "n7",
+    "op": "MUL",
+    "dtype": "dtypes.f32",
+    "arg": "None",
+    "shape": "(2, 3)"
+   },
+   {
+    "id": "n8",
+    "op": "BUFFER",
+    "dtype": "dtypes.f32",
+    "arg": "ParamArg(3, dtypes.f32, device='CPU', buffer=UOp.new_buffer\u2026",
+    "shape": "(3,)"
+   },
+   {
+    "id": "n9",
+    "op": "ADD",
+    "dtype": "dtypes.f32",
+    "arg": "None",
+    "shape": "(2, 3)"
+   },
+   {
+    "id": "n10",
+    "op": "CONST",
+    "dtype": "dtypes.weakint",
+    "arg": "1",
+    "shape": "()"
+   },
+   {
+    "id": "n11",
+    "op": "CONST",
+    "dtype": "dtypes.weakint",
+    "arg": "0",
+    "shape": "()"
+   },
+   {
+    "id": "n12",
+    "op": "STACK",
+    "dtype": "dtypes.weakint",
+    "arg": "None",
+    "shape": "(2,)"
+   },
+   {
+    "id": "n13",
+    "op": "PERMUTE",
+    "dtype": "dtypes.f32",
+    "arg": "None",
+    "shape": "(3, 2)"
+   },
+   {
+    "id": "n14",
+    "op": "REDUCE",
+    "dtype": "dtypes.f32",
+    "arg": "(Ops.ADD, 1)",
+    "shape": "(2,)"
+   }
+  ],
+  "edges": [
+   [
+    "n0",
+    "n1",
+    0
+   ],
+   [
+    "n2",
+    "n4",
+    0
+   ],
+   [
+    "n3",
+    "n4",
+    1
+   ],
+   [
+    "n1",
+    "n5",
+    0
+   ],
+   [
+    "n4",
+    "n5",
+    1
+   ],
+   [
+    "n5",
+    "n7",
+    0
+   ],
+   [
+    "n6",
+    "n7",
+    1
+   ],
+   [
+    "n3",
+    "n8",
+    0
+   ],
+   [
+    "n7",
+    "n9",
+    0
+   ],
+   [
+    "n8",
+    "n9",
+    1
+   ],
+   [
+    "n10",
+    "n12",
+    0
+   ],
+   [
+    "n11",
+    "n12",
+    1
+   ],
+   [
+    "n9",
+    "n13",
+    0
+   ],
+   [
+    "n12",
+    "n13",
+    1
+   ],
+   [
+    "n13",
+    "n14",
+    0
+   ]
+  ]
+ },
+ "tensor_uir": "%0 = buffer 6 : dtype=f32 slot=1 device=CPU\n%1 = reshape %0, (2, 3)\n%2 = mul %1, 2.0\n%3 = buffer 3 : dtype=f32 slot=3 device=CPU\n%4 = add %2, %3\n%5 = permute %4, (1, 0)\n%6 = reduce %5 : op=add pop=1",
+ "ast": {
+  "nodes": [
+   {
+    "id": "n2",
+    "op": "CONST",
+    "dtype": "dtypes.weakint",
+    "arg": "2",
+    "shape": "()"
+   },
+   {
+    "id": "n15",
+    "op": "PARAM",
+    "dtype": "dtypes.f32",
+    "arg": "ParamArg(0, dtypes.f32, device='CPU')",
+    "shape": "(2,)"
+   },
+   {
+    "id": "n16",
+    "op": "RANGE",
+    "dtype": "dtypes.weakint",
+    "arg": "(AxisType.WEAK, 1)",
+    "shape": "()"
+   },
+   {
+    "id": "n17",
+    "op": "INDEX",
+    "dtype": "dtypes.f32",
+    "arg": "None",
+    "shape": "()"
+   },
+   {
+    "id": "n0",
+    "op": "CONST",
+    "dtype": "dtypes.weakint",
+    "arg": "6",
+    "shape": "()"
+   },
+   {
+    "id": "n18",
+    "op": "PARAM",
+    "dtype": "dtypes.f32",
+    "arg": "ParamArg(1, dtypes.f32, device='CPU')",
+    "shape": "(6,)"
+   },
+   {
+    "id": "n3",
+    "op": "CONST",
+    "dtype": "dtypes.weakint",
+    "arg": "3",
+    "shape": "()"
+   },
+   {
+    "id": "n19",
+    "op": "MUL",
+    "dtype": "dtypes.weakint",
+    "arg": "None",
+    "shape": "()"
+   },
+   {
+    "id": "n20",
+    "op": "RANGE",
+    "dtype": "dtypes.weakint",
+    "arg": "(AxisType.WEAK, 0)",
+    "shape": "()"
+   },
+   {
+    "id": "n21",
+    "op": "ADD",
+    "dtype": "dtypes.weakint",
+    "arg": "None",
+    "shape": "()"
+   },
+   {
+    "id": "n22",
+    "op": "INDEX",
+    "dtype": "dtypes.f32",
+    "arg": "None",
+    "shape": "()"
+   },
+   {
+    "id": "n6",
+    "op": "CONST",
+    "dtype": "dtypes.weakfloat",
+    "arg": "2.0",
+    "shape": "()"
+   },
+   {
+    "id": "n23",
+    "op": "MUL",
+    "dtype": "dtypes.f32",
+    "arg": "None",
+    "shape": "()"
+   },
+   {
+    "id": "n24",
+    "op": "PARAM",
+    "dtype": "dtypes.f32",
+    "arg": "ParamArg(2, dtypes.f32, device='CPU')",
+    "shape": "(3,)"
+   },
+   {
+    "id": "n25",
+    "op": "INDEX",
+    "dtype": "dtypes.f32",
+    "arg": "None",
+    "shape": "()"
+   },
+   {
+    "id": "n26",
+    "op": "ADD",
+    "dtype": "dtypes.f32",
+    "arg": "None",
+    "shape": "()"
+   },
+   {
+    "id": "n27",
+    "op": "REDUCE",
+    "dtype": "dtypes.f32",
+    "arg": "(Ops.ADD, 0)",
+    "shape": "()"
+   },
+   {
+    "id": "n28",
+    "op": "STORE",
+    "dtype": "dtypes.void",
+    "arg": "None",
+    "shape": "()"
+   },
+   {
+    "id": "n29",
+    "op": "END",
+    "dtype": "dtypes.void",
+    "arg": "None",
+    "shape": "()"
+   },
+   {
+    "id": "n30",
+    "op": "SINK",
+    "dtype": "dtypes.void",
+    "arg": "KernelInfo(name='test', applied_opts=(), opts_to_apply=None\u2026",
+    "shape": ""
+   }
+  ],
+  "edges": [
+   [
+    "n2",
+    "n15",
+    0
+   ],
+   [
+    "n2",
+    "n16",
+    0
+   ],
+   [
+    "n15",
+    "n17",
+    0
+   ],
+   [
+    "n16",
+    "n17",
+    1
+   ],
+   [
+    "n0",
+    "n18",
+    0
+   ],
+   [
+    "n16",
+    "n19",
+    0
+   ],
+   [
+    "n3",
+    "n19",
+    1
+   ],
+   [
+    "n3",
+    "n20",
+    0
+   ],
+   [
+    "n19",
+    "n21",
+    0
+   ],
+   [
+    "n20",
+    "n21",
+    1
+   ],
+   [
+    "n18",
+    "n22",
+    0
+   ],
+   [
+    "n21",
+    "n22",
+    1
+   ],
+   [
+    "n22",
+    "n23",
+    0
+   ],
+   [
+    "n6",
+    "n23",
+    1
+   ],
+   [
+    "n3",
+    "n24",
+    0
+   ],
+   [
+    "n24",
+    "n25",
+    0
+   ],
+   [
+    "n20",
+    "n25",
+    1
+   ],
+   [
+    "n23",
+    "n26",
+    0
+   ],
+   [
+    "n25",
+    "n26",
+    1
+   ],
+   [
+    "n26",
+    "n27",
+    0
+   ],
+   [
+    "n20",
+    "n27",
+    1
+   ],
+   [
+    "n17",
+    "n28",
+    0
+   ],
+   [
+    "n27",
+    "n28",
+    1
+   ],
+   [
+    "n28",
+    "n29",
+    0
+   ],
+   [
+    "n16",
+    "n29",
+    1
+   ],
+   [
+    "n29",
+    "n30",
+    0
+   ]
+  ]
+ },
+ "ast_uir": "%0 = param 2 : dtype=f32 slot=0 device=CPU\n%1 = range 2 : WEAK 1\n%2 = index %0, %1\n%3 = param 6 : dtype=f32 slot=1 device=CPU\n%4 = mul %1, 3\n%5 = range 3 : WEAK 0\n%6 = add %4, %5\n%7 = index %3, %6\n%8 = mul %7, 2.0\n%9 = param 3 : dtype=f32 slot=2 device=CPU\n%10 = index %9, %5\n%11 = add %8, %10\n%12 = reduce %11, %5 : op=add\n%13 = store %2, %12\n%14 = end %13, %1\n%15 = sink %14 : test",
+ "program": {
+  "nodes": [
+   {
+    "id": "n2",
+    "op": "CONST",
+    "dtype": "dtypes.weakint",
+    "arg": "2",
+    "shape": "()",
+    "sub": "%0 weakint  2"
+   },
+   {
+    "id": "n15",
+    "op": "PARAM",
+    "dtype": "dtypes.f32",
+    "arg": "ParamArg(0, dtypes.f32, device='CPU')",
+    "shape": "(2,)",
+    "sub": "%1 f32"
+   },
+   {
+    "id": "n31",
+    "op": "CAST",
+    "dtype": "dtypes.i32",
+    "arg": "dtypes.i32",
+    "shape": "()",
+    "sub": "%14 i32  dtypes.i32"
+   },
+   {
+    "id": "n32",
+    "op": "RANGE",
+    "dtype": "dtypes.i32",
+    "arg": "(AxisType.WEAK, 1)",
+    "shape": "()",
+    "sub": "%16 i32  (AxisType.WEAK, 1)"
+   },
+   {
+    "id": "n33",
+    "op": "INDEX",
+    "dtype": "dtypes.f32",
+    "arg": "None",
+    "shape": "()",
+    "sub": "%39 f32"
+   },
+   {
+    "id": "n10",
+    "op": "CONST",
+    "dtype": "dtypes.weakint",
+    "arg": "1",
+    "shape": "()",
+    "sub": "%6 weakint  1"
+   },
+   {
+    "id": "n34",
+    "op": "BUFFER",
+    "dtype": "dtypes.f32",
+    "arg": "ParamArg(0, dtypes.f32, addrspace=AddrSpace.REG)",
+    "shape": "(1,)",
+    "sub": "%7 f32"
+   },
+   {
+    "id": "n35",
+    "op": "AFTER",
+    "dtype": "dtypes.f32",
+    "arg": "None",
+    "shape": "(1,)",
+    "sub": "%18 f32"
+   },
+   {
+    "id": "n11",
+    "op": "CONST",
+    "dtype": "dtypes.weakint",
+    "arg": "0",
+    "shape": "()",
+    "sub": "%12 weakint  0"
+   },
+   {
+    "id": "n36",
+    "op": "CAST",
+    "dtype": "dtypes.i32",
+    "arg": "dtypes.i32",
+    "shape": "()",
+    "sub": "%13 i32  dtypes.i32"
+   },
+   {
+    "id": "n37",
+    "op": "INDEX",
+    "dtype": "dtypes.f32",
+    "arg": "None",
+    "shape": "()",
+    "sub": "%19 f32"
+   },
+   {
+    "id": "n38",
+    "op": "CONST",
+    "dtype": "dtypes.weakfloat",
+    "arg": "0.0",
+    "shape": "()",
+    "sub": "%8 weakfloat  0.0"
+   },
+   {
+    "id": "n39",
+    "op": "CAST",
+    "dtype": "dtypes.f32",
+    "arg": "dtypes.f32",
+    "shape": "()",
+    "sub": "%9 f32  dtypes.f32"
+   },
+   {
+    "id": "n40",
+    "op": "STORE",
+    "dtype": "dtypes.void",
+    "arg": "None",
+    "shape": "()",
+    "sub": "%21 void"
+   },
+   {
+    "id": "n3",
+    "op": "CONST",
+    "dtype": "dtypes.weakint",
+    "arg": "3",
+    "shape": "()",
+    "sub": "%4 weakint  3"
+   },
+   {
+    "id": "n41",
+    "op": "CAST",
+    "dtype": "dtypes.i32",
+    "arg": "dtypes.i32",
+    "shape": "()",
+    "sub": "%15 i32  dtypes.i32"
+   },
+   {
+    "id": "n42",
+    "op": "AFTER",
+    "dtype": "dtypes.i32",
+    "arg": "None",
+    "shape": "()",
+    "sub": "%17 i32"
+   },
+   {
+    "id": "n43",
+    "op": "RANGE",
+    "dtype": "dtypes.i32",
+    "arg": "(AxisType.WEAK, 0)",
+    "shape": "()",
+    "sub": "%22 i32  (AxisType.WEAK, 0)"
+   },
+   {
+    "id": "n44",
+    "op": "AFTER",
+    "dtype": "dtypes.f32",
+    "arg": "None",
+    "shape": "(1,)",
+    "sub": "%28 f32"
+   },
+   {
+    "id": "n45",
+    "op": "INDEX",
+    "dtype": "dtypes.f32",
+    "arg": "None",
+    "shape": "()",
+    "sub": "%29 f32"
+   },
+   {
+    "id": "n46",
+    "op": "LOAD",
+    "dtype": "dtypes.f32",
+    "arg": "None",
+    "shape": "()",
+    "sub": "%30 f32"
+   },
+   {
+    "id": "n0",
+    "op": "CONST",
+    "dtype": "dtypes.weakint",
+    "arg": "6",
+    "shape": "()",
+    "sub": "%2 weakint  6"
+   },
+   {
+    "id": "n18",
+    "op": "PARAM",
+    "dtype": "dtypes.f32",
+    "arg": "ParamArg(1, dtypes.f32, device='CPU')",
+    "shape": "(6,)",
+    "sub": "%3 f32"
+   },
+   {
+    "id": "n47",
+    "op": "MUL",
+    "dtype": "dtypes.i32",
+    "arg": "None",
+    "shape": "()",
+    "sub": "%20 i32"
+   },
+   {
+    "id": "n48",
+    "op": "ADD",
+    "dtype": "dtypes.i32",
+    "arg": "None",
+    "shape": "()",
+    "sub": "%23 i32"
+   },
+   {
+    "id": "n49",
+    "op": "INDEX",
+    "dtype": "dtypes.f32",
+    "arg": "None",
+    "shape": "()",
+    "sub": "%24 f32"
+   },
+   {
+    "id": "n50",
+    "op": "LOAD",
+    "dtype": "dtypes.f32",
+    "arg": "None",
+    "shape": "()",
+    "sub": "%25 f32"
+   },
+   {
+    "id": "n6",
+    "op": "CONST",
+    "dtype": "dtypes.weakfloat",
+    "arg": "2.0",
+    "shape": "()",
+    "sub": "%10 weakfloat  2.0"
+   },
+   {
+    "id": "n51",
+    "op": "CAST",
+    "dtype": "dtypes.f32",
+    "arg": "dtypes.f32",
+    "shape": "()",
+    "sub": "%11 f32  dtypes.f32"
+   },
+   {
+    "id": "n52",
+    "op": "MUL",
+    "dtype": "dtypes.f32",
+    "arg": "None",
+    "shape": "()",
+    "sub": "%31 f32"
+   },
+   {
+    "id": "n24",
+    "op": "PARAM",
+    "dtype": "dtypes.f32",
+    "arg": "ParamArg(2, dtypes.f32, device='CPU')",
+    "shape": "(3,)",
+    "sub": "%5 f32"
+   },
+   {
+    "id": "n53",
+    "op": "INDEX",
+    "dtype": "dtypes.f32",
+    "arg": "None",
+    "shape": "()",
+    "sub": "%26 f32"
+   },
+   {
+    "id": "n54",
+    "op": "LOAD",
+    "dtype": "dtypes.f32",
+    "arg": "None",
+    "shape": "()",
+    "sub": "%27 f32"
+   },
+   {
+    "id": "n55",
+    "op": "ADD",
+    "dtype": "dtypes.f32",
+    "arg": "None",
+    "shape": "()",
+    "sub": "%32 f32"
+   },
+   {
+    "id": "n56",
+    "op": "ADD",
+    "dtype": "dtypes.f32",
+    "arg": "None",
+    "shape": "()",
+    "sub": "%33 f32"
+   },
+   {
+    "id": "n57",
+    "op": "STORE",
+    "dtype": "dtypes.void",
+    "arg": "None",
+    "shape": "()",
+    "sub": "%34 void"
+   },
+   {
+    "id": "n58",
+    "op": "END",
+    "dtype": "dtypes.void",
+    "arg": "None",
+    "shape": "()",
+    "sub": "%35 void"
+   },
+   {
+    "id": "n59",
+    "op": "AFTER",
+    "dtype": "dtypes.f32",
+    "arg": "None",
+    "shape": "(1,)",
+    "sub": "%36 f32"
+   },
+   {
+    "id": "n60",
+    "op": "INDEX",
+    "dtype": "dtypes.f32",
+    "arg": "None",
+    "shape": "()",
+    "sub": "%37 f32"
+   },
+   {
+    "id": "n61",
+    "op": "LOAD",
+    "dtype": "dtypes.f32",
+    "arg": "None",
+    "shape": "()",
+    "sub": "%38 f32"
+   },
+   {
+    "id": "n62",
+    "op": "STORE",
+    "dtype": "dtypes.void",
+    "arg": "None",
+    "shape": "()",
+    "sub": "%40 void"
+   },
+   {
+    "id": "n63",
+    "op": "END",
+    "dtype": "dtypes.void",
+    "arg": "None",
+    "shape": "()",
+    "sub": "%41 void"
+   },
+   {
+    "id": "n64",
+    "op": "SINK",
+    "dtype": "dtypes.void",
+    "arg": "KernelInfo(name='r_2_3', applied_opts=(), opts_to_apply=Non\u2026",
+    "shape": "",
+    "sub": "%42 void"
+   }
+  ],
+  "edges": [
+   [
+    "n2",
+    "n15",
+    0
+   ],
+   [
+    "n2",
+    "n31",
+    0
+   ],
+   [
+    "n31",
+    "n32",
+    0
+   ],
+   [
+    "n15",
+    "n33",
+    0
+   ],
+   [
+    "n32",
+    "n33",
+    1
+   ],
+   [
+    "n10",
+    "n34",
+    0
+   ],
+   [
+    "n34",
+    "n35",
+    0
+   ],
+   [
+    "n32",
+    "n35",
+    1
+   ],
+   [
+    "n11",
+    "n36",
+    0
+   ],
+   [
+    "n35",
+    "n37",
+    0
+   ],
+   [
+    "n36",
+    "n37",
+    1
+   ],
+   [
+    "n38",
+    "n39",
+    0
+   ],
+   [
+    "n37",
+    "n40",
+    0
+   ],
+   [
+    "n39",
+    "n40",
+    1
+   ],
+   [
+    "n3",
+    "n41",
+    0
+   ],
+   [
+    "n41",
+    "n42",
+    0
+   ],
+   [
+    "n32",
+    "n42",
+    1
+   ],
+   [
+    "n42",
+    "n43",
+    0
+   ],
+   [
+    "n34",
+    "n44",
+    0
+   ],
+   [
+    "n40",
+    "n44",
+    1
+   ],
+   [
+    "n43",
+    "n44",
+    2
+   ],
+   [
+    "n44",
+    "n45",
+    0
+   ],
+   [
+    "n36",
+    "n45",
+    1
+   ],
+   [
+    "n45",
+    "n46",
+    0
+   ],
+   [
+    "n0",
+    "n18",
+    0
+   ],
+   [
+    "n32",
+    "n47",
+    0
+   ],
+   [
+    "n41",
+    "n47",
+    1
+   ],
+   [
+    "n47",
+    "n48",
+    0
+   ],
+   [
+    "n43",
+    "n48",
+    1
+   ],
+   [
+    "n18",
+    "n49",
+    0
+   ],
+   [
+    "n48",
+    "n49",
+    1
+   ],
+   [
+    "n49",
+    "n50",
+    0
+   ],
+   [
+    "n6",
+    "n51",
+    0
+   ],
+   [
+    "n50",
+    "n52",
+    0
+   ],
+   [
+    "n51",
+    "n52",
+    1
+   ],
+   [
+    "n3",
+    "n24",
+    0
+   ],
+   [
+    "n24",
+    "n53",
+    0
+   ],
+   [
+    "n43",
+    "n53",
+    1
+   ],
+   [
+    "n53",
+    "n54",
+    0
+   ],
+   [
+    "n52",
+    "n55",
+    0
+   ],
+   [
+    "n54",
+    "n55",
+    1
+   ],
+   [
+    "n46",
+    "n56",
+    0
+   ],
+   [
+    "n55",
+    "n56",
+    1
+   ],
+   [
+    "n45",
+    "n57",
+    0
+   ],
+   [
+    "n56",
+    "n57",
+    1
+   ],
+   [
+    "n57",
+    "n58",
+    0
+   ],
+   [
+    "n43",
+    "n58",
+    1
+   ],
+   [
+    "n34",
+    "n59",
+    0
+   ],
+   [
+    "n58",
+    "n59",
+    1
+   ],
+   [
+    "n59",
+    "n60",
+    0
+   ],
+   [
+    "n36",
+    "n60",
+    1
+   ],
+   [
+    "n60",
+    "n61",
+    0
+   ],
+   [
+    "n33",
+    "n62",
+    0
+   ],
+   [
+    "n61",
+    "n62",
+    1
+   ],
+   [
+    "n62",
+    "n63",
+    0
+   ],
+   [
+    "n32",
+    "n63",
+    1
+   ],
+   [
+    "n63",
+    "n64",
+    0
+   ]
+  ]
+ },
+ "program_list": [
+  {
+   "i": 0,
+   "op": "CONST",
+   "dtype": "weakint",
+   "src": [],
+   "arg": "2"
+  },
+  {
+   "i": 1,
+   "op": "PARAM",
+   "dtype": "f32",
+   "src": [
+    0
+   ],
+   "arg": "ParamArg(0, dtypes.f32, device='CPU')"
+  },
+  {
+   "i": 2,
+   "op": "CONST",
+   "dtype": "weakint",
+   "src": [],
+   "arg": "6"
+  },
+  {
+   "i": 3,
+   "op": "PARAM",
+   "dtype": "f32",
+   "src": [
+    2
+   ],
+   "arg": "ParamArg(1, dtypes.f32, device='CPU')"
+  },
+  {
+   "i": 4,
+   "op": "CONST",
+   "dtype": "weakint",
+   "src": [],
+   "arg": "3"
+  },
+  {
+   "i": 5,
+   "op": "PARAM",
+   "dtype": "f32",
+   "src": [
+    4
+   ],
+   "arg": "ParamArg(2, dtypes.f32, device='CPU')"
+  },
+  {
+   "i": 6,
+   "op": "CONST",
+   "dtype": "weakint",
+   "src": [],
+   "arg": "1"
+  },
+  {
+   "i": 7,
+   "op": "BUFFER",
+   "dtype": "f32",
+   "src": [
+    6
+   ],
+   "arg": "ParamArg(0, dtypes.f32, addrspace=AddrSpace.REG)"
+  },
+  {
+   "i": 8,
+   "op": "CONST",
+   "dtype": "weakfloat",
+   "src": [],
+   "arg": "0.0"
+  },
+  {
+   "i": 9,
+   "op": "CAST",
+   "dtype": "f32",
+   "src": [
+    8
+   ],
+   "arg": "dtypes.f32"
+  },
+  {
+   "i": 10,
+   "op": "CONST",
+   "dtype": "weakfloat",
+   "src": [],
+   "arg": "2.0"
+  },
+  {
+   "i": 11,
+   "op": "CAST",
+   "dtype": "f32",
+   "src": [
+    10
+   ],
+   "arg": "dtypes.f32"
+  },
+  {
+   "i": 12,
+   "op": "CONST",
+   "dtype": "weakint",
+   "src": [],
+   "arg": "0"
+  },
+  {
+   "i": 13,
+   "op": "CAST",
+   "dtype": "i32",
+   "src": [
+    12
+   ],
+   "arg": "dtypes.i32"
+  },
+  {
+   "i": 14,
+   "op": "CAST",
+   "dtype": "i32",
+   "src": [
+    0
+   ],
+   "arg": "dtypes.i32"
+  },
+  {
+   "i": 15,
+   "op": "CAST",
+   "dtype": "i32",
+   "src": [
+    4
+   ],
+   "arg": "dtypes.i32"
+  },
+  {
+   "i": 16,
+   "op": "RANGE",
+   "dtype": "i32",
+   "src": [
+    14
+   ],
+   "arg": "(AxisType.WEAK, 1)"
+  },
+  {
+   "i": 17,
+   "op": "AFTER",
+   "dtype": "i32",
+   "src": [
+    15,
+    16
+   ],
+   "arg": ""
+  },
+  {
+   "i": 18,
+   "op": "AFTER",
+   "dtype": "f32",
+   "src": [
+    7,
+    16
+   ],
+   "arg": ""
+  },
+  {
+   "i": 19,
+   "op": "INDEX",
+   "dtype": "f32",
+   "src": [
+    18,
+    13
+   ],
+   "arg": ""
+  },
+  {
+   "i": 20,
+   "op": "MUL",
+   "dtype": "i32",
+   "src": [
+    16,
+    15
+   ],
+   "arg": ""
+  },
+  {
+   "i": 21,
+   "op": "STORE",
+   "dtype": "void",
+   "src": [
+    19,
+    9
+   ],
+   "arg": ""
+  },
+  {
+   "i": 22,
+   "op": "RANGE",
+   "dtype": "i32",
+   "src": [
+    17
+   ],
+   "arg": "(AxisType.WEAK, 0)"
+  },
+  {
+   "i": 23,
+   "op": "ADD",
+   "dtype": "i32",
+   "src": [
+    20,
+    22
+   ],
+   "arg": ""
+  },
+  {
+   "i": 24,
+   "op": "INDEX",
+   "dtype": "f32",
+   "src": [
+    3,
+    23
+   ],
+   "arg": ""
+  },
+  {
+   "i": 25,
+   "op": "LOAD",
+   "dtype": "f32",
+   "src": [
+    24
+   ],
+   "arg": ""
+  },
+  {
+   "i": 26,
+   "op": "INDEX",
+   "dtype": "f32",
+   "src": [
+    5,
+    22
+   ],
+   "arg": ""
+  },
+  {
+   "i": 27,
+   "op": "LOAD",
+   "dtype": "f32",
+   "src": [
+    26
+   ],
+   "arg": ""
+  },
+  {
+   "i": 28,
+   "op": "AFTER",
+   "dtype": "f32",
+   "src": [
+    7,
+    21,
+    22
+   ],
+   "arg": ""
+  },
+  {
+   "i": 29,
+   "op": "INDEX",
+   "dtype": "f32",
+   "src": [
+    28,
+    13
+   ],
+   "arg": ""
+  },
+  {
+   "i": 30,
+   "op": "LOAD",
+   "dtype": "f32",
+   "src": [
+    29
+   ],
+   "arg": ""
+  },
+  {
+   "i": 31,
+   "op": "MUL",
+   "dtype": "f32",
+   "src": [
+    25,
+    11
+   ],
+   "arg": ""
+  },
+  {
+   "i": 32,
+   "op": "ADD",
+   "dtype": "f32",
+   "src": [
+    31,
+    27
+   ],
+   "arg": ""
+  },
+  {
+   "i": 33,
+   "op": "ADD",
+   "dtype": "f32",
+   "src": [
+    30,
+    32
+   ],
+   "arg": ""
+  },
+  {
+   "i": 34,
+   "op": "STORE",
+   "dtype": "void",
+   "src": [
+    29,
+    33
+   ],
+   "arg": ""
+  },
+  {
+   "i": 35,
+   "op": "END",
+   "dtype": "void",
+   "src": [
+    34,
+    22
+   ],
+   "arg": ""
+  },
+  {
+   "i": 36,
+   "op": "AFTER",
+   "dtype": "f32",
+   "src": [
+    7,
+    35
+   ],
+   "arg": ""
+  },
+  {
+   "i": 37,
+   "op": "INDEX",
+   "dtype": "f32",
+   "src": [
+    36,
+    13
+   ],
+   "arg": ""
+  },
+  {
+   "i": 38,
+   "op": "LOAD",
+   "dtype": "f32",
+   "src": [
+    37
+   ],
+   "arg": ""
+  },
+  {
+   "i": 39,
+   "op": "INDEX",
+   "dtype": "f32",
+   "src": [
+    1,
+    16
+   ],
+   "arg": ""
+  },
+  {
+   "i": 40,
+   "op": "STORE",
+   "dtype": "void",
+   "src": [
+    39,
+    38
+   ],
+   "arg": ""
+  },
+  {
+   "i": 41,
+   "op": "END",
+   "dtype": "void",
+   "src": [
+    40,
+    16
+   ],
+   "arg": ""
+  },
+  {
+   "i": 42,
+   "op": "SINK",
+   "dtype": "void",
+   "src": [
+    41
+   ],
+   "arg": "r_2_3"
+  }
+ ],
+ "c_source": "\nstruct r_2_3_args { float* arg0; float* arg1; float* arg2; };\nvoid r_2_3(const struct r_2_3_args* args) {\n  float* data0_2 = args->arg0;\n  float* data1_6 = args->arg1;\n  float* data2_3 = args->arg2;\n  float buf0[1];\n  for (int Lidx1 = 0; Lidx1 < 2; Lidx1++) {\n    *(buf0+0) = 0.0f;\n    for (int Lidx0 = 0; Lidx0 < 3; Lidx0++) {\n      float val0 = (*(data1_6+((Lidx1*3)+Lidx0)));\n      float val1 = (*(data2_3+Lidx0));\n      *(buf0+0) = ((*(buf0+0))+(val0*2.0f)+val1);\n    }\n    *(data0_2+Lidx1) = (*(buf0+0));\n  }\n}\n",
+ "result": [
+  72.0,
+  90.0
+ ]
+}
