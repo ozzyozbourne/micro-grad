@@ -1307,7 +1307,7 @@ wrote data/ch22_presets.json (8 presets)</code></pre>
     const t0 = performance.now();
     let t = null, apiErr = null;
     try {
-      const r = await fetch("/api/trace", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code, opts }) });
+      const r = await fetch("../api/trace", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code, opts }) });
       if (!r.ok && r.status !== 200) apiErr = `HTTP ${r.status}`;
       const ct = r.headers.get("content-type") || "";
       if (ct.includes("json")) t = await r.json(); else apiErr = apiErr || "API returned non-JSON (static server without /api/trace?)";
